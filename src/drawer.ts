@@ -1,12 +1,13 @@
-export type Panel = "workspace" | "favorites" | "directories" | "settings";
+export type Panel = "workspace" | "favorites" | "snippets" | "settings";
 export type Detail =
   // Favorite groups: "group" lists the favorites inside one group.
   | { kind: "group"; groupId: string }
-  | { kind: "dir-column"; path: string }
   | { kind: "edit-tab"; tabId: string; focus?: "name" }
   | { kind: "edit-group"; groupId?: string }
   // Without favoriteId the editor creates a favorite, optionally inside groupId.
-  | { kind: "edit-favorite"; favoriteId?: string; groupId?: string; tabId?: string };
+  | { kind: "edit-favorite"; favoriteId?: string; groupId?: string; tabId?: string }
+  // Without snippetId the editor creates a snippet, optionally preset to a scope/content.
+  | { kind: "edit-snippet"; snippetId?: string; scope?: string; text?: string };
 export type DrawerState = { panel: Panel | null; lastPanel: Panel; detailStack: Detail[] };
 
 export function togglePanel(state: DrawerState, panel: Panel): DrawerState {

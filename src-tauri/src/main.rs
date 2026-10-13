@@ -10,9 +10,13 @@ use std::{
     },
 };
 use tauri::{Emitter, Manager};
+mod attention;
+mod files;
+mod hooks;
+mod snippets;
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
-static SESSION_LOCK: Mutex<()> = Mutex::new(());
 static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
+static PENDING_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static RESOURCES: OnceLock<PathBuf> = OnceLock::new();
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 extern "C" {
@@ -42,8 +46,31 @@ extern "C" fn native_event(label: *const libc::c_char, event: *const libc::c_cha
         }
     });
 }
+#[tauri::command]
+fn hook_status() -> Result<Vec<hooks::Status>, String> {
+    Ok(hooks::status(&user_home()?))
+}
+#[tauri::command]
+fn hook_install(app: tauri::AppHandle, agent: String) -> Result<(), String> {
+    let script = attention::script_path(&data_dir(&app)?);
+    if !script.exists() {
+        return Err("hg-notify 尚未就緒，請重新啟動 HiGhostty".into());
+    }
+    hooks::install(&user_home()?, &agent, &script)
+}
+#[tauri::command]
+fn hook_remove(agent: String) -> Result<(), String> {
+    hooks::remove(&user_home()?, &agent)
+}
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = std::env::var_os("HIGHOSTTY_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or(app.path().app_config_dir().map_err(err)?);
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    Ok(dir)
 }
 fn user_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
@@ -78,102 +105,6 @@ fn resolve_path(path: String, base: Option<String>) -> Result<String, String> {
         return Err("請選擇目錄".into());
     }
     Ok(p.to_string_lossy().into_owned())
-}
-#[derive(Serialize)]
-struct Directory {
-    path: String,
-    name: String,
-    has_children: bool,
-    is_dir: bool,
-}
-#[tauri::command]
-async fn directories(path: String, show_hidden: bool) -> Result<Vec<Directory>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = expand_path(&path, None)?;
-        let mut entries = Vec::new();
-        for entry in std::fs::read_dir(path).map_err(err)? {
-            let entry = entry.map_err(err)?;
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !show_hidden && name.starts_with('.') {
-                continue;
-            }
-            let is_dir = path.is_dir();
-            let has_children = is_dir && std::fs::read_dir(&path)
-                .map(|items| items.flatten().any(|e| {
-                    e.path().is_dir() && (show_hidden || !e.file_name().to_string_lossy().starts_with('.'))
-                }))
-                .unwrap_or(false);
-            entries.push(Directory {
-                path: path.to_string_lossy().into_owned(),
-                name,
-                has_children,
-                is_dir,
-            });
-        }
-        entries.sort_by_key(|x| x.name.to_lowercase());
-        Ok(entries)
-    })
-    .await
-    .map_err(err)?
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct SavedWindow {
-    key: String,
-    snapshot: Value,
-}
-#[derive(Serialize, Deserialize, Default)]
-struct SessionState {
-    enabled: bool,
-    windows: Vec<SavedWindow>,
-}
-fn session_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = std::env::var_os("HIGHOSTTY_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or(app.path().app_config_dir().map_err(err)?);
-    std::fs::create_dir_all(&dir).map_err(err)?;
-    Ok(dir.join("session.json"))
-}
-fn read_sessions(app: &tauri::AppHandle) -> Result<SessionState, String> {
-    let path = session_file(app)?;
-    if !path.exists() { return Ok(SessionState { enabled: true, windows: vec![] }); }
-    serde_json::from_slice(&std::fs::read(path).map_err(err)?).map_err(err)
-}
-fn write_sessions(app: &tauri::AppHandle, state: &SessionState) -> Result<(), String> {
-    let path = session_file(app)?;
-    let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temp, serde_json::to_vec_pretty(state).map_err(err)?).map_err(err)?;
-    std::fs::rename(temp, path).map_err(err)
-}
-#[tauri::command]
-fn session_state(app: tauri::AppHandle) -> Result<SessionState, String> { read_sessions(&app) }
-#[tauri::command]
-fn save_session(key: String, snapshot: Value, app: tauri::AppHandle) -> Result<(), String> {
-    let _guard = SESSION_LOCK.lock().map_err(err)?;
-    let mut state = read_sessions(&app)?;
-    if state.enabled {
-        if let Some(item) = state.windows.iter_mut().find(|w| w.key == key) { item.snapshot = snapshot; }
-        else { state.windows.push(SavedWindow { key, snapshot }); }
-        write_sessions(&app, &state)?;
-    }
-    Ok(())
-}
-#[tauri::command]
-fn set_session_enabled(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
-    let _guard = SESSION_LOCK.lock().map_err(err)?;
-    let mut state = read_sessions(&app)?;
-    state.enabled = enabled;
-    if !enabled { state.windows.clear(); }
-    write_sessions(&app, &state)?;
-    app.emit("session-enabled-changed", enabled).map_err(err)
-}
-#[tauri::command]
-fn remove_session(key: String, app: tauri::AppHandle) -> Result<(), String> {
-    let _guard = SESSION_LOCK.lock().map_err(err)?;
-    let mut state = read_sessions(&app)?;
-    state.windows.retain(|w| w.key != key);
-    write_sessions(&app, &state)
 }
 fn resources(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(path) = RESOURCES.get() {
@@ -332,8 +263,8 @@ fn save_favorites(items: Vec<Favorite>, app: tauri::AppHandle) -> Result<(), Str
 }
 #[tauri::command]
 fn load_workspace_favorites(app: &tauri::AppHandle) -> Result<WorkspaceFavorites, String> {
-    let dir = session_file(&app)?;
-    let path = dir.with_file_name("workspace-favorites-v2.json");
+    let dir = data_dir(&app)?;
+    let path = dir.join("workspace-favorites-v2.json");
     if path.exists() {
         let value: Value = serde_json::from_slice(&std::fs::read(&path).map_err(err)?).map_err(err)?;
         if value.is_array() {
@@ -397,10 +328,75 @@ fn save_group_favorites(items: Vec<Value>, expected_revision: u64, app: tauri::A
     let current = load_workspace_favorites(&app)?;
     let revision = next_favorites_revision(current.revision, expected_revision)?;
     let document = WorkspaceFavorites { revision, items };
-    let path = session_file(&app)?.with_file_name("workspace-favorites-v2.json");
+    let path = data_dir(&app)?.join("workspace-favorites-v2.json");
     write_workspace_favorites(&path, &document)?;
     app.emit("group-favorites-changed", &document).map_err(err)?;
     Ok(document)
+}
+/// 工作階段（tmux 頁籤）快照；內容由前端決定，這裡只負責原子寫入。
+#[tauri::command]
+fn load_session(app: tauri::AppHandle) -> Result<Value, String> {
+    let path = data_dir(&app)?.join("session.json");
+    Ok(read_session(&path))
+}
+fn read_session(path: &Path) -> Value {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({ "tabs": [] }))
+}
+#[tauri::command]
+fn save_session(session: Value, app: tauri::AppHandle) -> Result<(), String> {
+    let path = data_dir(&app)?.join("session.json");
+    let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temp, serde_json::to_vec_pretty(&session).map_err(err)?).map_err(err)?;
+    std::fs::rename(temp, path).map_err(err)
+}
+fn valid_tmux_session(name: &str) -> bool {
+    name.len() == 11 && name.starts_with("hg-") && name[3..].bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+fn find_tmux() -> Option<PathBuf> {
+    ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+}
+/// 手動關閉頁籤時結束對應 session；找不到 tmux 或 session 時靜默略過。
+#[tauri::command]
+fn tmux_kill_session(name: String) -> Result<(), String> {
+    if !valid_tmux_session(&name) {
+        return Err("無效的 tmux session 名稱".into());
+    }
+    if let Some(tmux) = find_tmux() {
+        let _ = std::process::Command::new(tmux)
+            .args(["kill-session", "-t", &format!("={name}")])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    Ok(())
+}
+/// 即時切換 session 的狀態列，不必重開頁籤。
+#[tauri::command]
+fn tmux_set_status(name: String, visible: bool) -> Result<(), String> {
+    if !valid_tmux_session(&name) {
+        return Err("無效的 tmux session 名稱".into());
+    }
+    if let Some(tmux) = find_tmux() {
+        let _ = std::process::Command::new(tmux)
+            .args(["set-option", "-t", &format!("={name}"), "status", if visible { "on" } else { "off" }])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    Ok(())
+}
+#[tauri::command]
+fn tmux_available() -> bool {
+    find_tmux().is_some() || std::process::Command::new("sh").args(["-lc", "command -v tmux"]).output().map(|o| o.status.success()).unwrap_or(false)
 }
 #[tauri::command]
 fn new_window(app: tauri::AppHandle, path: String, quick: bool) -> Result<String, String> {
@@ -424,37 +420,17 @@ fn new_window(app: tauri::AppHandle, path: String, quick: bool) -> Result<String
         if quick { "quick" } else { "window" },
         uuid::Uuid::new_v4()
     );
-    let session_key = uuid::Uuid::new_v4().to_string();
     tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
         .title("HiGhostty")
         .inner_size(1280.0, 820.0)
         .min_inner_size(720.0, 480.0)
         .initialization_script(format!(
-            "window.__HIGHOSTTY_INITIAL_PATH__={};window.__HIGHOSTTY_SESSION_KEY__={};",
+            "window.__HIGHOSTTY_INITIAL_PATH__={};",
             serde_json::to_string(&path).map_err(err)?,
-            serde_json::to_string(&session_key).map_err(err)?
         ))
         .transparent(true)
         .build()
         .map_err(err)?;
-    Ok(label)
-}
-#[tauri::command]
-fn restore_window(app: tauri::AppHandle, saved: SavedWindow) -> Result<String, String> {
-    let label = format!("restore-{}", uuid::Uuid::new_v4());
-    let first_path = saved.snapshot.get("tabs").and_then(Value::as_array)
-        .and_then(|tabs| tabs.first()).and_then(|tab| tab.get("paths"))
-        .and_then(Value::as_array).and_then(|paths| paths.first()).and_then(Value::as_str)
-        .unwrap_or("");
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
-        .title("HiGhostty").inner_size(1280.0, 820.0).min_inner_size(720.0, 480.0)
-        .initialization_script(format!(
-            "window.__HIGHOSTTY_SESSION_KEY__={};window.__HIGHOSTTY_RESTORE__={};window.__HIGHOSTTY_INITIAL_PATH__={};",
-            serde_json::to_string(&saved.key).map_err(err)?,
-            serde_json::to_string(&saved.snapshot).map_err(err)?,
-            serde_json::to_string(first_path).map_err(err)?
-        ))
-        .transparent(true).build().map_err(err)?;
     Ok(label)
 }
 #[tauri::command]
@@ -473,6 +449,18 @@ fn focus_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
 fn quit_app(app: tauri::AppHandle) {
     EXIT_APPROVED.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+/// Directories to open for URLs delivered by Finder/Dock; files map to their parent.
+fn open_directories(urls: &[tauri::Url]) -> Vec<String> {
+    urls.iter()
+        .filter_map(|url| url.to_file_path().ok())
+        .filter_map(|path| if path.is_dir() { Some(path) } else { path.parent().map(Path::to_path_buf) })
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+#[tauri::command]
+fn take_pending_open_paths() -> Vec<String> {
+    std::mem::take(&mut *PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()))
 }
 fn main() {
     let previous = std::panic::take_hook();
@@ -493,24 +481,35 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let _ = APP.set(app.handle().clone());
+            if let Ok(dir) = data_dir(app.handle()) {
+                attention::start(app.handle().clone(), dir);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             home,
+            hook_status,
+            hook_install,
+            hook_remove,
             resolve_path,
-            directories,
+            files::list_files,
+            files::dir_stamp,
+            files::file_op,
+            snippets::snippets,
+            snippets::save_snippets,
             native,
+            take_pending_open_paths,
             pick_directory,
             favorites,
             save_favorites,
             group_favorites,
             save_group_favorites,
-            session_state,
+            load_session,
             save_session,
-            set_session_enabled,
-            remove_session,
+            tmux_kill_session,
+            tmux_set_status,
+            tmux_available,
             new_window,
-            restore_window,
             list_windows,
             focus_window,
             quit_app
@@ -531,6 +530,23 @@ fn main() {
                         if let Some(window) = window {
                             let _ = window.emit("native-event", json!({"type":"quit"}));
                         }
+                    }
+                }
+            }
+            if let tauri::RunEvent::Opened { urls } = &event {
+                let paths = open_directories(urls);
+                if !paths.is_empty() {
+                    PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()).extend(paths);
+                    let windows = app.webview_windows();
+                    let window = windows
+                        .values()
+                        .find(|w| w.is_focused().unwrap_or(false))
+                        .or_else(|| windows.get("main"))
+                        .or_else(|| windows.values().next());
+                    if let Some(window) = window {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        let _ = window.emit("open-paths", ());
                     }
                 }
             }
@@ -560,6 +576,35 @@ mod tests {
         assert_eq!(migrated[0]["name"], "開發");
         assert_eq!(migrated[1]["kind"], "tab");
         assert_eq!(migrated[1]["tab"]["paths"][0], "/tmp/project");
+    }
+    #[test]
+    fn session_reads_fall_back_on_missing_or_corrupt_files() {
+        let dir = std::env::temp_dir().join(format!("hg-session-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+        assert_eq!(read_session(&path), json!({ "tabs": [] }));
+        std::fs::write(&path, "{broken").unwrap();
+        assert_eq!(read_session(&path), json!({ "tabs": [] }));
+        std::fs::write(&path, r#"{"tabs":[{"tmux":true}]}"#).unwrap();
+        assert_eq!(read_session(&path)["tabs"][0]["tmux"], true);
+        std::fs::remove_dir_all(dir).ok();
+    }
+    #[test]
+    fn tmux_session_names_are_validated() {
+        assert!(valid_tmux_session("hg-abcd1234"));
+        assert!(!valid_tmux_session("hg-abcd123;"));
+        assert!(!valid_tmux_session("other"));
+    }
+    #[test]
+    fn opened_urls_map_to_directories() {
+        let dir = std::env::temp_dir();
+        let urls = [
+            tauri::Url::from_directory_path(&dir).unwrap(),
+            tauri::Url::parse("https://example.com/x").unwrap(),
+        ];
+        assert_eq!(open_directories(&urls), vec![dir.to_string_lossy().into_owned()]);
+        let file = tauri::Url::from_file_path("/etc/hosts").unwrap();
+        assert_eq!(open_directories(&[file]), vec!["/etc".to_string()]);
     }
     #[test]
     fn paths_expand_only_the_home_prefix() {

@@ -22,6 +22,17 @@ export function orderGroupedItems<T extends GroupedItem>(items: T[], groupIds: s
     ...groupIds.flatMap((id) => items.filter((item) => item.groupId === id)),
   ];
 }
+// Ungrouped tabs keep their own order; a grouped tab sits where its favorite
+// sits in `favorites`, so opening or closing a terminal never moves a row.
+export function orderTabsByFavorites<T extends { id: string; favoriteId?: string }>(tabs: T[], favorites: GroupedItem[], groupIds: string[]): T[] {
+  const known = new Set(groupIds);
+  const favoriteById = new Map(favorites.map((item) => [item.id, item]));
+  const groupOf = (tab: T) => { const id = tab.favoriteId ? favoriteById.get(tab.favoriteId)?.groupId : undefined; return id && known.has(id) ? id : undefined; };
+  return [
+    ...tabs.filter((tab) => !groupOf(tab)),
+    ...groupIds.flatMap((id) => favorites.filter((item) => item.groupId === id).flatMap((item) => tabs.filter((tab) => tab.favoriteId === item.id && groupOf(tab) === id))),
+  ];
+}
 export function moveGroupedItem<T extends GroupedItem>(items: T[], id: string, targetGroupId: string | null, beforeId?: string): T[] {
   const moving = items.find((item) => item.id === id);
   if (!moving) return items;

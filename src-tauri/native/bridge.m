@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include "ghostty.h"
 #include "bridge.h"
+#include "files.h"
 
 // The Ghostty ABI, its AppKit views, and all callbacks are owned by the main thread.
 @class HGSurface;
@@ -107,6 +108,7 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
 @property ghostty_surface_t surface;
 
 @property NSString *owner;
+@property BOOL tmux;
 @property NSString *cwd;
 @property NSString *title;
 @property NSMutableAttributedString *marked;
@@ -119,8 +121,14 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
 @property uint64_t primaryStart;
 @property NSTimeInterval lastPerformKeyEvent;
 @property BOOL hasLastPerformKeyEvent;
+// Area (in this view's coordinates) hidden so the web overlay beneath shows through.
+@property NSRect cutout;
 @end
 @implementation HGSurface
+- (NSView *)hitTest:(NSPoint)point {
+    if(!NSIsEmptyRect(self.cutout)&&NSPointInRect([self convertPoint:point fromView:self.superview],self.cutout))return nil;
+    return [super hitTest:point];
+}
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
     @try { return [sender.draggingPasteboard.types containsObject:NSPasteboardTypeFileURL] ? NSDragOperationCopy : NSDragOperationNone; }
     @catch(NSException *exception) { [self reportInputException:exception]; return NSDragOperationNone; }
@@ -156,6 +164,57 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
     NSString *value=[[NSString alloc] initWithBytes:text.text length:text.text_len encoding:NSUTF8StringEncoding] ?: @"";
     ghostty_surface_free_text(_surface,&text);return value;
 }
+- (NSString *)exportText {
+    if(!_surface)return nil;
+    // SCREEN coordinates address Ghostty's retained screen, including scrollback.
+    ghostty_selection_s selection={.top_left={.tag=GHOSTTY_POINT_SCREEN,.coord=GHOSTTY_POINT_COORD_TOP_LEFT},.bottom_right={.tag=GHOSTTY_POINT_SCREEN,.coord=GHOSTTY_POINT_COORD_BOTTOM_RIGHT}};
+    ghostty_text_s text={0};if(!ghostty_surface_read_text(_surface,selection,&text))return nil;
+    NSString *value=[[NSString alloc] initWithBytes:text.text length:text.text_len encoding:NSUTF8StringEncoding] ?: @"";
+    ghostty_surface_free_text(_surface,&text);return value;
+}
+- (NSString *)exportBaseName {
+    NSString *base=self.title.length?self.title:self.cwd.lastPathComponent;
+    if(!base.length)base=@"terminal";
+    NSCharacterSet *invalid=[NSCharacterSet characterSetWithCharactersInString:@"/:\\0"];
+    base=[[base componentsSeparatedByCharactersInSet:invalid] componentsJoinedByString:@"-"];
+    return base.length?base:@"terminal";
+}
+- (void)exportAsMarkdown:(id)sender {
+    NSString *text=[self exportText];if(!text)return;
+    NSUInteger longest=0,current=0;
+    for(NSUInteger i=0;i<text.length;i++){if([text characterAtIndex:i]=='`'){current++;longest=MAX(longest,current);}else current=0;}
+    NSString *fence=[@"" stringByPaddingToLength:MAX((NSUInteger)3,longest+1) withString:@"`" startingAtIndex:0];
+    NSString *markdown=[NSString stringWithFormat:@"%@\n\n%@\n%@\n",fence,text,fence];
+    NSSavePanel *panel=[NSSavePanel savePanel];UTType *markdownType=[UTType typeWithFilenameExtension:@"md"] ?: UTTypePlainText;panel.allowedContentTypes=@[markdownType];panel.nameFieldStringValue=[[self exportBaseName] stringByAppendingPathExtension:@"md"];
+    if([panel runModal]!=NSModalResponseOK||!panel.URL)return;
+    NSError *error=nil;if(![markdown writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error]){NSAlert *alert=[NSAlert new];alert.messageText=@"無法匯出 Markdown";alert.informativeText=error.localizedDescription ?: @"寫入檔案失敗";[alert runModal];}
+}
+- (void)exportAsPDF:(id)sender {
+    NSString *text=[self exportText];if(!text)return;
+    NSSavePanel *panel=[NSSavePanel savePanel];panel.allowedContentTypes=@[UTTypePDF];panel.nameFieldStringValue=[[self exportBaseName] stringByAppendingPathExtension:@"pdf"];
+    if([panel runModal]!=NSModalResponseOK||!panel.URL)return;
+    NSPrintInfo *info=[NSPrintInfo.sharedPrintInfo copy];info.paperSize=NSMakeSize(595.28,841.89);info.topMargin=36;info.bottomMargin=36;info.leftMargin=36;info.rightMargin=36;info.horizontalPagination=NSPrintingPaginationModeFit;info.verticalPagination=NSPrintingPaginationModeAutomatic;
+    CGFloat contentWidth=info.paperSize.width-info.leftMargin-info.rightMargin;
+    NSTextView *view=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,contentWidth,1)];view.editable=NO;view.selectable=YES;view.font=[NSFont userFixedPitchFontOfSize:10] ?: [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular];view.string=text;view.textContainer.containerSize=NSMakeSize(contentWidth,CGFLOAT_MAX);view.textContainer.widthTracksTextView=YES;view.verticallyResizable=YES;view.horizontallyResizable=NO;
+    [view.layoutManager ensureLayoutForTextContainer:view.textContainer];
+    CGFloat contentHeight=MAX(1,NSMaxY([view.layoutManager usedRectForTextContainer:view.textContainer]));view.frame=NSMakeRect(0,0,contentWidth,contentHeight);
+    NSData *pdf=[NSMutableData data];NSPrintOperation *operation=[NSPrintOperation PDFOperationWithView:view insideRect:view.bounds toData:(NSMutableData *)pdf printInfo:info];
+    NSError *error=nil;BOOL printed=operation&&[operation runOperation];
+    if(!printed||![pdf writeToURL:panel.URL options:NSDataWritingAtomic error:&error]){NSAlert *alert=[NSAlert new];alert.messageText=@"無法匯出 PDF";alert.informativeText=error.localizedDescription ?: @"產生 PDF 失敗";[alert runModal];}
+}
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    if(!_surface)return nil;
+    [self.window makeFirstResponder:self];
+    NSMenu *menu=[NSMenu new];menu.autoenablesItems=NO;
+    for(NSArray *entry in @[@[@"複製",NSStringFromSelector(@selector(copy:))],@[@"貼上",NSStringFromSelector(@selector(paste:))],@[@"全選",NSStringFromSelector(@selector(selectAll:))],@[@"清除畫面",NSStringFromSelector(@selector(clearScreen:))]]){
+        NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:entry[0] action:NSSelectorFromString(entry[1]) keyEquivalent:@""];item.target=self;[menu addItem:item];
+    }
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *export=[[NSMenuItem alloc] initWithTitle:@"匯出內容" action:nil keyEquivalent:@""];
+    NSMenu *submenu=[NSMenu new];NSMenuItem *markdown=[[NSMenuItem alloc] initWithTitle:@"Markdown…" action:@selector(exportAsMarkdown:) keyEquivalent:@""];markdown.target=self;[submenu addItem:markdown];NSMenuItem *pdf=[[NSMenuItem alloc] initWithTitle:@"PDF…" action:@selector(exportAsPDF:) keyEquivalent:@""];pdf.target=self;[submenu addItem:pdf];export.submenu=submenu;[menu addItem:export];
+    return menu;
+}
+- (void)clearScreen:(id)sender { [self runBinding:"clear_screen"]; }
 - (NSRange)accessibilitySelectedTextRange { return self.selectedRange; }
 - (NSString *)accessibilitySelectedText {
     ghostty_text_s text={0};if(!_surface||!ghostty_surface_read_selection(_surface,&text))return @"";
@@ -174,10 +233,25 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
 - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self syncSize]; }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self syncSize]; }
 - (void)syncSize {
-    if (!_surface || self.hidden || self.bounds.size.width < 1 || self.bounds.size.height < 1) return;
-    double scale=self.window.backingScaleFactor ?: 1;
-    ghostty_surface_set_content_scale(_surface,scale,scale);
-    ghostty_surface_set_size(_surface,(uint32_t)lround(self.bounds.size.width*scale),(uint32_t)lround(self.bounds.size.height*scale));
+    if (!_surface) return;
+    // libghostty installs its own layer and sets contentsScale only once, at surface
+    // creation. AppKit never updates a host-provided layer, so after the window moves
+    // to a display with a different scale the stale value makes the rendered frame
+    // display magnified (or shrunk). Keep it in sync like Ghostty.app does.
+    CGFloat layerScale=self.window.backingScaleFactor ?: 1;
+    if (self.layer && self.layer.contentsScale!=layerScale) {
+        [CATransaction begin];[CATransaction setDisableActions:YES];
+        self.layer.contentsScale=layerScale;
+        [CATransaction commit];
+    }
+    if (self.hidden || self.bounds.size.width < 1 || self.bounds.size.height < 1) return;
+    NSSize backingSize=[self convertSizeToBacking:self.bounds.size];
+    double scaleX=backingSize.width/self.bounds.size.width;
+    double scaleY=backingSize.height/self.bounds.size.height;
+    if(!isfinite(scaleX)||scaleX<=0)scaleX=1;
+    if(!isfinite(scaleY)||scaleY<=0)scaleY=1;
+    ghostty_surface_set_content_scale(_surface,scaleX,scaleY);
+    ghostty_surface_set_size(_surface,(uint32_t)lround(backingSize.width),(uint32_t)lround(backingSize.height));
 }
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
@@ -407,8 +481,8 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
 - (void)mouseDragged:(NSEvent *)event { [self mouseMoved:event]; }
 - (void)rightMouseDragged:(NSEvent *)event { [self mouseMoved:event]; }
 - (void)otherMouseDragged:(NSEvent *)event { [self mouseMoved:event]; }
-- (void)mouseEntered:(NSEvent *)event { [self mouseMoved:event]; }
-- (void)mouseExited:(NSEvent *)event { [NSCursor.arrowCursor set]; }
+- (void)mouseEntered:(NSEvent *)event { emit(_owner,@{@"type":@"pointer-terminal",@"on":@YES});[self mouseMoved:event]; }
+- (void)mouseExited:(NSEvent *)event { emit(_owner,@{@"type":@"pointer-terminal",@"on":@NO});[NSCursor.arrowCursor set]; }
 - (void)mouseButton:(NSEvent *)event pressed:(BOOL)pressed {
     if(!_surface)return;
     if(pressed)[self.window makeFirstResponder:self];
@@ -418,8 +492,6 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
 }
 - (void)mouseDown:(NSEvent *)event { [self mouseButton:event pressed:YES]; }
 - (void)mouseUp:(NSEvent *)event { [self mouseButton:event pressed:NO]; }
-- (void)rightMouseDown:(NSEvent *)event { [self mouseButton:event pressed:YES]; }
-- (void)rightMouseUp:(NSEvent *)event { [self mouseButton:event pressed:NO]; }
 - (void)otherMouseDown:(NSEvent *)event { [self mouseButton:event pressed:YES]; }
 - (void)otherMouseUp:(NSEvent *)event { [self mouseButton:event pressed:NO]; }
 - (void)scrollWheel:(NSEvent *)event {
@@ -603,9 +675,9 @@ static bool nativeAction(ghostty_app_t app,ghostty_target_s target,ghostty_actio
         case GHOSTTY_ACTION_MOUSE_OVER_LINK:return true;
         case GHOSTTY_ACTION_RENDER:if(surface.surface)ghostty_surface_draw(surface.surface);return true;
         case GHOSTTY_ACTION_SCROLLBAR:return true;
-        case GHOSTTY_ACTION_RING_BELL:NSBeep();return true;
+        case GHOSTTY_ACTION_RING_BELL:NSBeep();emit(owner,@{@"type":@"bell",@"id":identifier});return true;
         case GHOSTTY_ACTION_OPEN_URL:{NSString *url=[[NSString alloc] initWithBytes:action.action.open_url.url length:action.action.open_url.len encoding:NSUTF8StringEncoding];NSURL *u=[NSURL URLWithString:url];if(u)[NSWorkspace.sharedWorkspace openURL:u];return true;}
-        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:{UNMutableNotificationContent *content=[UNMutableNotificationContent new];content.title=str(action.action.desktop_notification.title);content.body=str(action.action.desktop_notification.body);[UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL allowed,NSError *error){if(allowed)[UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:[UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil] withCompletionHandler:nil];}];return true;}
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:{UNMutableNotificationContent *content=[UNMutableNotificationContent new];content.title=str(action.action.desktop_notification.title);content.body=str(action.action.desktop_notification.body);emit(owner,@{@"type":@"notify",@"id":identifier,@"title":content.title,@"body":content.body});[UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL allowed,NSError *error){if(allowed)[UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:[UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil] withCompletionHandler:nil];}];return true;}
         case GHOSTTY_ACTION_PROGRESS_REPORT:case GHOSTTY_ACTION_COMMAND_FINISHED:case GHOSTTY_ACTION_KEY_SEQUENCE:case GHOSTTY_ACTION_KEY_TABLE:case GHOSTTY_ACTION_READONLY:return true;
         case GHOSTTY_ACTION_UNDO:event=@{@"type":@"undo"};break;
         case GHOSTTY_ACTION_REDO:event=@{@"type":@"redo"};break;
@@ -638,9 +710,12 @@ static NSDictionary *initialize(NSWindow *window,NSString *label,NSString *resou
                 NSEventModifierFlags command=NSEventModifierFlagCommand, shift=NSEventModifierFlagShift;
                 NSEventModifierFlags relevant=flags&(command|shift|NSEventModifierFlagOption|NSEventModifierFlagControl);
                 if(relevant==(command|shift)&&[pressed isEqualToString:@"b"]){emit(lastWindow,@{@"type":@"toggle-sidebar"});return nil;}
+                if(relevant==(command|shift)&&[pressed isEqualToString:@"p"]){emit(lastWindow,@{@"type":@"toggle-palette"});return nil;}
                 if(relevant==command&&pressed.length==1){
-                    NSInteger value=[pressed isEqualToString:@"0"]?10:[pressed integerValue];
-                    if(value>=1&&value<=10){emit(lastWindow,@{@"type":@"goto-tab",@"value":@(value)});return nil;}
+                    // ⌘0 toggles the files panel like ⌘O; ⌘1～⌘9 switch tabs.
+                    if([pressed isEqualToString:@"0"]){emit(lastWindow,@{@"type":@"browse"});return nil;}
+                    NSInteger value=[pressed integerValue];
+                    if(value>=1&&value<=9){emit(lastWindow,@{@"type":@"goto-tab",@"value":@(value)});return nil;}
                 }
                 ghostty_input_key_s key=keyEvent(event,GHOSTTY_ACTION_PRESS);
                 if(ghostty_app_key(engine,key))return nil;
@@ -709,6 +784,29 @@ static NSDictionary *processInfo(HGSurface *surface) {
     BOOL exited=ghostty_surface_process_exited(surface.surface);
     return @{@"cwd":surface.cwd ?: @"",@"running":names,@"pids":pids,@"exited":@(exited),@"needsConfirm":@(ghostty_surface_needs_confirm_quit(surface.surface))};
 }
+// Visible screen text plus the agent-looking process name of each requested
+// surface, for attention detection. The process walk is cached for a few seconds.
+static NSDictionary *scanSurfaces(NSArray *ids) {
+    static NSMutableDictionary<NSString *,NSDictionary *> *agentCache;
+    if(!agentCache)agentCache=[NSMutableDictionary dictionary];
+    NSRegularExpression *agentName=[NSRegularExpression regularExpressionWithPattern:@"^(claude|codex|gemini|copilot|aider|opencode|node|python3?|bun|deno)\\b" options:0 error:nil];
+    NSMutableDictionary *out=[NSMutableDictionary dictionary];
+    for(NSString *identifier in ids){
+        HGSurface *s=surfaces[identifier];if(!s||!s.surface||s.closing)continue;
+        NSString *text=@"";
+        ghostty_selection_s selection={.top_left={.tag=GHOSTTY_POINT_VIEWPORT,.coord=GHOSTTY_POINT_COORD_TOP_LEFT},.bottom_right={.tag=GHOSTTY_POINT_VIEWPORT,.coord=GHOSTTY_POINT_COORD_BOTTOM_RIGHT}};
+        ghostty_text_s raw={0};
+        if(ghostty_surface_read_text(s.surface,selection,&raw)){text=[[NSString alloc] initWithBytes:raw.text length:raw.text_len encoding:NSUTF8StringEncoding] ?: @"";ghostty_surface_free_text(s.surface,&raw);}
+        NSDictionary *cached=agentCache[identifier];NSTimeInterval now=NSDate.timeIntervalSinceReferenceDate;
+        if(!cached||now-[cached[@"t"] doubleValue]>5){
+            NSString *agent=@"";
+            for(NSString *name in processInfo(s)[@"running"]){if([agentName firstMatchInString:name options:0 range:NSMakeRange(0,name.length)]){agent=[name componentsSeparatedByString:@" ("].firstObject;break;}}
+            cached=@{@"t":@(now),@"agent":agent};agentCache[identifier]=cached;
+        }
+        out[identifier]=@{@"text":text,@"agent":cached[@"agent"]};
+    }
+    return @{@"screens":out};
+}
 static NSDictionary *destroySurface(HGSurface *surface,BOOL force) {
     NSDictionary *info=processInfo(surface);NSArray *running=info[@"running"];
     if(!force&&(running.count||[info[@"needsConfirm"] boolValue]))return @{@"error":@"仍有工作執行，請確認終止",@"running":running};
@@ -723,6 +821,30 @@ static NSDictionary *destroySurface(HGSurface *surface,BOOL force) {
     return @{@"closed":@YES};
 }
 static NSView *findWebView(NSView *view) {if([view isKindOfClass:NSClassFromString(@"WKWebView")])return view;for(NSView *child in view.subviews){NSView *found=findWebView(child);if(found)return found;}return nil;}
+// The web overlay (command palette) must appear above native terminals, so the
+// overlapping part of each terminal is masked out instead of resizing it.
+static NSMutableDictionary *cutoutRequests;
+static void applyCutout(HGSurface *s,NSView *web) {
+    NSRect hole=NSZeroRect;
+    NSDictionary *cutoutRequest=cutoutRequests[s.owner];
+    if(cutoutRequest&&web&&!s.hidden){
+        double ratio=web.bounds.size.width/[cutoutRequest[@"viewportWidth"] doubleValue];
+        if(isfinite(ratio)&&ratio>0){
+            NSRect rect=NSMakeRect([cutoutRequest[@"x"] doubleValue]*ratio,[cutoutRequest[@"y"] doubleValue]*ratio,[cutoutRequest[@"width"] doubleValue]*ratio,[cutoutRequest[@"height"] doubleValue]*ratio);
+            if(!web.isFlipped)rect.origin.y=web.bounds.size.height-rect.origin.y-rect.size.height;
+            rect=[web convertRect:rect toView:s.superview];
+            hole=NSIntersectionRect([s convertRect:rect fromView:s.superview],s.bounds);
+        }
+    }
+    s.cutout=hole;
+    s.wantsLayer=YES;
+    if(NSIsEmptyRect(hole)){s.layer.mask=nil;return;}
+    CGMutablePathRef path=CGPathCreateMutable();
+    CGPathAddRect(path,NULL,NSRectToCGRect(s.bounds));CGPathAddRect(path,NULL,NSRectToCGRect(hole));
+    CAShapeLayer *mask=[CAShapeLayer layer];mask.frame=s.bounds;mask.path=path;mask.fillRule=kCAFillRuleEvenOdd;
+    CGPathRelease(path);
+    s.layer.mask=mask;
+}
 char *hg_command(void *windowPointer,const char *labelString,const char *resources,const char *request,hg_event_cb callback) {
     NSCAssert(NSThread.isMainThread,@"Native Ghostty must run on the AppKit thread");
     @autoreleasepool {
@@ -740,24 +862,31 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
             result=@{@"path":picked ?: (id)NSNull.null};
         }
         else if([op isEqualToString:@"cwd"]){HGSurface *s=surfaces[req[@"id"]];if(s){int pid=shellPid(s);struct proc_vnodepathinfo cwd={0};if(pid>0&&proc_pidinfo(pid,PROC_PIDVNODEPATHINFO,0,&cwd,sizeof(cwd))==sizeof(cwd)){NSString *p=str(cwd.pvi_cdir.vip_path);if(p.length&&![p isEqualToString:s.cwd]){s.cwd=p;emit(s.owner,@{@"type":@"cwd",@"id":s.identifier,@"path":p});}}result=@{@"cwd":s.cwd ?: @"",@"exited":@(ghostty_surface_process_exited(s.surface))};}}
-        else if([op isEqualToString:@"all-info"]){NSMutableArray *running=[NSMutableArray array];BOOL confirm=NO;for(HGSurface *s in surfaces.allValues){NSDictionary *info=processInfo(s);[running addObjectsFromArray:info[@"running"]];confirm|=[info[@"needsConfirm"] boolValue];}result=@{@"running":running,@"needsConfirm":@(confirm)};}
+        else if([op isEqualToString:@"all-info"]){NSMutableArray *running=[NSMutableArray array];BOOL confirm=NO;for(HGSurface *s in surfaces.allValues){if(s.tmux)continue;NSDictionary *info=processInfo(s);[running addObjectsFromArray:info[@"running"]];confirm|=[info[@"needsConfirm"] boolValue];}result=@{@"running":running,@"needsConfirm":@(confirm)};}
         else if([op isEqualToString:@"close-all"]){for(HGSurface *s in [surfaces.allValues copy]){NSDictionary *r=destroySurface(s,[req[@"force"] boolValue]);if(r[@"error"]){result=r;break;}}}
         else if([op isEqualToString:@"config"])result=configurationInfo();
         else if([op isEqualToString:@"reload"]){reloadConfig();result=configurationInfo();}
         else if([op isEqualToString:@"open-config"]){ghostty_action_s a={.tag=GHOSTTY_ACTION_OPEN_CONFIG};nativeAction(engine,(ghostty_target_s){.tag=GHOSTTY_TARGET_APP},a);}
         else if([op isEqualToString:@"open"]){
             NSString *identifier=req[@"id"],*path=req[@"path"];
-            HGSurface *view=[[HGSurface alloc] initWithFrame:NSMakeRect(0,0,800,600)];[view registerForDraggedTypes:@[NSPasteboardTypeFileURL]];view.identifier=identifier;view.owner=label;view.cwd=path;view.title=@"";view.marked=[[NSMutableAttributedString alloc] initWithString:@""];view.hidden=YES;
+            HGSurface *view=[[HGSurface alloc] initWithFrame:NSMakeRect(0,0,800,600)];[view registerForDraggedTypes:@[NSPasteboardTypeFileURL]];view.identifier=identifier;view.owner=label;view.tmux=[req[@"tmux"] boolValue];view.cwd=path;view.title=@"";view.marked=[[NSMutableAttributedString alloc] initWithString:@""];view.hidden=YES;
             NSView *web=findWebView(window.contentView);NSView *parent=web.superview ?: window.contentView;
             [parent addSubview:view positioned:NSWindowAbove relativeTo:web];surfaces[identifier]=view;
             ghostty_surface_config_s options=ghostty_surface_config_new();
             HGSurface *source=surfaces[req[@"source"]];if(source.surface)options=ghostty_surface_inherited_config(source.surface,[req[@"split"] boolValue]?GHOSTTY_SURFACE_CONTEXT_SPLIT:GHOSTTY_SURFACE_CONTEXT_TAB);
             NSString *command=req[@"command"];
+            BOOL commandInShell=[req[@"commandInShell"] boolValue]&&command.length;
             options.platform_tag=GHOSTTY_PLATFORM_MACOS;options.platform.macos.nsview=(__bridge void *)view;options.userdata=(__bridge void *)view;options.working_directory=path.UTF8String;options.scale_factor=window.backingScaleFactor;
-            if(command.length)options.command=command.UTF8String;
+            if(command.length&&!commandInShell)options.command=command.UTF8String;
+            // Lets agent hooks (hg-notify) tell HiGhostty which terminal they run in.
+            ghostty_env_var_s surfaceEnv[1]={{"HIGHOSTTY_SURFACE_ID",identifier.UTF8String}};options.env_vars=surfaceEnv;options.env_var_count=1;
             view.surface=ghostty_surface_new(engine,&options);
             view.wantsLayer=YES;view.layer.backgroundColor=[backgroundColor() colorWithAlphaComponent:numberConfig("background-opacity",1)].CGColor;
-            if(!view.surface){[view removeFromSuperview];[surfaces removeObjectForKey:identifier];result=@{@"error":@"建立原生 Ghostty surface 失敗"};}else{[view syncSize];result=@{@"id":identifier,@"cwd":path};}
+            if(!view.surface){[view removeFromSuperview];[surfaces removeObjectForKey:identifier];result=@{@"error":@"建立原生 Ghostty surface 失敗"};}else{
+                [view syncSize];
+                if(commandInShell){NSString *input=[command stringByAppendingString:@"\r"];ghostty_surface_text(view.surface,input.UTF8String,[input lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);}
+                result=@{@"id":identifier,@"cwd":path};
+            }
         }else if([op isEqualToString:@"layout"]){
             NSView *web=findWebView(window.contentView);NSArray *rects=req[@"rects"];
             for(HGSurface *s in surfaces.allValues)if([s.owner isEqualToString:label]){s.hidden=YES;if(s.surface)ghostty_surface_set_occlusion(s.surface,false);}
@@ -767,13 +896,25 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
                 if(!web.isFlipped)rect.origin.y=web.bounds.size.height-rect.origin.y-rect.size.height;
                 if(web)rect=[web convertRect:rect toView:s.superview];s.frame=rect;s.hidden=s.suspended||rect.size.width<1||rect.size.height<1;
                 if(s.surface){ghostty_surface_set_occlusion(s.surface,!s.hidden);if(!s.hidden)[s syncSize];}
+                applyCutout(s,web);
             }
-        }else if([op isEqualToString:@"focus"]){HGSurface *s=surfaces[req[@"id"]];if(s&&!s.hidden)[window makeFirstResponder:s];}
+        }else if([op isEqualToString:@"overlay-cutout"]){
+            NSView *web=findWebView(window.contentView);
+            if(!cutoutRequests)cutoutRequests=[NSMutableDictionary dictionary];
+            if([req[@"width"] doubleValue]>0&&[req[@"height"] doubleValue]>0)cutoutRequests[label]=req;else [cutoutRequests removeObjectForKey:label];
+            for(HGSurface *s in surfaces.allValues)if([s.owner isEqualToString:label])applyCutout(s,web);
+            // Palette closed: never leave the keyboard focus in the WebView, or surface-level bindings (⌘D…) stop working.
+            if([req[@"restoreFocus"] boolValue]&&![req[@"width"] doubleValue]&&web&&window.firstResponder==web){HGSurface *f=focused(label);if(f&&!f.hidden)[window makeFirstResponder:f];}
+        }else if([op isEqualToString:@"focus"]){HGSurface *s=surfaces[req[@"id"]];if(s&&!s.hidden&&window.firstResponder!=s)[window makeFirstResponder:s];}
+        else if([op isEqualToString:@"focus-web"]){NSView *web=findWebView(window.contentView);if(web)[window makeFirstResponder:web];}
+        else if([op isEqualToString:@"scan"]){result=scanSurfaces(req[@"ids"]);}
         else if([op isEqualToString:@"info"]){HGSurface *s=surfaces[req[@"id"]];result=s?processInfo(s):@{@"error":@"找不到終端機"};}
         else if([op isEqualToString:@"close"]){HGSurface *s=surfaces[req[@"id"]];result=s?destroySurface(s,[req[@"force"] boolValue]):@{@"closed":@YES};}
         else if([op isEqualToString:@"binding"]){HGSurface *s=surfaces[req[@"id"]];NSString *binding=req[@"action"];if(!s||!ghostty_surface_binding_action(s.surface,binding.UTF8String,[binding lengthOfBytesUsingEncoding:NSUTF8StringEncoding]))result=@{@"error":@"Ghostty 無法執行這個動作"};}
         else if([op isEqualToString:@"quick"]){toggleQuickTerminal(label);}
         else if([op isEqualToString:@"forget-window"]){[windows removeObjectForKey:label];[sizedWindows removeObject:label];}
+        else if([op isEqualToString:@"insert-text"]){HGSurface *s=surfaces[req[@"id"]];NSString *text=req[@"text"];if(s.surface&&text.length)ghostty_surface_text(s.surface,text.UTF8String,[text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);else result=@{@"error":@"找不到終端機"};}
+        else if([op hasPrefix:@"files-"])result=HGFilesCommand(window,req,^(NSDictionary *event){emit(label,event);});
         else result=@{@"error":@"未知原生指令"};
         NSData *data=[NSJSONSerialization dataWithJSONObject:result options:0 error:nil];NSString *json=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];return strdup(json.UTF8String ?: "{}");
     }

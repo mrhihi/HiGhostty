@@ -28,6 +28,9 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "fileAssociations": [
+      { "ext": [], "name": "Folder", "role": "Viewer", "contentTypes": ["public.folder"] }
+    ],
     "icon": ["icons/icon.png"],
     "resources": {
       "vendor/share/ghostty": "ghostty",

@@ -11,6 +11,7 @@ fn main() {
     let mut bridge = cc::Build::new();
     bridge
         .file("native/bridge.m")
+        .file("native/files.m")
         .include("native")
         .flag("-fobjc-arc")
         .flag("-fblocks")
@@ -28,7 +29,9 @@ fn main() {
         "CoreText",
         "CoreGraphics",
         "CoreVideo",
+        "Quartz",
         "QuartzCore",
+        "QuickLookThumbnailing",
         "Metal",
         "MetalKit",
         "IOSurface",

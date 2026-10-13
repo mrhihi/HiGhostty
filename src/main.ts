@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { Menu } from "@tauri-apps/api/menu";
 import {
   leaves,
   split,
@@ -9,7 +10,7 @@ import {
   rectangles,
   resizeSplit,
   neighbor,
-  orderGroupedItems,
+  orderTabsByFavorites,
   moveGroupedItem,
   dissolveGroup,
   recentFavoriteInstance,
@@ -21,21 +22,27 @@ import {
   type Node,
   type Rect,
 } from "./model";
+import { initFilesPanel } from "./files-panel";
+import { initialFiles, type FilesState } from "./files";
+import { initSnippets } from "./snippet-palette";
+import { initAttentionDrop } from "./attention-drop";
 import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDetail, togglePanel, type Detail, type DrawerState, type Panel } from "./drawer";
+import { attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, prune, raise, snapshot, sorted, titleSpinnerStopped, unreadCount, type AttentionState, type IdleTrack } from "./attention";
+import { newSessionName, restorable, tmuxCommand, validSession } from "./tmux";
 import "./style.css";
 
-type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; favoriteId?: string };
+type MenuEntry = { text: string; action: () => unknown } | { item: "Separator" };
+type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSessions?: (string | undefined)[]; favoriteId?: string; files?: { open: boolean; full: boolean } };
 // Groups organize favorites; an open tab shows the group of the favorite it came from.
 type WorkspaceFavorite = TabFavoriteItem<SavedTab>;
 type FavoritesDocument = { revision: number; items: StoredFavorite<SavedTab>[] };
-type Directory = { name: string; path: string; has_children: boolean; is_dir: boolean };
 type Info = {
   cwd: string;
   running: string[];
   exited: boolean;
   needsConfirm: boolean;
 };
-type Surface = { id: string; cwd: string; title: string; exited: boolean };
+type Surface = { id: string; cwd: string; title: string; exited: boolean; tmuxSession?: string };
 type Tab = {
   id: string;
   tree: Node;
@@ -43,7 +50,11 @@ type Tab = {
   title?: string;
   zoom?: string;
   command?: string;
+  commandInShell?: boolean;
+  tmux?: boolean;
+  tmuxHideStatus?: boolean;
   favoriteId?: string;
+  files?: FilesState;
 };
 type NativeConfig = {
   version: string;
@@ -56,9 +67,13 @@ type NativeConfig = {
 };
 type NativeEvent = {
   type: string;
+  on?: boolean;
   id?: string;
   path?: string;
   title?: string;
+  body?: string;
+  event?: string;
+  agent?: string;
   value?: number;
   direction?: number;
   amount?: number;
@@ -68,6 +83,8 @@ type NativeEvent = {
   config?: NativeConfig;
   kind?: number;
   color?: string;
+  key?: string;
+  shift?: boolean;
 };
 const win = getCurrentWindow();
 const icons = {
@@ -84,27 +101,31 @@ const icons = {
   up: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
   go: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>',
+  more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>',
   close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   back: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10 3-5 5 5 5"/></svg>',
   file: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/></svg>',
+  snippet: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 8 4 4-4 4M12 17h7"/><rect x="2" y="3" width="20" height="18" rx="2"/></svg>',
   workspace: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
   star: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 6 2 7.5 2 7.5H4S6 15 6 9z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
   settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 3.1-.2-.1a1.7 1.7 0 0 0-1.8.1l-.2.1h-3.6l-.1-.2a1.7 1.7 0 0 0-1.5-1l-.3.1-3.1-1.8.1-.2a1.7 1.7 0 0 0-.1-1.8l-.1-.2v-3.6l.2-.1a1.7 1.7 0 0 0 1-1.5l-.1-.3 1.8-3.1.2.1a1.7 1.7 0 0 0 1.8-.1l.2-.1h3.6l.1.2a1.7 1.7 0 0 0 1.5 1l.3-.1 3.1 1.8-.1.2a1.7 1.7 0 0 0 .1 1.8l.1.2z"/></svg>',
 };
 const root = document.querySelector<HTMLDivElement>("#app")!;
-root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><span id="current">…</span></header>
+root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><span id="current">…</span><button id="bell-btn" class="icon-btn header-btn" title="待處理提示" aria-label="待處理提示">${icons.bell}<span id="bell-count" hidden></span></button><button id="files-toggle" class="icon-btn header-btn" title="檔案面板（⌘O／⌘0）" aria-label="檔案面板（⌘O／⌘0）" aria-pressed="false">${icons.folder}</button></header>
 <main><nav id="rail" aria-label="側欄">
 <button id="rail-workspace" class="rail-btn" title="工作區（⌘⇧B）" aria-label="工作區（⌘⇧B）">${icons.workspace}<span id="rail-exited" hidden></span></button>
 <button id="rail-favorites" class="rail-btn" title="收藏" aria-label="收藏">${icons.star}</button>
-<button id="rail-directories" class="rail-btn" title="目錄（⌘O）" aria-label="目錄（⌘O）">${icons.folder}</button>
+<button id="rail-snippets" class="rail-btn" title="指令片段（⌘⇧P）" aria-label="指令片段（⌘⇧P）">${icons.snippet}</button>
+<button id="rail-attention" class="rail-btn" title="待處理" aria-label="待處理">${icons.bell}<span id="rail-alert" hidden></span></button>
 <span class="rail-spacer"></span><button id="rail-settings" class="rail-btn" title="設定" aria-label="設定">${icons.settings}</button></nav>
 <section id="drawer-primary" aria-label="側欄面板"><div class="drawer-inner">
 <section id="panel-workspace" class="panel-content"><div class="drawer-heading"><strong>工作區</strong><button id="new" class="icon-btn" title="新增頁籤" aria-label="新增頁籤">${icons.plus}</button></div><div id="tabs" role="tree" aria-label="工作區"></div></section>
 <section id="panel-favorites" class="panel-content"><div class="drawer-heading"><strong>收藏</strong><button id="favorite-add" class="icon-btn" title="新增收藏" aria-label="新增收藏">${icons.plus}</button><button id="favorite-group-add" class="icon-btn" title="新增群組" aria-label="新增群組">${icons.folderPlus}</button></div><div id="favorite-add-options" class="inline-actions" hidden><button id="favorite-current-tab" class="ghost-btn wide-button"></button><button id="favorite-from-dir" class="ghost-btn wide-button">從目錄建立收藏…</button></div><div id="favorites"></div></section>
-<section id="panel-directories" class="panel-content"><div class="drawer-heading"><strong>目錄</strong><div class="segmented" role="group" aria-label="瀏覽模式"><button id="layout-tree" aria-label="目錄樹">樹</button><button id="layout-columns" aria-label="直欄">欄</button></div><button id="show-hidden" class="icon-btn" title="顯示隱藏檔" aria-label="顯示隱藏檔" aria-pressed="false">${icons.eye}</button></div><div class="directory-tools"><div class="path-row"><button id="up" class="icon-btn" title="上層" aria-label="上層">${icons.up}</button><input id="path" aria-label="目錄路徑" placeholder="支援 ~/目錄"><button id="go" class="icon-btn" title="前往" aria-label="前往">${icons.go}</button></div><div class="action-row"><button id="pick" class="ghost-btn">選擇資料夾…</button><button id="open" class="primary-btn">在此開啟終端機</button></div><nav id="breadcrumb" class="breadcrumb" aria-label="目前位置" hidden></nav></div><div id="directories"></div></section>
-<section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong>設定</strong></div><div class="settings-content"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn">開啟設定檔</button><button id="reload-config" class="ghost-btn">重新載入</button></div><h4>工作階段</h4><label class="toggle"><input id="session-enabled" type="checkbox">關閉 app 時記住開啟中的頁籤</label><h4>診斷</h4><pre id="config-diagnostics"></pre><h4>快捷鍵</h4><div class="shortcut-list"><kbd>⌘1～⌘0</kbd><span>切換頁籤</span><kbd>⌘⇧B</kbd><span>開合側欄</span><kbd>⌘O</kbd><span>目錄</span><kbd>⌘T</kbd><span>新頁籤</span><kbd>⌘D / ⌘⇧D</kbd><span>分割</span></div></div></section>
+<section id="panel-snippets" class="panel-content"><div class="drawer-heading"><strong>指令片段</strong><button id="snippet-add" class="icon-btn" title="新增片段" aria-label="新增片段">${icons.plus}</button></div><div id="snippet-list"></div></section>
+<section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong>設定</strong></div><div class="settings-content"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn">開啟設定檔</button><button id="reload-config" class="ghost-btn">重新載入</button></div><h4>Agent 提示（hook）</h4><p class="help">讓 Claude Code／Codex／Gemini 停下來等你時，直接通知 HiGhostty 並帶上等待的內容。安裝只會加入帶 hg-notify 標記的項目，原檔備份為 .highostty.bak，隨時可移除。</p><div id="hook-list"></div><h4>診斷</h4><pre id="config-diagnostics"></pre><h4>快捷鍵</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span>切換頁籤</span><kbd>⌘⇧B</kbd><span>開合側欄</span><kbd>⌘⇧P</kbd><span>指令片段面板</span><kbd>⌘O / ⌘0</kbd><span>檔案面板</span><kbd>⇧⌘F</kbd><span>檔案面板滿版</span><kbd>⌘T</kbd><span>新頁籤</span><kbd>⌘D / ⌘⇧D</kbd><span>分割</span></div></div></section>
 </div></section><section id="drawer-detail" aria-label="詳細內容"><div class="drawer-inner"></div></section>
-<section id="workspace"><div id="terminals" aria-label="原生 Ghostty 工作區"></div><div id="empty" hidden><p>選擇目錄，開始工作。</p><button id="first">開啟目錄</button></div></section></main>
+<section id="workspace"><div id="terminals" aria-label="原生 Ghostty 工作區"></div><div id="files-resizer" role="separator" aria-orientation="vertical" aria-label="調整檔案面板寬度" hidden></div><section id="files" aria-label="檔案" hidden></section><div id="empty" hidden><p>選擇目錄，開始工作。</p><button id="first">選擇資料夾…</button></div></section></main>
 <footer><span id="search-status"></span></footer>
 <dialog id="confirm"><h3>關閉終端機？</h3><p>以下工作仍在執行，確認後會終止相關程序。</p><pre id="processes"></pre><div class="actions"><button id="cancel-close">取消</button><button id="force-close" class="danger">終止並關閉</button></div></dialog>
 <dialog id="palette"><h3 id="palette-title">命令</h3><div id="palette-items"></div><div class="actions"><button id="close-palette">關閉</button></div></dialog>
@@ -114,6 +135,58 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
 const native = <T = Record<string, unknown>>(
   request: Record<string, unknown>,
 ) => invoke<T>("native", { request });
+const filesPanel = initFilesPanel({
+  native,
+  activeTab: () => active,
+  cwd: () => currentSurface()?.cwd,
+  home: () => homePath,
+  displayPath,
+  openTerminal: (path) => newSurface(path),
+  editInTerminal: async (directory, command) => {
+    if (active) await newSurface(directory, active.focused, 0, { command, commandInShell: true });
+  },
+  insertIntoTerminal: async (text) => {
+    if (!active) return;
+    await native({ op: "insert-text", id: active.focused, text });
+    if (!filesPanel.isFull()) await native({ op: "focus", id: active.focused });
+  },
+  focusTerminal: () => { if (active && !filesPanel.isFull()) native({ op: "focus", id: active.focused }).catch(notify); },
+  layoutChanged: scheduleLayout,
+  notify,
+  icons,
+});
+const snippets = initSnippets({
+  native,
+  cwd: () => currentSurface()?.cwd,
+  home: () => homePath,
+  insertIntoTerminal: async (text) => {
+    if (!active) return;
+    await native({ op: "insert-text", id: active.focused, text });
+    await native({ op: "focus", id: active.focused });
+  },
+  focusTerminal: () => { if (active && !filesPanel.isFull()) native({ op: "focus", id: active.focused }).catch(notify); },
+  editInDrawer: (snippetId, scope, text) => {
+    if (!drawerState.panel) setPanel("snippets");
+    showRootDetail({ kind: "edit-snippet", snippetId, scope, text });
+  },
+  notify,
+  canInsert: () => !!active && !filesPanel.isFull(),
+});
+// 與 snippets 共用單一 overlay-cutout，兩個浮層不可同時開著。
+const attentionDrop = initAttentionDrop({
+  native,
+  focusTerminal: () => { if (active && !filesPanel.isFull()) native({ op: "focus", id: active.focused }).catch(notify); },
+  notify,
+  render: () => renderAttention(),
+  clearAll: () => setAttention(emptyAttention),
+  closeIcon: icons.close,
+});
+function toggleAttention() {
+  if (attentionDrop.isOpen()) { attentionDrop.close(); return; }
+  snippets.close(false);
+  lastAttentionSig = undefined;
+  attentionDrop.open().catch(notify);
+}
 let tabs: Tab[] = [],
   active: Tab | undefined,
   surfaces = new Map<string, Surface>(),
@@ -121,24 +194,15 @@ let tabs: Tab[] = [],
   favoritesRevision = 0,
   recentFavoriteInstances = new Map<string, string>(),
   folders: FavoriteFolder[] = [],
-  browsePath = "",
-  browseRoot = "",
-  columns: string[] = [],
-  generation = 0,
   editing: string | undefined;
 let drawerState: DrawerState = { panel: null, lastPanel: "workspace", detailStack: [] };
 let focusEditorOnRender = false;
 let renderedDetail: Detail | undefined;
-let directoryLayout: "tree" | "columns" = "tree",
-  showHidden = false,
-  homePath = "";
+let homePath = "";
 let collapsedWorkspaceGroups = new Set<string>(),
   draggingTabId: string | undefined,
   draggingFavoriteId: string | undefined,
   groupExpandTimer: ReturnType<typeof setTimeout> | undefined,
-  sessionKey = (window as unknown as { __HIGHOSTTY_SESSION_KEY__?: string }).__HIGHOSTTY_SESSION_KEY__ || "main",
-  sessionEnabled = true,
-  persistTimer: ReturnType<typeof setTimeout> | undefined,
   restoring = false;
 let config: NativeConfig | undefined,
   closeAction: (() => Promise<void>) | undefined,
@@ -147,9 +211,7 @@ let config: NativeConfig | undefined,
   initialized = false,
   closedHistory: { paths: string[]; title?: string }[] = [],
   redoHistory: typeof closedHistory = [],
-  closing = false,
-  closingForQuit = false,
-  closingForWindow = false;
+  closing = false;
 const pendingEvents = new Map<string, NativeEvent[]>();
 let opening = 0;
 let eventQueue = Promise.resolve();
@@ -172,11 +234,6 @@ function action(id: string, fn: () => unknown) {
 }
 function name(path: string) {
   return path.split("/").filter(Boolean).at(-1) || "/";
-}
-function parent(path: string) {
-  const trimmed = path.replace(/\/+$/, "");
-  const i = trimmed.lastIndexOf("/");
-  return i <= 0 ? "/" : trimmed.slice(0, i);
 }
 function button(label: string, fn: () => unknown, title?: string) {
   const b = document.createElement("button");
@@ -202,8 +259,7 @@ function tabFolder(tab: Tab) {
 }
 // Screen order: ungrouped tabs first, then tabs grouped by their favorite's group.
 function orderedTabs(): Tab[] {
-  const keyed = tabs.map((tab) => ({ id: tab.id, groupId: tabFolder(tab)?.id, tab }));
-  return orderGroupedItems(keyed, folders.map((folder) => folder.id)).map((item) => item.tab);
+  return orderTabsByFavorites(tabs, favorites, folders.map((folder) => folder.id));
 }
 function folderFavorites(folderId?: string) {
   return favorites.filter((item) => item.groupId === folderId);
@@ -219,7 +275,7 @@ function renderDrawer() {
   secondary.style.width = detail() ? "256px" : "0px";
   primary.dataset.open = String(!!panel);
   secondary.dataset.open = String(!!detail());
-  for (const item of ["workspace", "favorites", "directories", "settings"] as Panel[]) {
+  for (const item of ["workspace", "favorites", "snippets", "settings"] as Panel[]) {
     $("panel-" + item).hidden = panel !== item;
     $("rail-" + item).classList.toggle("active", panel === item);
     $("rail-" + item).setAttribute("aria-pressed", String(panel === item));
@@ -229,8 +285,22 @@ function renderDrawer() {
   // Only rebuild the second drawer when its content changed, so resizing or
   // reopening panels never wipes an editor's unsaved input.
   if (renderedDetail !== detail()) renderDetail();
+  refreshSnippetList();
+  renderAttention();
   syncSelection();
   scheduleLayout();
+}
+// A snippet changed elsewhere: rebuild the editor only when it shows a vanished snippet.
+function renderDetailIfSnippet() {
+  const top = detail();
+  if (top?.kind === "edit-snippet" && top.snippetId && !snippets.store.get(top.snippetId)) backDetail();
+}
+function refreshSnippetList() {
+  if (drawerState.panel !== "snippets") return;
+  // Rebuilding would drop the search box's focus while typing.
+  if (document.activeElement instanceof HTMLInputElement && document.activeElement.classList.contains("snippet-search")) return;
+  const top = detail();
+  snippets.renderList($("snippet-list"), top?.kind === "edit-snippet" ? top.snippetId : undefined);
 }
 // Keep list highlights in step with the second drawer without rebuilding
 // the lists (rebuilding would drop an in-progress inline rename).
@@ -243,13 +313,12 @@ function syncSelection() {
   for (const row of document.querySelectorAll<HTMLElement>(".favorite-row"))
     row.classList.toggle("selected", stack.some((item) => item.kind === "edit-favorite" && item.favoriteId === row.dataset.favoriteId));
 }
-function setPanel(panel: Panel) { drawerState = openPanel(drawerState, panel); localStorage.setItem("drawer-panel", panel); renderDrawer(); scheduleSessionSave(); }
-function toggleDrawerPanel(panel: Panel) { drawerState = togglePanel(drawerState, panel); if (drawerState.panel) localStorage.setItem("drawer-panel", drawerState.panel); renderDrawer(); if (!drawerState.panel && active) native({ op: "focus", id: active.focused }).catch(notify); scheduleSessionSave(); }
-function closeDrawers() { drawerState = closeAll(drawerState); renderDrawer(); scheduleSessionSave(); if (active) native({ op: "focus", id: active.focused }).catch(notify); }
+function setPanel(panel: Panel) { drawerState = openPanel(drawerState, panel); localStorage.setItem("drawer-panel", panel); renderDrawer(); }
+function toggleDrawerPanel(panel: Panel) { drawerState = togglePanel(drawerState, panel); if (drawerState.panel) localStorage.setItem("drawer-panel", drawerState.panel); renderDrawer(); if (!drawerState.panel && active) native({ op: "focus", id: active.focused }).catch(notify); }
+function closeDrawers() { drawerState = closeAll(drawerState); renderDrawer(); if (active) native({ op: "focus", id: active.focused }).catch(notify); }
 function showDetail(value: Detail, replace = false) { drawerState = replace ? replaceDetail(drawerState, value) : pushDetail(drawerState, value); focusEditorOnRender = value.kind.startsWith("edit-"); renderDrawer(); }
 function showRootDetail(value: Detail) { drawerState = { ...drawerState, detailStack: [value] }; focusEditorOnRender = value.kind.startsWith("edit-"); renderDrawer(); }
 function backDetail() {
-  if (detail()?.kind === "dir-column") { columnBack().catch(notify); return; }
   drawerState = popDetail(drawerState); renderDrawer();
   if (active) native({ op: "focus", id: active.focused }).catch(notify);
 }
@@ -272,23 +341,7 @@ function renderDetail() {
   const enterSaves = (save: HTMLButtonElement, ...inputs: (HTMLInputElement | undefined)[]) => {
     for (const input of inputs) if (input) input.onkeydown = (event) => { if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); if (!save.disabled) save.click(); } };
   };
-  if (current.kind === "dir-column") {
-    const title = document.createElement("strong"); title.textContent = name(current.path); title.title = current.path;
-    const open = button("在此開啟", () => newSurface(current.path), "在此開啟終端機"); open.className = "primary-btn small-btn";
-    heading.append(title, open); host.append(heading);
-    void invoke<Directory[]>("directories", { path: current.path, showHidden }).then((entries) => {
-      if (detail() !== current) return;
-      for (const entry of entries) {
-        const row = document.createElement("div"); row.className = "row directory-detail-row" + (entry.is_dir ? "" : " is-file");
-        const icon = document.createElement("span"); icon.className = "directory-kind"; icon.innerHTML = entry.is_dir ? icons.folder : icons.file;
-        const label = button(entry.name, () => entry.is_dir && openColumn(columns.length - 1, entry.path), entry.path); label.className = "row-label"; label.disabled = !entry.is_dir;
-        row.append(icon, label);
-        if (entry.is_dir && entry.has_children) { const chevron = document.createElement("span"); chevron.className = "row-chevron"; chevron.innerHTML = icons.chevron; row.append(chevron); }
-        host.append(row);
-      }
-      if (!entries.length) host.append(help("此目錄沒有項目"));
-    }).catch((error) => host.append(help(String(error))));
-  } else if (current.kind === "group") {
+  if (current.kind === "group") {
     const folder = folders.find((item) => item.id === current.groupId);
     if (!folder) { backDetail(); return; }
     const items = folderFavorites(folder.id);
@@ -316,9 +369,19 @@ function renderDetail() {
     host.append(formCaption("啟動"));
     const command = document.createElement("input"); command.id = "tab-command-value"; command.className = "mono"; command.value = tab.command || ""; command.placeholder = "留空以開啟一般 shell"; command.setAttribute("aria-label", "啟動命令");
     host.append(labeled("啟動命令", command), help("只在這個頁籤的主要終端機啟動時執行。修改後於下次開啟（重啟 app 或從收藏開啟）生效。"));
+    const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = !!tab.commandInShell; commandInShell.disabled = !command.value.trim();
+    const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode("先載入 shell 再執行"));
+    host.append(commandInShellLabel, help("沿用 Ghostty 設定的互動 shell；命令結束後保留 shell。"));
+    host.append(formCaption("背景執行"));
+    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!tab.tmux;
+    const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode("使用 tmux"));
+    host.append(tmuxLabel, help("關閉 app 後終端機仍在背景執行，下次啟動會自動恢復此頁籤並接回 tmux session。每個分割各用一個 session；手動關閉頁籤會一併結束 session。需先安裝 tmux，修改後於下次開啟頁籤生效。"));
+    const tmuxStatus = document.createElement("input"); tmuxStatus.type = "checkbox"; tmuxStatus.checked = !!tab.tmuxHideStatus; tmuxStatus.disabled = !tmuxBox.checked;
+    const tmuxStatusLabel = document.createElement("label"); tmuxStatusLabel.className = "toggle"; tmuxStatusLabel.append(tmuxStatus, document.createTextNode("隱藏 tmux 狀態列"));
+    host.append(tmuxStatusLabel, help("隱藏終端機底部的 tmux 綠色狀態列；儲存後立即套用。"));
     host.append(formCaption("內容"));
     for (const [index, id] of leaves(tab.tree).entries()) host.append(summaryItem(`分割 ${index + 1}${index === 0 ? " · 主要" : ""}`, surfaces.get(id)?.cwd || ""));
-    const apply = () => { tab.title = title.value.trim() || undefined; tab.command = command.value.trim() || undefined; };
+    const apply = () => { tab.title = title.value.trim() || undefined; tab.command = command.value.trim() || undefined; tab.commandInShell = tab.command ? commandInShell.checked : undefined; tab.tmux = tmuxBox.checked || undefined; tab.tmuxHideStatus = tab.tmux && tmuxStatus.checked || undefined; for (const id of leaves(tab.tree)) { const session = surfaces.get(id)?.tmuxSession; if (session && original.tmuxHideStatus !== !!tab.tmuxHideStatus) invoke("tmux_set_status", { name: session, visible: !tab.tmuxHideStatus }).catch(() => {}); } original.tmuxHideStatus = !!tab.tmuxHideStatus; };
     host.append(formCaption("收藏"));
     const favorite = favoriteFor(tab);
     host.append(help(favorite
@@ -333,12 +396,15 @@ function renderDetail() {
     }
     host.append(formCaption("危險操作"));
     const close = button("關閉頁籤", () => requestClose(leaves(tab.tree), (force) => closeTab(tab, force))); close.className = "danger-btn wide-button"; host.append(close);
-    const original = { title: tab.title || "", command: tab.command || "" };
+    const original = { title: tab.title || "", command: tab.command || "", commandInShell: !!tab.commandInShell, tmux: !!tab.tmux, tmuxHideStatus: !!tab.tmuxHideStatus };
     const save = button("儲存", () => { apply(); renderTabs(); backDetail(); });
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = title.value === original.title && command.value === original.command; };
+    const updateDirty = () => { save.disabled = title.value === original.title && command.value === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && tmuxStatus.checked === original.tmuxHideStatus; };
     title.oninput = () => { objectName.textContent = title.value.trim() || name(cwd); updateDirty(); };
-    command.oninput = updateDirty;
+    command.oninput = () => { commandInShell.disabled = !command.value.trim(); if (commandInShell.disabled) commandInShell.checked = false; updateDirty(); };
+    commandInShell.onchange = updateDirty;
+    tmuxBox.onchange = () => { tmuxStatus.disabled = !tmuxBox.checked; updateDirty(); };
+    tmuxStatus.onchange = updateDirty;
     enterSaves(save, title, command);
     updateDirty();
     if (shouldFocusEditor) requestAnimationFrame(() => { title.focus(); title.select(); });
@@ -382,7 +448,7 @@ function renderDetail() {
     if (current.tabId && !item && !sourceTab) { backDetail(); return; }
     const draft = editorDrafts.get(current) || {};
     const sourcePath = sourceTab ? surfaces.get(sourceTab.focused)?.cwd || "/" : "";
-    const defaultPath = item ? item.tab.paths[0] || "" : sourceTab ? sourcePath : currentSurface()?.cwd || browsePath;
+    const defaultPath = item ? item.tab.paths[0] || "" : sourceTab ? sourcePath : currentSurface()?.cwd || homePath;
     const defaultName = item?.name || (sourceTab ? sourceTab.title || name(sourcePath) : name(defaultPath || "/"));
     const objectName = editorIntro(host, heading, item ? "編輯收藏" : sourceTab ? "收藏頁籤" : "新增收藏", draft.name || defaultName, item ? "頁籤收藏" : sourceTab ? "存下目前頁籤的目錄、分割與啟動命令" : "從目錄建立收藏");
     host.append(formCaption("基本"));
@@ -391,6 +457,12 @@ function renderDetail() {
     groupSelect.add(new Option("未分組", "")); for (const folder of folders) groupSelect.add(new Option(folder.name, folder.id)); groupSelect.add(new Option("＋ 新群組…", "__new__"));
     groupSelect.value = draft.groupId ?? item?.groupId ?? current.groupId ?? "";
     host.append(labeled("群組", groupSelect));
+    const savedCommand = item?.tab.command ?? sourceTab?.command ?? "";
+    const command = document.createElement("input"); command.id = "favorite-command"; command.className = "mono"; command.value = draft.command ?? savedCommand; command.placeholder = "留空以開啟一般 shell"; command.setAttribute("aria-label", "啟動命令");
+    host.append(formCaption("啟動"), labeled("啟動命令", command), help("收藏開啟時於主要終端機執行。"));
+    const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = draft.commandInShell ?? (item?.tab.commandInShell ?? sourceTab?.commandInShell ?? false); commandInShell.disabled = !command.value.trim();
+    const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode("先載入 shell 再執行"));
+    host.append(commandInShellLabel, help("沿用 Ghostty 設定的互動 shell；命令結束後保留 shell。"));
     let path: HTMLInputElement | undefined;
     if (!sourceTab) {
       host.append(formCaption("目錄"));
@@ -402,9 +474,16 @@ function renderDetail() {
       if (item) host.append(help("只修改主要終端機的目錄；分割布局維持原樣。"));
       const error = document.createElement("p"); error.id = "favorite-path-error"; error.className = "field-error"; error.hidden = true; host.append(error);
     }
+    const updateSummaryForFavorite = () => {
+      if (!(item || sourceTab)) return;
+      const count = item?.tab.paths.length ?? leaves(sourceTab!.tree).length;
+      const summary = host.querySelector(".summary-detail");
+      if (summary) summary.textContent = [item?.tab.paths[0] || sourcePath, count > 1 ? `${count} 分割` : "", command.value.trim() ? `⌘ ${command.value.trim()}${commandInShell.checked ? "（shell）" : ""}` : ""].filter(Boolean).join(" · ");
+    };
     if (item || sourceTab) {
       host.append(formCaption("內容"));
-      host.append(savedTabSummary(item ? item.tab : savedTab(sourceTab!), item ? undefined : "目前頁籤"));
+      const contentSummary = savedTabSummary(item ? item.tab : savedTab(sourceTab!), item ? undefined : "目前頁籤");
+      host.append(contentSummary);
     }
     if (item) {
       host.append(formCaption("開啟"));
@@ -414,25 +493,43 @@ function renderDetail() {
       host.append(formCaption("危險操作"), help("移除收藏不會關閉已開啟的頁籤。"));
       const remove = button("移除收藏", () => { if (confirmTwice(remove)) return removeFavorite(item); }); remove.className = "danger-btn wide-button"; host.append(remove);
     }
-    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "" };
-    const save = button(item ? "儲存" : "收藏", () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path));
+    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell };
+    const save = button(item ? "儲存" : "收藏", () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, command.value.trim(), commandInShell.checked));
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId); };
+    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell); };
     alias.oninput = () => { objectName.textContent = alias.value.trim() || defaultName; updateDirty(); };
     path?.addEventListener("input", updateDirty);
+    command.addEventListener("input", () => { commandInShell.disabled = !command.value.trim(); if (commandInShell.disabled) commandInShell.checked = false; updateSummaryForFavorite(); updateDirty(); });
+    commandInShell.addEventListener("change", () => { updateSummaryForFavorite(); updateDirty(); });
     groupSelect.onchange = () => {
       updateDirty();
       if (groupSelect.value !== "__new__") return;
       // Keep what was typed while the new-group editor is on top.
-      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "" });
+      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked });
       createFolder();
     };
-    enterSaves(save, alias, path);
+    enterSaves(save, alias, path, command);
     updateDirty();
     if (shouldFocusEditor) requestAnimationFrame(() => { alias.focus(); alias.select(); });
+  } else if (current.kind === "edit-snippet") {
+    const item = current.snippetId ? snippets.store.get(current.snippetId) : undefined;
+    if (current.snippetId && !item) { backDetail(); return; }
+    const objectName = editorIntro(host, heading, item ? "編輯片段" : "新增片段", item?.name || "新片段", item ? "指令片段" : "存下常用的指令或文字");
+    const form = snippets.createForm(item, { scope: current.scope, text: current.text });
+    host.append(form.element);
+    if (item) {
+      host.append(formCaption("危險操作"));
+      const remove = button("刪除片段", () => { if (confirmTwice(remove)) return snippets.store.remove(item.id).then(backDetail); }); remove.className = "danger-btn wide-button"; host.append(remove);
+    }
+    const save = button(item ? "儲存" : "新增", async () => { await snippets.store.save(await form.read(), item?.id); backDetail(); });
+    editorFooter(host, save);
+    const update = () => { save.disabled = !form.valid() || !form.dirty(); };
+    form.onChange(update);
+    update();
+    if (shouldFocusEditor) requestAnimationFrame(() => form.focus());
   }
 }
-const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string }>();
+const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean }>();
 const swatchColors = ["#77dfc0", "#7cc4ff", "#b59cff", "#ff9ecf", "#ff8f7a", "#f5c46b", "#a6d86e", "#9aa6b8"];
 function editorIntro(host: HTMLElement, heading: HTMLElement, pageTitle: string, objectName: string, subtitle: string) {
   heading.append(Object.assign(document.createElement("strong"), { textContent: pageTitle, className: "page-title" }));
@@ -458,7 +555,7 @@ function summaryItem(title: string, detailText: string) {
   item.append(strong, sub); return item;
 }
 function savedTabSummary(tab: SavedTab, title?: string) {
-  const parts = [tab.paths[0] || "", tab.paths.length > 1 ? `${tab.paths.length} 分割` : "", tab.command ? `⌘ ${tab.command}` : ""].filter(Boolean);
+  const parts = [tab.paths[0] || "", tab.paths.length > 1 ? `${tab.paths.length} 分割` : "", tab.command ? `⌘ ${tab.command}${tab.commandInShell ? "（shell）" : ""}` : ""].filter(Boolean);
   return summaryItem(title || tab.title || name(tab.paths[0] || "/"), parts.join(" · "));
 }
 async function closeAfterOpen() {
@@ -498,11 +595,145 @@ async function persistFavorites(nextFavorites: WorkspaceFavorite[], nextFolders:
     throw error;
   }
 }
-function savedTab(tab: Tab): SavedTab {
+function savedTab(tab: Tab, sessions = false): SavedTab {
   const ids = leaves(tab.tree);
-  return { paths: ids.map((id) => surfaces.get(id)?.cwd || ""), tree: savedTree(tab.tree, ids), focused: Math.max(0, ids.indexOf(tab.focused)), title: tab.title, command: tab.command, favoriteId: tab.favoriteId };
+  return { tmux: tab.tmux, tmuxHideStatus: tab.tmuxHideStatus, tmuxSessions: sessions && tab.tmux ? ids.map((id) => surfaces.get(id)?.tmuxSession) : undefined, paths: ids.map((id) => surfaces.get(id)?.cwd || ""), tree: savedTree(tab.tree, ids), focused: Math.max(0, ids.indexOf(tab.focused)), title: tab.title, command: tab.command, commandInShell: tab.commandInShell, favoriteId: tab.favoriteId, files: tab.files?.open ? { open: true, full: tab.files.full } : undefined };
+}
+// ── Attention: bell / notification / agent waiting ──────────────────────────
+let attention: AttentionState = emptyAttention;
+const idleTracks = new Map<string, IdleTrack>();
+const screens = new Map<string, { text: string; agent: string }>();
+const viewing = (id: string) => !!active && document.hasFocus() && tabFor(id) === active;
+function setAttention(next: AttentionState) {
+  if (next === attention) return;
+  attention = next;
+  renderAttention();
+  renderTabs();
+}
+function raiseAlert(id: string, source: "hook" | "signal" | "idle", title: string, body: string, screen?: string) {
+  if (viewing(id)) return;
+  setAttention(raise(attention, { surfaceId: id, source, title, body, since: Date.now(), screen }));
+  if (screen === undefined) captureScreen(id).catch(() => {});
+}
+// Freeze what the terminal shows right now into the alert, for the bell panel.
+async function captureScreen(id: string) {
+  const result = await native<{ screens?: Record<string, { text: string; agent: string }> }>({ op: "scan", ids: [id] });
+  const text = result.screens?.[id]?.text;
+  if (text === undefined) return;
+  screens.set(id, result.screens![id]);
+  setAttention(attachScreen(attention, id, snapshot(text)));
+}
+function clearViewed() {
+  if (!active || !document.hasFocus()) return;
+  let next = attention;
+  for (const id of leaves(active.tree)) next = clear(next, id);
+  setAttention(next);
+}
+function alertLabel(id: string) {
+  const tab = tabFor(id);
+  return tab?.title || name(surfaces.get(id)?.cwd || "/");
+}
+function ago(since: number) {
+  const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
+  return seconds < 60 ? `${seconds} 秒前` : seconds < 3600 ? `${Math.round(seconds / 60)} 分鐘前` : `${Math.round(seconds / 3600)} 小時前`;
+}
+type HookStatus = { id: string; name: string; file: string; installed: boolean; error?: string };
+async function renderHooks() {
+  const host = $("hook-list");
+  let list: HookStatus[];
+  try { list = await invoke<HookStatus[]>("hook_status"); } catch (error) { host.textContent = String(error); return; }
+  host.replaceChildren();
+  for (const item of list) {
+    const row = document.createElement("div"); row.className = "hook-row";
+    const text = document.createElement("div"); text.className = "hook-text";
+    const title = document.createElement("strong"); title.textContent = item.name;
+    const meta = document.createElement("span"); meta.className = "alert-meta";
+    meta.textContent = item.error ? `無法使用：${item.error}` : `${item.installed ? "已安裝" : "未安裝"} · ${item.file.replace(homePath, "~")}`;
+    text.append(title, meta);
+    const action = button(item.installed ? "移除" : "安裝", async () => {
+      try { await invoke(item.installed ? "hook_remove" : "hook_install", { agent: item.id }); } catch (error) { notify(error); }
+      renderHooks();
+    });
+    action.className = "ghost-btn"; action.disabled = !!item.error && !item.installed;
+    row.append(text, action); host.append(row);
+  }
+}
+let lastAttentionSig: string | undefined;
+function renderAttention() {
+  const count = unreadCount(attention);
+  for (const id of ["bell-count", "rail-alert"]) {
+    const el = $(id); el.hidden = count === 0; if (id === "bell-count") el.textContent = badgeText(count);
+  }
+  $("bell-btn").classList.toggle("has-alert", count > 0);
+  if (!attentionDrop.isOpen()) { lastAttentionSig = undefined; return; }
+  const list = attentionDrop.list;
+  const alerts = sorted(attention);
+  const bodies = new Map<string, string>();
+  for (const alert of alerts) {
+    const live = screens.get(alert.surfaceId)?.text;
+    const shown = alert.screen || (live ? snapshot(live) : "");
+    // Hook/notification message first, then the captured screen it refers to.
+    bodies.set(alert.surfaceId, [alert.body && !shown.includes(alert.body) ? alert.body : "", shown].filter(Boolean).join("\n\n"));
+  }
+  const metaOf = (alert: (typeof alerts)[number]) => [alert.source === "idle" ? "可能在等待輸入" : alert.title, alert.count > 1 ? `×${alert.count}` : "", screens.get(alert.surfaceId)?.agent, ago(alert.since)].filter(Boolean).join(" · ");
+  const sig = JSON.stringify(alerts.map((alert) => [alert.surfaceId, alert.source, alertLabel(alert.surfaceId), alert.title, alert.count, screens.get(alert.surfaceId)?.agent, bodies.get(alert.surfaceId)]));
+  const hadCards = lastAttentionSig !== undefined && lastAttentionSig !== "[]";
+  // Same content: only refresh the relative times, so scroll positions and focus survive the 1.5s scan.
+  if (sig === lastAttentionSig) {
+    for (const alert of alerts) { const el = list.querySelector<HTMLElement>(`.alert-card[data-surface="${CSS.escape(alert.surfaceId)}"] .alert-meta`); if (el) el.textContent = metaOf(alert); }
+    return;
+  }
+  lastAttentionSig = sig;
+  // Dismissed the last card: nothing left to show, so close instead of leaving an empty shell.
+  if (!count && hadCards) { attentionDrop.close(); return; }
+  const listTop = list.scrollTop;
+  const bodyTops = new Map<string, number>();
+  for (const card of list.querySelectorAll<HTMLElement>(".alert-card")) bodyTops.set(card.dataset.surface || "", card.querySelector(".alert-body")?.scrollTop ?? 0);
+  list.replaceChildren();
+  if (!count) { list.append(help("沒有待處理的提示")); attentionDrop.afterRender(); return; }
+  for (const alert of alerts) {
+    const card = document.createElement("div"); card.className = "alert-card"; card.dataset.source = alert.source; card.dataset.surface = alert.surfaceId;
+    const head = document.createElement("div"); head.className = "alert-head";
+    const name_ = document.createElement("strong"); name_.textContent = alertLabel(alert.surfaceId);
+    const meta = document.createElement("span"); meta.className = "alert-meta";
+    meta.textContent = metaOf(alert);
+    head.append(name_, meta);
+    const pre = document.createElement("pre"); pre.className = "alert-body";
+    pre.textContent = bodies.get(alert.surfaceId) || "";
+    const actions = document.createElement("div"); actions.className = "alert-actions";
+    actions.append(
+      button("前往", () => { attentionDrop.close(false); const tab = tabFor(alert.surfaceId); if (tab) { tab.focused = alert.surfaceId; activate(tab).catch(notify); } }),
+      button("忽略", () => setAttention(clear(attention, alert.surfaceId))),
+    );
+    for (const b of actions.querySelectorAll("button")) b.className = "ghost-btn";
+    actions.children[0].setAttribute("data-act", "go"); actions.children[1].setAttribute("data-act", "dismiss");
+    card.append(head);
+    if (pre.textContent) card.append(pre);
+    card.append(actions); list.append(card);
+    if (pre.textContent) pre.scrollTop = bodyTops.get(alert.surfaceId) ?? 0;
+  }
+  list.scrollTop = listTop;
+  attentionDrop.afterRender();
+}
+async function scanAttention() {
+  const ids = [...surfaces.values()].filter((surface) => !surface.exited && !viewing(surface.id)).map((surface) => surface.id);
+  setAttention(prune(attention, (id) => surfaces.has(id)));
+  if (!ids.length) return;
+  const result = await native<{ screens?: Record<string, { text: string; agent: string }> }>({ op: "scan", ids });
+  const now = Date.now();
+  for (const [id, screen] of Object.entries(result.screens || {})) {
+    screens.set(id, screen);
+    if (!screen.agent) { idleTracks.delete(id); setAttention(clearSource(attention, id, "idle")); continue; }
+    const step = idleStep(idleTracks.get(id), screen.text, now);
+    idleTracks.set(id, step.track);
+    if (step.waiting) raiseAlert(id, "idle", "可能在等待輸入", "", snapshot(screen.text));
+    else if (step.track.since === now) setAttention(clearSource(attention, id, "idle"));
+  }
+  for (const id of [...screens.keys()]) if (!surfaces.has(id)) { screens.delete(id); idleTracks.delete(id); }
+  renderAttention();
 }
 function renderTabs() {
+  scheduleSessionSave();
   const arranged = orderedTabs();
   const list = $("tabs");
   list.replaceChildren();
@@ -510,14 +741,18 @@ function renderTabs() {
   const loose = arranged.filter((tab) => !tabFolder(tab));
   const ungrouped = document.createElement("section"); ungrouped.className = "tab-block";
   ungrouped.append(caption("未分組"));
-  for (const tab of loose) appendTabRow(ungrouped, tab);
+  // ⌘1～⌘9 follow on-screen order; show the hint on the first nine rows.
+  const hotkey = (tab: Tab) => { const index = arranged.indexOf(tab); return index >= 0 && index < 9 ? index + 1 : undefined; };
+  for (const tab of loose) appendTabRow(ungrouped, tab, undefined, hotkey(tab));
   if (!loose.length) ungrouped.append(help("沒有未分組的頁籤"));
   list.append(ungrouped);
-  const grouped = folders.map((folder) => ({ folder, items: arranged.filter((tab) => tabFolder(tab) === folder) })).filter((entry) => entry.items.length);
-  if (grouped.length) {
+  if (folders.length) {
     list.append(Object.assign(document.createElement("div"), { className: "section-divider" }));
-    for (const { folder, items } of grouped) {
+    for (const folder of folders) {
+      const items = folderFavorites(folder.id);
+      const openTabs = arranged.filter((tab) => tabFolder(tab)?.id === folder.id);
       const block = document.createElement("section"); block.className = "tab-block grouped"; block.style.setProperty("--group-color", folder.color);
+      block.dataset.groupId = folder.id;
       // Parent row: the group; its tabs sit indented underneath and can be collapsed.
       const collapsed = collapsedWorkspaceGroups.has(folder.id);
       const heading = button("", () => {
@@ -531,10 +766,16 @@ function renderTabs() {
       const dot = document.createElement("span"); dot.className = "group-dot";
       const label = document.createElement("span"); label.className = "group-heading-name"; label.textContent = folder.name;
       const count = document.createElement("span"); count.className = "badge"; count.textContent = String(items.length);
-      const activeMark = document.createElement("span"); activeMark.className = "active-mark"; activeMark.title = "目前頁籤在此群組"; activeMark.hidden = !collapsed || !items.includes(active!);
+      const activeMark = document.createElement("span"); activeMark.className = "active-mark"; activeMark.title = "目前頁籤在此群組"; activeMark.hidden = !collapsed || !openTabs.includes(active!);
       heading.append(chevron, dot, label, count, activeMark);
       const children = document.createElement("div"); children.className = "group-children"; children.hidden = collapsed;
-      for (const tab of items) appendTabRow(children, tab, folder);
+      // Favorite order is the only order: opening a terminal changes a row's look, never its place.
+      for (const favorite of items) {
+        const instances = openTabs.filter((tab) => tab.favoriteId === favorite.id);
+        for (const tab of instances) appendTabRow(children, tab, folder, hotkey(tab));
+        if (!instances.length) appendWorkspaceFavoriteRow(children, favorite, folder);
+      }
+      if (!items.length) children.append(help("此分類沒有收藏"));
       block.append(heading, children);
       list.append(block);
     }
@@ -545,7 +786,6 @@ function renderTabs() {
   const top = detail();
   if (top?.kind === "edit-tab" && !tabs.some((tab) => tab.id === top.tabId)) renderDetail();
   renderFavorites();
-  scheduleSessionSave();
 }
 // Reorder only within the same block: a tab's block comes from its favorite's
 // group, so dragging cannot change it.
@@ -560,7 +800,36 @@ function moveTab(movingId: string, beforeId?: string) {
   } else rest.splice(index, 0, moving);
   tabs = rest;
 }
-function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder) {
+// Rows inside a group (open tab or not-yet-opened favorite) reorder the
+// favorites themselves, so the order is the same whether or not a terminal is open.
+let draggingGroupFavoriteId: string | undefined;
+function wireGroupRowDrag(row: HTMLElement, favoriteId: string, folder: FavoriteFolder) {
+  const type = "text/highostty-wsrow";
+  row.draggable = true;
+  const sameGroup = () => !!draggingGroupFavoriteId && draggingGroupFavoriteId !== favoriteId && favorites.find((item) => item.id === draggingGroupFavoriteId)?.groupId === folder.id;
+  const lowerHalf = (event: DragEvent) => event.clientY - row.getBoundingClientRect().top >= row.clientHeight / 2;
+  row.ondragstart = (event) => { if (event.dataTransfer) { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData(type, favoriteId); } draggingGroupFavoriteId = favoriteId; row.classList.add("dragging"); };
+  row.ondragend = () => { draggingGroupFavoriteId = undefined; row.classList.remove("dragging"); };
+  row.ondragover = (event) => {
+    if (!event.dataTransfer?.types.includes(type) || !sameGroup()) return;
+    event.preventDefault();
+    const after = lowerHalf(event);
+    row.classList.toggle("drop-before", !after);
+    row.classList.toggle("drop-after", after);
+  };
+  row.ondragleave = (event) => { if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return; row.classList.remove("drop-before", "drop-after"); };
+  row.ondrop = (event) => {
+    row.classList.remove("drop-before", "drop-after");
+    if (!sameGroup()) return;
+    event.preventDefault(); event.stopPropagation();
+    const moving = draggingGroupFavoriteId!;
+    const siblings = folderFavorites(folder.id).filter((item) => item.id !== moving);
+    const target = siblings.findIndex((item) => item.id === favoriteId);
+    const next = lowerHalf(event) ? siblings[target + 1] : siblings[target];
+    persistFavorites(moveGroupedItem(favorites, moving, folder.id, next?.id)).then(renderTabs).catch(notify);
+  };
+}
+function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, hotkey?: number) {
   const ids = leaves(tab.tree), surface = surfaces.get(tab.focused);
   const top = detail();
   const editingThis = top?.kind === "edit-tab" && top.tabId === tab.id;
@@ -590,14 +859,46 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder) {
     moveTab(moving, next?.id);
     renderTabs();
   };
+  if (folder && tab.favoriteId) wireGroupRowDrag(row, tab.favoriteId, folder);
+  const alert = ids.map((id) => attention.get(id)).find(Boolean);
+  if (alert) { row.classList.add("has-alert"); row.dataset.alert = alert.source === "idle" ? "maybe" : "yes"; }
   const state = document.createElement("span"); state.className = "status-dot"; state.classList.toggle("exited", ids.every((id) => surfaces.get(id)?.exited));
+  state.title = ids.every((id) => surfaces.get(id)?.exited) ? "終端機已結束" : "終端機已開啟";
   const label = button(tab.title || name(surface?.cwd || "/"), () => activate(tab), surface?.cwd); label.className = "row-label"; label.ondblclick = () => inlineRename(tab, label);
   row.append(state, label);
-  if (ids.length > 1) { const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = String(ids.length); badge.title = `${ids.length} 個分割`; row.append(badge); }
+  if (alert) { const pill = document.createElement("span"); pill.className = "alert-pill"; pill.textContent = alert.source === "idle" ? "等待？" : alert.title; pill.title = alert.body; row.append(pill); }
   if (tab.favoriteId) { const star = document.createElement("span"); star.className = "favorite-mark"; star.innerHTML = icons.star; star.title = `來自收藏「${favoriteFor(tab)?.name || ""}」`; row.append(star); }
-  const edit = button("", () => renameTab(tab), "編輯頁籤"); edit.className = "icon-btn row-action"; edit.innerHTML = icons.pencil;
-  const close = button("", () => requestClose(ids, (force) => closeTab(tab, force)), "關閉頁籤"); close.className = "icon-btn row-action"; close.innerHTML = icons.close;
-  row.append(edit, close); parent.append(row);
+  if (ids.length > 1) { const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = String(ids.length); badge.title = `${ids.length} 個分割`; row.append(badge); }
+  // One slot at the row end: the ⌘N hint at rest, a floating "more" button on
+  // hover. The button overlays the hint so hovering never reflows the label.
+  const menu = () => popupMenu([
+    { text: "重新命名", action: async () => { await native({ op: "focus-web" }); inlineRename(tab, label); } },
+    { text: "編輯頁籤…", action: () => renameTab(tab) },
+    { item: "Separator" },
+    { text: "關閉頁籤", action: () => requestClose(ids, (force) => closeTab(tab, force)) },
+  ]);
+  const slot = document.createElement("span"); slot.className = "tab-slot";
+  if (hotkey) { const key = document.createElement("kbd"); key.className = "tab-key"; key.textContent = `⌘${hotkey}`; slot.append(key); }
+  const more = button("", menu, "頁籤動作"); more.className = "icon-btn tab-more"; more.innerHTML = icons.more;
+  slot.append(more);
+  row.oncontextmenu = (event) => { event.preventDefault(); menu(); };
+  row.append(slot); parent.append(row);
+}
+async function popupMenu(items: MenuEntry[]) {
+  try {
+    const menu = await Menu.new({ items: items.map((item) => "item" in item ? item : { text: item.text, action: () => { Promise.resolve().then(item.action).catch(notify); } }) });
+    await menu.popup();
+    // Item actions are delivered asynchronously; release the menu afterwards.
+    setTimeout(() => menu.close().catch(() => {}), 5000);
+  } catch (error) { notify(error); }
+}
+function appendWorkspaceFavoriteRow(parent: HTMLElement, item: WorkspaceFavorite, folder: FavoriteFolder) {
+  const row = document.createElement("div"); row.className = "row favorite-workspace-row"; row.dataset.favoriteId = item.id;
+  row.style.setProperty("--group-color", folder.color);
+  wireGroupRowDrag(row, item.id, folder);
+  const state = document.createElement("span"); state.className = "status-dot inactive"; state.title = "終端機尚未開啟";
+  const label = button(item.name, () => openFavorite(item), `${item.name}\n${item.tab.paths[0] || ""}`); label.className = "row-label";
+  row.append(state, label); parent.append(row);
 }
 function inlineRename(tab: Tab, label: HTMLButtonElement) {
   const input = document.createElement("input"); input.className = "inline-rename"; input.value = tab.title || name(surfaces.get(tab.focused)?.cwd || "/");
@@ -615,19 +916,6 @@ function savedTree(node: Node, ids: string[]): Node {
   if (node.kind === "leaf") return { kind: "leaf", id: String(ids.indexOf(node.id)) };
   return { ...node, first: savedTree(node.first, ids), second: savedTree(node.second, ids) };
 }
-function snapshot(): { tabs: SavedTab[]; activeIndex: number; collapsedSidebar: boolean } {
-  const arranged = orderedTabs();
-  return {
-    tabs: arranged.map(savedTab),
-    activeIndex: active ? arranged.indexOf(active) : 0,
-    collapsedSidebar: drawerState.panel === null,
-  };
-}
-function scheduleSessionSave() {
-  if (!sessionEnabled || restoring || closingForQuit || closingForWindow) return;
-  clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => invoke("save_session", { key: sessionKey, snapshot: snapshot() }).catch(notify), 250);
-}
 function scheduleLayout() {
   if (!initialized || layoutPending) return;
   layoutPending = true;
@@ -637,8 +925,9 @@ function scheduleLayout() {
   });
 }
 async function updateLayout() {
+  filesPanel.sync();
   const box = $("terminals").getBoundingClientRect();
-  const visible = active
+  const visible = active && !filesPanel.isFull()
     ? active.zoom
       ? [
           {
@@ -658,6 +947,7 @@ async function updateLayout() {
     const outline = document.createElement("div");
     outline.className =
       "surface-outline " + (r.id === active?.focused ? "focused" : "");
+    outline.dataset.id = r.id;
     outline.style.cssText = `left:${r.x - box.x}px;top:${r.y - box.y}px;width:${r.width}px;height:${r.height}px`;
     host.append(outline);
   }
@@ -674,6 +964,11 @@ async function updateLayout() {
     suspended: dialogsOpen(),
   });
 }
+// 只切換外框的 focused class，不重建 DOM、不送原生 layout。
+function syncOutlines() {
+  for (const el of $("terminals").querySelectorAll<HTMLElement>(".surface-outline"))
+    el.classList.toggle("focused", el.dataset.id === active?.focused);
+}
 async function focus(id: string) {
   const tab = tabFor(id);
   if (!tab) return;
@@ -683,6 +978,7 @@ async function focus(id: string) {
   renderTabs();
   await updateLayout();
   await native({ op: "focus", id });
+  syncOutlines();
 }
 // Switching into a tab of a collapsed workspace group opens that group.
 function revealTab(tab: Tab) {
@@ -694,10 +990,9 @@ async function activate(tab: Tab) {
   if (active !== tab) revealTab(tab);
   active = tab;
   rememberFavoriteInstance(tab);
+  clearViewed();
   renderTabs();
   await updateLayout();
-  if (drawerState.panel === "directories")
-    await followDirectory(currentSurface()?.cwd || browsePath);
   await native({ op: "focus", id: tab.focused });
 }
 function rememberFavoriteInstance(tab: Tab) {
@@ -720,10 +1015,14 @@ function applyConfig(value: NativeConfig) {
     value.diagnostics.join("\n") || "設定載入完成";
   if (value.diagnostics.length) notify(value.diagnostics.join("\n"));
 }
-async function newSurface(path: string, source?: string, direction?: number, options: { command?: string } = {}) {
+async function newSurface(path: string, source?: string, direction?: number, options: { command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSession?: string } = {}) {
+  const parent = source && direction !== undefined ? tabFor(source) : undefined;
+  const useTmux = !!(options.tmux ?? parent?.tmux);
+  const hideStatus = !!(options.tmuxHideStatus ?? parent?.tmuxHideStatus);
+  const tmuxSession = useTmux ? (validSession(options.tmuxSession) ? options.tmuxSession : newSessionName()) : undefined;
   const normalized = await invoke<string>("resolve_path", {
     path,
-    base: browsePath || undefined,
+    base: homePath || undefined,
   });
   opening++;
   let result: { id: string; cwd: string };
@@ -733,7 +1032,9 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       path: normalized,
       source,
       split: direction !== undefined,
-      command: options.command,
+      command: tmuxSession ? tmuxCommand(tmuxSession, normalized, options.command, hideStatus) : options.command,
+      commandInShell: tmuxSession ? true : options.commandInShell,
+      tmux: !!tmuxSession,
     });
   } finally {
     opening--;
@@ -743,6 +1044,7 @@ async function newSurface(path: string, source?: string, direction?: number, opt
     cwd: result.cwd,
     title: "",
     exited: false,
+    tmuxSession,
   });
   if (source && direction !== undefined) {
     const tab = tabFor(source);
@@ -756,6 +1058,9 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       tree: { kind: "leaf", id: result.id },
       focused: result.id,
       command: options.command,
+      commandInShell: options.commandInShell,
+      tmux: useTmux || undefined,
+      tmuxHideStatus: useTmux && hideStatus || undefined,
     };
     tabs.push(tab);
     active = tab;
@@ -763,10 +1068,10 @@ async function newSurface(path: string, source?: string, direction?: number, opt
   for (const event of pendingEvents.get(result.id) || [])
     await handleEvent(event);
   pendingEvents.delete(result.id);
-  if (drawerState.panel === "directories") closeDrawers();
   renderTabs();
   await updateLayout();
   await native({ op: "focus", id: result.id });
+  syncOutlines();
 }
 function restoreTree(node: Node, ids: string[]): Node {
   if (node.kind === "leaf") return { kind: "leaf", id: ids[Number(node.id)] || ids[0] };
@@ -774,38 +1079,58 @@ function restoreTree(node: Node, ids: string[]): Node {
 }
 // Older snapshots may still carry workspace groups; they are ignored now that
 // a tab's group comes from its favorite.
-async function restoreSnapshot(value: { tabs?: SavedTab[]; activeIndex?: number; collapsedSidebar?: boolean }) {
+async function restoreSnapshot(value: { tabs?: SavedTab[] }) {
   restoring = true;
-  const startIndex = tabs.length;
   try {
     for (const saved of value.tabs || []) {
       const paths = saved.paths.filter(Boolean);
       if (!paths.length) continue;
-      await newSurface(paths[0], undefined, undefined, { command: saved.command });
+      await newSurface(paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, tmux: saved.tmux, tmuxHideStatus: saved.tmuxHideStatus, tmuxSession: saved.tmuxSessions?.[0] });
       const tab = active!;
       const ids = [tab.focused];
       for (const path of paths.slice(1)) {
-        await newSurface(path, ids[0], 0);
+        await newSurface(path, ids[0], 0, { tmuxSession: saved.tmuxSessions?.[ids.length] });
         ids.push(active!.focused);
       }
       tab.tree = restoreTree(saved.tree, ids);
       tab.focused = ids[saved.focused] || ids[0];
       tab.title = saved.title;
       tab.command = saved.command;
+      tab.commandInShell = saved.commandInShell;
       tab.favoriteId = saved.favoriteId;
+      if (saved.files?.open) tab.files = { ...initialFiles(), open: true, full: !!saved.files.full };
     }
-    if (value.activeIndex !== undefined) active = tabs[startIndex + value.activeIndex] || active;
-    else if (tabs.length > startIndex) active = tabs.at(-1);
+    if (tabs.length) active = tabs.at(-1);
     if (active) rememberFavoriteInstance(active);
-    if (value.collapsedSidebar !== undefined) {
-      drawerState = value.collapsedSidebar
-        ? closeAll(drawerState)
-        : openPanel(drawerState, (localStorage.getItem("drawer-panel") as Panel | null) || "workspace");
-    }
   } finally { restoring = false; }
   renderTabs();
   renderDrawer();
   if (active) { await updateLayout(); await native({ op: "focus", id: active.focused }); }
+}
+// ── tmux 工作階段：只在主視窗保存／恢復；結束 app 時 session 留在背景 ─────────
+let keepTmux = false, sessionFrozen = false, sessionTimer: ReturnType<typeof setTimeout> | undefined;
+const sessionDocument = () => ({ tabs: tabs.filter((tab) => tab.tmux).map((tab) => savedTab(tab, true)) });
+function scheduleSessionSave() {
+  if (win.label !== "main" || sessionFrozen || restoring || !initialized) return;
+  clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(() => { if (!sessionFrozen) invoke("save_session", { session: sessionDocument() }).catch(() => {}); }, 400);
+}
+// 離開前寫入最後狀態，之後關閉頁籤不再覆寫，也不結束 tmux session。
+async function freezeSession() {
+  clearTimeout(sessionTimer);
+  if (win.label === "main") {
+    await invoke("save_session", { session: sessionDocument() }).catch(notify);
+    keepTmux = true;
+  }
+  sessionFrozen = true;
+}
+async function restoreSession() {
+  if (win.label !== "main") return;
+  const document = await invoke<{ tabs?: unknown }>("load_session").catch(() => ({}) as { tabs?: unknown });
+  const saved = restorable<SavedTab>(document.tabs);
+  if (!saved.length) return;
+  if (!(await invoke<boolean>("tmux_available").catch(() => false))) { notify("找不到 tmux，無法恢復背景執行的頁籤。請安裝 tmux（brew install tmux）。"); return; }
+  await restoreSnapshot({ tabs: saved }).catch(notify);
 }
 async function destroy(id: string, force: boolean) {
   await native({ op: "close", id, force });
@@ -813,7 +1138,10 @@ async function destroy(id: string, force: boolean) {
 }
 async function forgetSurface(id: string) {
   const tab = tabFor(id);
+  const session = surfaces.get(id)?.tmuxSession;
   surfaces.delete(id);
+  // 結束 app 時保留 session；其餘（手動關閉、shell 結束）一併結束 session，避免殘留。
+  if (session && !keepTmux) invoke("tmux_kill_session", { name: session }).catch(() => {});
   if (!tab) return;
   const tree = removeLeaf(tab.tree, id);
   if (!tree) {
@@ -841,33 +1169,52 @@ async function closeTab(tab: Tab, force: boolean, remember = true) {
     redoHistory = [];
   }
 }
+const confirmDefaults = {
+  title: "關閉終端機？",
+  message: "以下工作仍在執行，確認後會終止相關程序。",
+  cancel: "取消",
+  force: "終止並關閉",
+};
+function setConfirmText(text: Partial<typeof confirmDefaults> = {}) {
+  const t = { ...confirmDefaults, ...text };
+  document.querySelector("#confirm h3")!.textContent = t.title;
+  document.querySelector("#confirm p")!.textContent = t.message;
+  $("cancel-close").textContent = t.cancel;
+  $("force-close").textContent = t.force;
+}
 async function requestClose(
   ids: string[],
   fn: (force: boolean) => Promise<void>,
+  alwaysAsk: Partial<typeof confirmDefaults> | undefined = undefined,
 ) {
   if (closing) return;
-  const infos = await Promise.all(
+  // tmux 頁籤的前景行程只是 tmux client，不算「仍有工作執行」。
+  const infos = (await Promise.all(
     ids.map((id) => native<Info>({ op: "info", id })),
-  );
+  )).map((info, index) => surfaces.get(ids[index])?.tmuxSession ? { ...info, running: [], needsConfirm: false } : info);
   const running = infos.flatMap((info, index) =>
     info.running.map(
       (p) => `${name(surfaces.get(ids[index])?.cwd || "/")}: ${p}`,
     ),
   );
-  if (infos.some((i) => i.needsConfirm) || running.length) {
-    $("processes").textContent = running.join("\n") || "終端機仍有工作執行。";
+  if (alwaysAsk || infos.some((i) => i.needsConfirm) || running.length) {
+    setConfirmText(alwaysAsk);
+    $("processes").textContent =
+      running.join("\n") ||
+      (alwaysAsk
+        ? tabs.map((t) => t.title || name(surfaces.get(t.focused)?.cwd || "/")).join("\n")
+        : "終端機仍有工作執行。");
     closeAction = () => fn(true);
     await showDialog("confirm");
   } else await fn(false);
 }
 async function shutdown(all = false) {
   if (all) {
-    if (sessionEnabled) await invoke("save_session", { key: sessionKey, snapshot: snapshot() });
     const info = await native<{ running: string[]; needsConfirm: boolean }>({
       op: "all-info",
     });
     const finish = async (force: boolean) => {
-      closingForQuit = true;
+      await freezeSession();
       await native({ op: "close-all", force });
       await invoke("quit_app");
     };
@@ -878,13 +1225,23 @@ async function shutdown(all = false) {
     } else await finish(false);
     return;
   }
-  await requestClose([...surfaces.keys()], async (force) => {
-    closingForWindow = true;
-    for (const tab of [...tabs]) await closeTab(tab, force, false);
-    await invoke("remove_session", { key: sessionKey });
-    await native({ op: "forget-window" });
-    await win.destroy();
-  });
+  await requestClose(
+    [...surfaces.keys()],
+    async (force) => {
+      await freezeSession();
+      for (const tab of [...tabs]) await closeTab(tab, force, false);
+      await native({ op: "forget-window" });
+      await win.destroy();
+    },
+    tabs.length
+      ? {
+          title: "關閉視窗？",
+          message: `此視窗仍有 ${tabs.length} 個頁籤開啟，離開會終止其中所有程序。`,
+          cancel: "不離開",
+          force: "全部強制退出",
+        }
+      : undefined,
+  );
 }
 async function undoClose() {
   const item = closedHistory.pop();
@@ -922,248 +1279,19 @@ async function refreshCwd() {
     }
   }
 }
-async function browse() {
-  setPanel("directories");
-  await refreshCwd();
-  await followDirectory(
-    currentSurface()?.cwd || (await invoke<string>("home")),
-  );
-  $("path").focus();
-}
-async function followDirectory(path: string) {
-  browsePath = path;
-  browseRoot = path;
-  columns = [path];
-  await drawDirectories();
-}
-async function choose(path: string) {
-  const normalized = await invoke<string>("resolve_path", {
-    path,
-    base: browsePath || undefined,
-  });
-  browsePath = normalized;
-  browseRoot = normalized;
-  columns = [normalized];
-  await drawDirectories();
-}
-// Column mode shows a two-column window: the first drawer lists the
-// second-to-last column and the second drawer lists the last one.
-async function openColumn(index: number, path: string) {
-  columns = [...columns.slice(0, index + 1), path];
-  browsePath = path;
-  await drawDirectories();
-}
-async function columnBack() {
-  if (columns.length > 1) columns = columns.slice(0, -1);
-  browsePath = columns.at(-1)!;
-  await drawDirectories();
-}
-function syncColumnDetail() {
-  const last = drawerState.panel === "directories" && directoryLayout === "columns" && columns.length > 1 ? columns.at(-1)! : undefined;
-  const others = drawerState.detailStack.filter((item) => item.kind !== "dir-column");
-  const top = detail();
-  if (last && top?.kind === "dir-column" && top.path === last) return;
-  drawerState = { ...drawerState, detailStack: last ? [{ kind: "dir-column", path: last }] : others };
-  renderDrawer();
-}
 function displayPath(path: string) {
   return homePath && (path === homePath || path.startsWith(homePath + "/")) ? "~" + path.slice(homePath.length) : path;
 }
-function renderBreadcrumb(path: string) {
-  const nav = $("breadcrumb");
-  nav.replaceChildren();
-  nav.hidden = directoryLayout !== "columns";
-  if (nav.hidden) return;
-  const inHome = homePath && (path === homePath || path.startsWith(homePath + "/"));
-  const base = inHome ? homePath : "";
-  const parts = path.slice(base.length).split("/").filter(Boolean);
-  const crumbs: [string, string][] = [[inHome ? "~" : "/", base || "/"]];
-  let current = base;
-  for (const part of parts) { current += "/" + part; crumbs.push([part, current]); }
-  crumbs.forEach(([label, target], index) => {
-    if (index) nav.append(Object.assign(document.createElement("span"), { textContent: "›", className: "crumb-sep" }));
-    const crumb = button(label, () => choose(target), target); crumb.className = "crumb";
-    nav.append(crumb);
-  });
+function defaultPath() {
+  return currentSurface()?.cwd || homePath;
 }
-function selectDirectory(path: string) {
-  browsePath = path;
-  $<HTMLInputElement>("path").value = displayPath(path);
-  for (const row of document.querySelectorAll<HTMLElement>(".directory-row"))
-    row.classList.toggle("selected", row.dataset.path === path);
-}
-function renderDirectoryControls() {
-  $("layout-tree").classList.toggle("active", directoryLayout === "tree");
-  $("layout-columns").classList.toggle("active", directoryLayout === "columns");
-  $("layout-tree").setAttribute("aria-pressed", String(directoryLayout === "tree"));
-  $("layout-columns").setAttribute("aria-pressed", String(directoryLayout === "columns"));
-  $("show-hidden").classList.toggle("active", showHidden);
-  $("show-hidden").setAttribute("aria-pressed", String(showHidden));
-}
-async function drawDirectories() {
-  const token = ++generation;
-  $<HTMLInputElement>("path").value = displayPath(browsePath);
-  renderDirectoryControls();
-  const container = $("directories");
-  container.className = directoryLayout;
-  const content = document.createElement("div");
-  try {
-    if (directoryLayout === "columns") {
-      const index = Math.max(0, columns.length - 2);
-      const path = columns[index];
-      renderBreadcrumb(path);
-      const entries = await invoke<Directory[]>("directories", { path, showHidden });
-      if (token !== generation) return;
-      for (const entry of entries) {
-        const row = document.createElement("div");
-        row.className = "row directory-detail-row" + (entry.is_dir ? "" : " is-file") + (columns[index + 1] === entry.path ? " selected" : "");
-        const icon = document.createElement("span"); icon.className = "directory-kind"; icon.innerHTML = entry.is_dir ? icons.folder : icons.file;
-        const label = button(entry.name, () => entry.is_dir && openColumn(index, entry.path), entry.path); label.className = "row-label"; label.disabled = !entry.is_dir;
-        label.ondblclick = () => entry.is_dir && newSurface(entry.path).catch(notify);
-        row.append(icon, label);
-        if (entry.is_dir) { const open = button("開啟", () => newSurface(entry.path), "在此開啟終端機"); open.className = "ghost-btn row-action"; row.append(open); }
-        content.append(row);
-      }
-      if (!entries.length) content.append(help("此目錄沒有項目"));
-    } else {
-      renderBreadcrumb(browseRoot);
-      content.setAttribute("role", "tree");
-      await tree(browseRoot, content, token, 0);
-    }
-    if (token !== generation) return;
-    container.replaceChildren(content);
-    syncColumnDetail();
-  } catch (e) {
-    if (token !== generation) return;
-    container.replaceChildren();
-    const text = document.createElement("p");
-    text.className = "directory-error";
-    text.textContent = String(e);
-    container.append(text);
-    throw e;
-  }
-}
-async function tree(
-  path: string,
-  container: HTMLElement,
-  token: number,
-  depth: number,
-) {
-  const entries = await invoke<Directory[]>("directories", { path, showHidden });
-  if (token !== generation) return;
-  if (!entries.length) {
-    const empty = document.createElement("p");
-    empty.className = "hint";
-    empty.textContent = "此目錄沒有子目錄";
-    container.append(empty);
-  }
-  for (const entry of entries) {
-    const group = document.createElement("div");
-    group.className = "tree-item";
-    group.setAttribute("role", "treeitem");
-    group.setAttribute("aria-label", entry.name);
-    group.tabIndex = 0;
-    const row = document.createElement("div");
-    row.className = "directory-row";
-    row.dataset.path = entry.path;
-    row.classList.toggle("selected", entry.path === browsePath);
-    const children = document.createElement("div");
-    children.className = "tree-children";
-    children.hidden = true;
-    children.setAttribute("role", "group");
-    let loaded = false;
-    const arrow = button(
-      "",
-      () => toggle(),
-      entry.has_children ? "展開目錄" : "沒有子目錄",
-    );
-    arrow.className = "expand";
-    arrow.innerHTML = icons.chevron;
-    arrow.disabled = !entry.has_children || !entry.is_dir;
-    arrow.tabIndex = -1;
-    const folder = button(
-      entry.name,
-      () => entry.is_dir && selectDirectory(entry.path),
-      entry.path,
-    );
-    folder.className = "folder";
-    folder.insertAdjacentHTML("afterbegin", entry.is_dir ? icons.folder : icons.file);
-    folder.disabled = !entry.is_dir;
-    folder.ondblclick = () => entry.is_dir && newSurface(entry.path).catch(notify);
-    folder.tabIndex = -1;
-    async function toggle(force?: boolean) {
-      if (!entry.has_children) return;
-      const expanded = force ?? children.hidden;
-      children.hidden = !expanded;
-      group.setAttribute("aria-expanded", String(expanded));
-      arrow.classList.toggle("expanded", expanded);
-      folder.querySelector("svg")?.remove();
-      folder.insertAdjacentHTML(
-        "afterbegin",
-        expanded ? icons.folderOpen : icons.folder,
-      );
-      if (expanded && !loaded) {
-        try {
-          await tree(entry.path, children, token, depth + 1);
-          loaded = true;
-        } catch (e) {
-          children.textContent = String(e);
-          children.classList.add("directory-error");
-        }
-      }
-    }
-    if (entry.has_children) group.setAttribute("aria-expanded", "false");
-    const openButton = button("開啟", () => newSurface(entry.path), "在此開啟終端機");
-    openButton.className = "ghost-btn row-action";
-    openButton.hidden = !entry.is_dir;
-    row.append(
-      arrow,
-      folder,
-      openButton,
-    );
-    group.append(row, children);
-    container.append(group);
-    group.onkeydown = (event) => {
-      if (event.target !== group) return;
-      const visible = [
-          ...$("directories").querySelectorAll<HTMLElement>(
-            '[role="treeitem"]',
-          ),
-        ].filter((x) => x.getClientRects().length > 0),
-        index = visible.indexOf(group);
-      const key = event.key;
-      if (key === "ArrowRight") {
-        event.preventDefault();
-        if (children.hidden) toggle(true).catch(notify);
-        else children.querySelector<HTMLElement>('[role="treeitem"]')?.focus();
-      }
-      if (key === "ArrowLeft") {
-        event.preventDefault();
-        if (!children.hidden) toggle(false).catch(notify);
-        else
-          group.parentElement
-            ?.closest<HTMLElement>('[role="treeitem"]')
-            ?.focus();
-      }
-      if (key === "ArrowDown" || key === "ArrowUp") {
-        event.preventDefault();
-        visible[index + (key === "ArrowDown" ? 1 : -1)]?.focus();
-      }
-      if (key === "Enter" || key === " ") {
-        event.preventDefault();
-        if (entry.is_dir) selectDirectory(entry.path);
-      }
-      if (key === "Enter" && event.metaKey && entry.is_dir)
-        newSurface(entry.path).catch(notify);
-    };
-  }
-}
-async function pick(field: "browser" | "favorite") {
+// "terminal" opens a new tab in the chosen folder; "favorite" fills the editor.
+async function pick(field: "terminal" | "favorite") {
   await updateLayout();
   const initial =
     field === "favorite"
       ? $<HTMLInputElement>("favorite-path").value
-      : browsePath;
+      : defaultPath();
   // Suspend all native surfaces while the OS sheet owns keyboard input.
   await native({
     op: "layout",
@@ -1173,14 +1301,14 @@ async function pick(field: "browser" | "favorite") {
   });
   try {
     const path = await invoke<string | null>("pick_directory", {
-      path: initial || browsePath || (await invoke<string>("home")),
+      path: initial || defaultPath() || (await invoke<string>("home")),
     });
     if (path) {
       if (field === "favorite") {
         $<HTMLInputElement>("favorite-path").value = path;
         $("favorite-path").dispatchEvent(new Event("input"));
       }
-      else await choose(path);
+      else await newSurface(path);
     }
   } finally {
     await updateLayout();
@@ -1358,7 +1486,7 @@ async function edit() {
 async function resolveFavoritePath() {
   const input = $<HTMLInputElement>("favorite-path"), error = document.getElementById("favorite-path-error");
   try {
-    const path = await invoke<string>("resolve_path", { path: input.value, base: browsePath });
+    const path = await invoke<string>("resolve_path", { path: input.value, base: defaultPath() });
     if (error) error.hidden = true;
     return path;
   } catch (reason) {
@@ -1367,7 +1495,7 @@ async function resolveFavoritePath() {
     return undefined;
   }
 }
-async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput?: HTMLInputElement) {
+async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, command: string, commandInShell: boolean) {
   if (!alias) { $("alias").focus(); return; }
   const group = groupId || undefined;
   let createdId: string | undefined;
@@ -1378,18 +1506,18 @@ async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | und
       if (!path) return;
       tab = { ...tab, paths: [path, ...tab.paths.slice(1)] };
     }
-    const updated: WorkspaceFavorite = { id: item.id, kind: "tab", name: alias, tab: { ...tab, title: alias }, groupId: group };
+    const updated: WorkspaceFavorite = { id: item.id, kind: "tab", name: alias, tab: { ...tab, title: alias, command: command || undefined, commandInShell: command ? commandInShell || undefined : undefined }, groupId: group };
     await persistFavorites(favorites.map((value) => value.id === item.id ? updated : value));
   } else {
     const id = crypto.randomUUID();
     let tab: SavedTab;
     if (sourceTab) {
       const saved = savedTab(sourceTab);
-      tab = { ...saved, favoriteId: id, title: saved.title || (alias !== name(saved.paths[0] || "/") ? alias : undefined) };
+      tab = { ...saved, favoriteId: id, title: saved.title || (alias !== name(saved.paths[0] || "/") ? alias : undefined), command: command || undefined, commandInShell: command ? commandInShell || undefined : undefined };
     } else {
       const path = await resolveFavoritePath();
       if (!path) return;
-      tab = { paths: [path], tree: { kind: "leaf", id: "0" }, focused: 0, title: alias !== name(path) ? alias : undefined };
+      tab = { paths: [path], tree: { kind: "leaf", id: "0" }, focused: 0, title: alias !== name(path) ? alias : undefined, command: command || undefined, commandInShell: command ? commandInShell || undefined : undefined };
     }
     await persistFavorites([...favorites, { id, kind: "tab", name: alias, tab, groupId: group }]);
     if (sourceTab) { sourceTab.favoriteId = id; recentFavoriteInstances.set(id, sourceTab.id); }
@@ -1431,17 +1559,17 @@ async function showPalette(overview = false) {
         activate(tab),
       );
   } else {
-    add("選擇目錄", browse);
-    add("新工作區", () => newSurface(currentSurface()?.cwd || browsePath));
+    add("檔案面板", () => filesPanel.toggle());
+    add("新工作區", () => newSurface(defaultPath()));
     add("新視窗", () =>
       invoke("new_window", {
-        path: currentSurface()?.cwd || browsePath,
+        path: defaultPath(),
         quick: false,
       }),
     );
     add("快速終端", () =>
       invoke("new_window", {
-        path: currentSurface()?.cwd || browsePath,
+        path: defaultPath(),
         quick: true,
       }),
     );
@@ -1480,6 +1608,9 @@ async function handleEvent(event: NativeEvent) {
     return;
   }
   switch (event.type) {
+    case "pointer-terminal":
+      document.body.classList.toggle("term-pointer", !!event.on);
+      break;
     case "focus": {
       const tab = event.id ? tabFor(event.id) : undefined;
       if (tab) {
@@ -1487,9 +1618,9 @@ async function handleEvent(event: NativeEvent) {
         if (active !== tab) revealTab(tab);
         active = tab; rememberFavoriteInstance(tab);
         tab.focused = event.id!;
-        renderTabs();
-        if (changed && drawerState.panel === "directories")
-          await followDirectory(s!.cwd);
+        clearViewed();
+        syncOutlines();
+        if (changed) { renderTabs(); filesPanel.sync(); await filesPanel.cwdChanged(s!.cwd); }
       }
       break;
     }
@@ -1497,19 +1628,24 @@ async function handleEvent(event: NativeEvent) {
       if (s && event.path && event.path !== s.cwd) {
         s.cwd = event.path;
         renderTabs();
-        if (event.id === active?.focused) {
-          if (drawerState.panel === "directories")
-            await followDirectory(event.path);
-          else {
-            browsePath = event.path;
-            browseRoot = event.path;
-            columns = [event.path];
-          }
-        }
+        if (event.id === active?.focused) await filesPanel.cwdChanged(event.path);
+      }
+      break;
+    case "bell":
+      if (s) raiseAlert(s.id, "signal", "響鈴", "");
+      break;
+    case "notify":
+      if (s) raiseAlert(s.id, "signal", event.title || "通知", event.body || "");
+      break;
+    case "agent":
+      if (s) {
+        if (event.event === "resume") setAttention(clear(attention, s.id));
+        else raiseAlert(s.id, "hook", event.title || (event.event === "done" ? "已完成，等你回應" : "等待輸入"), event.body || "");
       }
       break;
     case "title":
       if (s) {
+        if (titleSpinnerStopped(s.title, event.title || "")) raiseAlert(s.id, "signal", "已停止，等你輸入", "");
         s.title = event.title || "";
         if (event.id === active?.focused)
           await win.setTitle(s.title ? `${s.title} — HiGhostty` : "HiGhostty");
@@ -1539,23 +1675,32 @@ async function handleEvent(event: NativeEvent) {
       notify(event.message);
       break;
     case "browse":
-      await browse();
+      await filesPanel.toggle();
+      break;
+    case "quicklook-key":
+    case "quicklook-closed":
+      filesPanel.handleEvent(event);
+      break;
+    case "toggle-palette":
+      // 待處理浮層開著時，⌘⇧P 只負責關掉它。
+      if (attentionDrop.isOpen()) attentionDrop.close();
+      else snippets.toggle();
       break;
     case "toggle-sidebar":
       toggleDrawerPanel(drawerState.panel || drawerState.lastPanel);
       break;
     case "new-tab":
-      await newSurface(s?.cwd || currentSurface()?.cwd || browsePath, event.id);
+      await newSurface(s?.cwd || defaultPath(), event.id);
       break;
     case "new-window":
       await invoke("new_window", {
-        path: s?.cwd || currentSurface()?.cwd || browsePath,
+        path: s?.cwd || defaultPath(),
         quick: false,
       });
       break;
     case "quick-terminal":
       await invoke("new_window", {
-        path: currentSurface()?.cwd || browsePath,
+        path: defaultPath(),
         quick: true,
       });
       break;
@@ -1602,9 +1747,20 @@ async function handleEvent(event: NativeEvent) {
     }
     case "move-tab":
       if (active) {
+        const folder = tabFolder(active);
+        if (folder && active.favoriteId) {
+          // Grouped: move the favorite, since favorite order is the tab order.
+          const siblings = folderFavorites(folder.id).filter((item) => item.id !== active!.favoriteId);
+          const from = folderFavorites(folder.id).findIndex((item) => item.id === active!.favoriteId);
+          const to = Math.max(0, Math.min(siblings.length, from + event.value!));
+          await persistFavorites(moveGroupedItem(favorites, active.favoriteId, folder.id, siblings[to]?.id));
+          renderTabs();
+          break;
+        }
         const arranged = orderedTabs();
-        const i = arranged.indexOf(active), next = Math.max(0, Math.min(arranged.length - 1, i + event.value!));
-    arranged.splice(i, 1); arranged.splice(next, 0, active); tabs = arranged;
+        const loose = arranged.filter((tab) => !tabFolder(tab)).length;
+        const i = arranged.indexOf(active), next = Math.max(0, Math.min(loose - 1, i + event.value!));
+        arranged.splice(i, 1); arranged.splice(next, 0, active); tabs = arranged;
         renderTabs();
       }
       break;
@@ -1689,13 +1845,10 @@ async function handleEvent(event: NativeEvent) {
       break;
   }
 }
-action("first", browse);
-action("new", () => newSurface(currentSurface()?.cwd || browsePath));
+action("first", () => pick("terminal"));
+action("files-toggle", () => filesPanel.toggleOpen());
+action("new", () => newSurface(defaultPath()));
 action("favorite-group-add", () => createFolder());
-action("up", () => choose(parent(browsePath)));
-action("go", () => choose($<HTMLInputElement>("path").value));
-action("pick", () => pick("browser"));
-action("open", () => newSurface(browsePath));
 action("favorite-add", () => {
   const options = $("favorite-add-options"); options.hidden = !options.hidden;
   $("favorite-current-tab").textContent = active ? `收藏目前頁籤「${active.title || name(currentSurface()?.cwd || "/")}」…` : "";
@@ -1703,11 +1856,6 @@ action("favorite-add", () => {
 });
 action("favorite-current-tab", () => { $("favorite-add-options").hidden = true; if (active) newFavorite({ tabId: active.id }); });
 action("favorite-from-dir", () => { $("favorite-add-options").hidden = true; edit().catch(notify); });
-action("show-hidden", () => {
-  showHidden = !showHidden;
-  localStorage.setItem("show-hidden", String(showHidden));
-  return drawDirectories();
-});
 action("cancel-close", () => closeDialog("confirm"));
 action("force-close", async () => {
   if (closing) return;
@@ -1749,34 +1897,17 @@ $("search-input").onkeydown = (e) => {
     ).catch(notify);
   if (e.key === "Escape") $("search-close").click();
 };
-for (const layout of ["tree", "columns"] as const)
-  action("layout-" + layout, () => {
-    if (directoryLayout === layout) return;
-    directoryLayout = layout;
-    localStorage.setItem("directory-layout", layout);
-    columns = [browsePath];
-    browseRoot = browsePath;
-    return drawDirectories();
-  });
-$<HTMLInputElement>("session-enabled").onchange = async () => {
-  sessionEnabled = $<HTMLInputElement>("session-enabled").checked;
-  await invoke("set_session_enabled", { enabled: sessionEnabled });
-  if (sessionEnabled) scheduleSessionSave();
-};
-$("path").onkeydown = (e) => {
-  if (e.key === "Enter" && !e.isComposing)
-    choose($<HTMLInputElement>("path").value).catch(notify);
-};
 window.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || event.isComposing || dialogsOpen()) return;
+  if (event.key !== "Escape" || event.isComposing || dialogsOpen() || attentionDrop.isOpen()) return;
   // Inputs with their own Escape behavior handle it; don't also close drawers.
-  if (event.target instanceof Element && event.target.closest(".inline-rename, #search")) return;
+  if (event.target instanceof Element && event.target.closest(".inline-rename, #search, #files, #palette-drop, #attention-drop")) return;
   if (!$("favorite-add-options").hidden) { event.preventDefault(); $("favorite-add-options").hidden = true; return; }
   if (detail()) { event.preventDefault(); backDetail(); }
   else if (drawerState.panel) { event.preventDefault(); closeDrawers(); }
 }, true);
 for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("close", scheduleLayout);
+  if (dialog.id === "confirm") dialog.addEventListener("close", () => setConfirmText());
   dialog.addEventListener("cancel", (e) => {
     e.preventDefault();
     closeDialog(dialog.id).catch(notify);
@@ -1787,68 +1918,85 @@ window.addEventListener("resize", () => { renderDrawer(); scheduleLayout(); });
 $("drawer-primary").addEventListener("transitionend", scheduleLayout);
 $("drawer-detail").addEventListener("transitionend", scheduleLayout);
 async function start() {
-  directoryLayout = localStorage.getItem("directory-layout") === "columns" ? "columns" : "tree";
-  showHidden = localStorage.getItem("show-hidden") === "true";
   try { collapsedWorkspaceGroups = new Set(JSON.parse(localStorage.getItem("workspace-collapsed-groups") || "[]")); } catch {}
-  const injected = window as unknown as { __HIGHOSTTY_RESTORE__?: { tabs?: SavedTab[]; collapsedSidebar?: boolean }; __HIGHOSTTY_INITIAL_PATH__?: string };
-  const savedState = await invoke<{ enabled: boolean; windows: { key: string; snapshot: { tabs?: SavedTab[]; collapsedSidebar?: boolean } }[] }>("session_state");
-  sessionEnabled = savedState.enabled;
-  drawerState.lastPanel = (localStorage.getItem("drawer-panel") as Panel | null) || "workspace";
-  for (const [key, panel] of [["rail-workspace", "workspace"], ["rail-favorites", "favorites"], ["rail-directories", "directories"], ["rail-settings", "settings"]] as [string, Panel][]) {
+  const savedPanel = localStorage.getItem("drawer-panel") as Panel | null;
+  // The old directories panel moved to the per-tab files panel.
+  drawerState.lastPanel = savedPanel && savedPanel !== ("directories" as string) ? savedPanel : "workspace";
+  for (const [key, panel] of [["rail-workspace", "workspace"], ["rail-favorites", "favorites"], ["rail-snippets", "snippets"], ["rail-settings", "settings"]] as [string, Panel][]) {
     $(key).onclick = () => {
       if (panel === "settings" && drawerState.panel !== panel) native<NativeConfig>({ op: "config" }).then(applyConfig).catch(notify);
+      if (panel === "settings" && drawerState.panel !== panel) renderHooks();
       toggleDrawerPanel(panel);
-      if (panel === "directories" && drawerState.panel === panel) browse().catch(notify);
     };
   }
-  $<HTMLInputElement>("session-enabled").checked = sessionEnabled;
-  if (!injected.__HIGHOSTTY_RESTORE__ && sessionEnabled) {
-    for (const saved of savedState.windows.filter((item) => item.key !== sessionKey))
-      await invoke("restore_window", { saved });
-  }
+  $("workspace").append(snippets.element, attentionDrop.element);
+  $("rail-attention").onclick = toggleAttention;
+  $("snippet-add").onclick = () => snippets.newScoped(currentSurface()?.cwd || "global");
+  snippets.store.onChange(() => { refreshSnippetList(); renderDetailIfSnippet(); });
+  await snippets.store.load();
   await listen<FavoritesDocument>("group-favorites-changed", ({ payload }) => {
     applyFavoritesDocument(payload);
     renderTabs();
     renderDrawer();
     renderTabs();
   });
-  await listen<boolean>("session-enabled-changed", ({ payload }) => {
-    sessionEnabled = payload;
-    $<HTMLInputElement>("session-enabled").checked = payload;
-    if (payload) scheduleSessionSave();
-  });
   await win.onDragDropEvent(async ({ payload }) => {
     const dpr = window.devicePixelRatio || 1;
-    const targetAt = (position: { x: number; y: number }) => {
-      const element = document.elementFromPoint(position.x / dpr, position.y / dpr);
-      if (element?.closest("#favorites, #rail-favorites")) return "favorites";
+    const elementAt = (position: { x: number; y: number }) => document.elementFromPoint(position.x / dpr, position.y / dpr);
+    const targetAt = (position: { x: number; y: number }): { kind: string; groupId?: string; item?: Element } => {
+      const element = elementAt(position);
+      if (filesPanel.dropTarget(element)) return { kind: "files" };
+      // Group rows/blocks add the directory to that specific group.
+      const workspaceGroup = element?.closest<HTMLElement>("#tabs [data-group-id]");
+      if (workspaceGroup) return { kind: "workspace-group", groupId: workspaceGroup.dataset.groupId, item: workspaceGroup };
+      const favoritesGroup = element?.closest<HTMLElement>("#favorites .group-row");
+      if (favoritesGroup) return { kind: "favorites-group", groupId: favoritesGroup.dataset.groupId, item: favoritesGroup };
+      if (element?.closest("#favorites, #rail-favorites")) return { kind: "favorites" };
+      if (element?.closest("#panel-snippets, #rail-snippets")) return { kind: "snippets" };
       // Dropping on an open favorite group adds the directory to that group.
-      if (element?.closest("#drawer-detail") && detail()?.kind === "group") return "group";
-      if (element?.closest("#workspace")) return "workspace";
-      return "";
+      const top = detail();
+      if (element?.closest("#drawer-detail") && top?.kind === "group") return { kind: "group", groupId: top.groupId };
+      if (element?.closest("#panel-workspace")) return { kind: "workspace-panel" };
+      if (element?.closest("#workspace")) return { kind: "workspace" };
+      return { kind: "" };
+    };
+    const clearDropHighlight = () => {
+      $("workspace").classList.remove("drop-target");
+      $("favorites").classList.remove("drop-target-list");
+      $("panel-snippets").classList.remove("drop-target-list");
+      $("drawer-detail").classList.remove("drop-target-list");
+      $("panel-workspace").classList.remove("drop-target-list");
+      for (const el of document.querySelectorAll(".drop-target-item")) el.classList.remove("drop-target-item");
+      filesPanel.highlightDrop(undefined);
     };
     if (payload.type === "enter" || payload.type === "over") {
-      const target = targetAt(payload.position);
-      $("workspace").classList.toggle("drop-target", target === "workspace");
-      $("favorites").classList.toggle("drop-target-list", target === "favorites");
-      $("drawer-detail").classList.toggle("drop-target-list", target === "group");
+      const { kind, item } = targetAt(payload.position);
+      clearDropHighlight();
+      $("workspace").classList.toggle("drop-target", kind === "workspace");
+      $("favorites").classList.toggle("drop-target-list", kind === "favorites");
+      $("panel-snippets").classList.toggle("drop-target-list", kind === "snippets");
+      $("drawer-detail").classList.toggle("drop-target-list", kind === "group");
+      $("panel-workspace").classList.toggle("drop-target-list", kind === "workspace-panel");
+      item?.classList.add("drop-target-item");
+      filesPanel.highlightDrop(filesPanel.dropTarget(elementAt(payload.position)));
       return;
     }
-    $("workspace").classList.remove("drop-target");
-    $("favorites").classList.remove("drop-target-list");
-    $("drawer-detail").classList.remove("drop-target-list");
+    clearDropHighlight();
     if (payload.type !== "drop") return;
-    const target = targetAt(payload.position);
-    const top = detail();
-    const groupId = target === "group" && top?.kind === "group" ? top.groupId : undefined;
+    // Files dropped on the files panel are copied into the folder under the pointer.
+    const filesDestination = filesPanel.dropTarget(elementAt(payload.position));
+    if (filesDestination) { await filesPanel.drop(payload.paths, filesDestination); return; }
+    const { kind: target, groupId } = targetAt(payload.position);
     for (const path of payload.paths) {
       try {
-        const directory = await invoke<string>("resolve_path", { path, base: browsePath });
-        if (target === "favorites" || target === "group") {
+        const directory = await invoke<string>("resolve_path", { path, base: homePath });
+        if (target === "snippets") snippets.newScoped(directory);
+        else if (target === "favorites" || target === "group" || target === "favorites-group" || target === "workspace-group") {
           const item: WorkspaceFavorite = { id: crypto.randomUUID(), kind: "tab", name: name(directory), tab: { paths: [directory], tree: { kind: "leaf", id: "0" }, focused: 0 }, groupId };
           await persistFavorites([...favorites, item]);
           renderFavorites();
-        } else if (target === "workspace") await newSurface(directory);
+          if (target === "workspace-group") await openFavorite(item);
+        } else if (target === "workspace" || target === "workspace-panel") await newSurface(directory);
       } catch (error) {
         notify("略過無法開啟的目錄：" + path + " (" + String(error) + ")");
       }
@@ -1859,28 +2007,35 @@ async function start() {
   });
   applyConfig(await native<NativeConfig>({ op: "init" }));
   initialized = true;
+  // Directories dropped on the app icon (Finder/Dock); may arrive before or after startup.
+  const openPending = async () => {
+    for (const path of await invoke<string[]>("take_pending_open_paths")) {
+      try { await newSurface(path); } catch (error) { notify("略過無法開啟的目錄：" + path + " (" + String(error) + ")"); }
+    }
+  };
+  await listen("open-paths", () => { eventQueue = eventQueue.then(openPending).catch(notify); });
   // Convert old group favorites once and write the new format back.
   if (applyFavoritesDocument(await invoke<FavoritesDocument>("group_favorites")))
     await persistFavorites(favorites, folders).catch(notify);
   renderFavorites();
-  browsePath = homePath = await invoke<string>("home");
-  browseRoot = browsePath;
+  homePath = await invoke<string>("home");
+  await restoreSession();
+  eventQueue = eventQueue.then(openPending).catch(notify);
   await win.onCloseRequested((event) => {
     event.preventDefault();
     shutdown().catch(notify);
   });
-  const initial = (window as unknown as { __HIGHOSTTY_INITIAL_PATH__?: string })
-    .__HIGHOSTTY_INITIAL_PATH__;
-  const restore = injected.__HIGHOSTTY_RESTORE__ || (sessionEnabled ? savedState.windows.find((item) => item.key === sessionKey)?.snapshot : undefined);
-  if (restore?.tabs?.length) await restoreSnapshot(restore);
-  else {
-    drawerState = openPanel(drawerState, drawerState.lastPanel || "workspace");
-    renderDrawer();
-    await newSurface(injected.__HIGHOSTTY_INITIAL_PATH__ || initial || browsePath);
-  }
+  drawerState = openPanel(drawerState, drawerState.lastPanel || "workspace");
+  renderDrawer();
+  renderTabs();
   setInterval(() => {
     if (document.visibilityState === "visible" && !closing)
       refreshCwd().catch(notify);
   }, 1000);
+  $("bell-btn").onclick = toggleAttention;
+  window.addEventListener("focus", clearViewed);
+  setInterval(() => {
+    if (document.visibilityState === "visible" && !closing) scanAttention().catch(() => {});
+  }, 1500);
 }
 start().catch(notify);

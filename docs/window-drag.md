@@ -7,6 +7,7 @@
 ```html
 <header data-tauri-drag-region="deep">
   <b>◈ HiGhostty</b><span id="current">…</span>
+  <button id="files-toggle">…</button>
 </header>
 ```
 
@@ -55,6 +56,6 @@
 - [ ] 從 `#current` 路徑文字、header 空白處開始拖曳，都能移動視窗。
 - [ ] 快速連點標題文字三下後再拖曳，不會卡住或選取文字。
 - [ ] 雙擊 header 空白處會放大／還原；雙擊後立刻移動滑鼠則不會放大。
-- [ ] header 內沒有按鈕；Rail 按鈕點擊正常且不會拖動視窗。
+- [ ] header 右上角的檔案面板按鈕（`#files-toggle`，原生 `<button>`）點擊會開關面板、不會拖動視窗；Rail 按鈕同樣不會拖動視窗。
 - [ ] 標題文字無法被反白選取。
 - [ ] 分別測 Ghostty `macos-titlebar-style` 為預設與 `hidden` 兩種情況。

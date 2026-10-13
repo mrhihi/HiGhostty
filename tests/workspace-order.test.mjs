@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dissolveGroup, moveGroupedItem, moveItemBefore, orderGroupedItems, recentFavoriteInstance } from "../src/model.ts";
+import { dissolveGroup, moveGroupedItem, moveItemBefore, orderGroupedItems, orderTabsByFavorites, recentFavoriteInstance } from "../src/model.ts";
 
 test("workspace rows follow ungrouped then group order and preserve within-group order", () => {
   const items = [
@@ -55,4 +55,12 @@ test("group order can be rearranged without changing its members", () => {
   const moved = moveItemBefore(groups, "c", "a");
   assert.deepEqual(moved.map((group) => group.id), ["c", "a", "b"]);
   assert.equal(moved[0].name, "C");
+});
+
+test("grouped tabs follow favorite order regardless of which tabs are open", () => {
+  const favorites = [{ id: "f1", groupId: "g" }, { id: "f2", groupId: "g" }, { id: "f3", groupId: "g" }];
+  const ids = (tabs) => orderTabsByFavorites(tabs, favorites, ["g"]).map((tab) => tab.id);
+  assert.deepEqual(ids([{ id: "t3", favoriteId: "f3" }, { id: "t1", favoriteId: "f1" }]), ["t1", "t3"]);
+  assert.deepEqual(ids([{ id: "t1", favoriteId: "f1" }, { id: "t3", favoriteId: "f3" }, { id: "t2", favoriteId: "f2" }]), ["t1", "t2", "t3"]);
+  assert.deepEqual(ids([{ id: "x" }, { id: "t2", favoriteId: "f2" }, { id: "y", favoriteId: "gone" }, { id: "t2b", favoriteId: "f2" }]), ["x", "y", "t2", "t2b"]);
 });

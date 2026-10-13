@@ -19,7 +19,7 @@ NSApp sendEvent → tao TaoWindow sendEvent:（Rust extern "C"）→ NSWindow
   └─ flagsChanged: → handleFlagsChanged:            修飾鍵按下／放開
 ```
 
-另有兩個路徑會先看到按鍵：`initialize()` 裡的 `NSEvent` local monitor（app 層快捷鍵、⌘O）與 `globalKey` event tap（全域快捷鍵）。
+另有兩個路徑會先看到按鍵：`initialize()` 裡的 `NSEvent` local monitor（app 層快捷鍵、⌘O、⌘0）與 `globalKey` event tap（全域快捷鍵）。
 
 ## 不可違反的規則
 
