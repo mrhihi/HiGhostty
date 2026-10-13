@@ -14,6 +14,50 @@ export type Rect = {
   width: number;
   height: number;
 };
+export type GroupedItem = { id: string; groupId?: string };
+export function orderGroupedItems<T extends GroupedItem>(items: T[], groupIds: string[]): T[] {
+  const known = new Set(groupIds);
+  return [
+    ...items.filter((item) => !item.groupId || !known.has(item.groupId)),
+    ...groupIds.flatMap((id) => items.filter((item) => item.groupId === id)),
+  ];
+}
+export function moveGroupedItem<T extends GroupedItem>(items: T[], id: string, targetGroupId: string | null, beforeId?: string): T[] {
+  const moving = items.find((item) => item.id === id);
+  if (!moving) return items;
+  const rest = items.filter((item) => item.id !== id);
+  const moved = { ...moving } as T;
+  if (targetGroupId) moved.groupId = targetGroupId;
+  else delete moved.groupId;
+  let index = beforeId ? rest.findIndex((item) => item.id === beforeId) : -1;
+  if (index < 0) {
+    const targetItems = rest.map((item, itemIndex) => ({ item, itemIndex })).filter(({ item }) => targetGroupId ? item.groupId === targetGroupId : !item.groupId);
+    index = targetItems.length ? targetItems.at(-1)!.itemIndex + 1 : rest.length;
+  }
+  rest.splice(index, 0, moved);
+  return rest;
+}
+export function dissolveGroup<T extends GroupedItem>(items: T[], groupId: string): T[] {
+  return items.map((item) => {
+    if (item.groupId !== groupId) return item;
+    const dissolved = { ...item } as T;
+    delete dissolved.groupId;
+    return dissolved;
+  });
+}
+export function recentFavoriteInstance<T extends { id: string; favoriteId?: string }>(items: T[], favoriteId: string, recentId?: string): T | undefined {
+  const matches = items.filter((item) => item.favoriteId === favoriteId);
+  return matches.find((item) => item.id === recentId) || matches.at(-1);
+}
+export function moveItemBefore<T extends { id: string }>(items: T[], id: string, beforeId: string): T[] {
+  const from = items.findIndex((item) => item.id === id);
+  const to = items.findIndex((item) => item.id === beforeId);
+  if (from < 0 || to < 0 || from === to) return items;
+  const next = [...items];
+  const [moving] = next.splice(from, 1);
+  next.splice(next.findIndex((item) => item.id === beforeId), 0, moving);
+  return next;
+}
 export function leaves(node: Node): string[] {
   return node.kind === "leaf"
     ? [node.id]
@@ -141,4 +185,36 @@ export function neighbor(
     })
     .sort((a, b) => a.score - b.score);
   return ranked[0]?.score !== Infinity ? ranked[0]?.id : undefined;
+}
+export type FavoriteFolder = { id: string; kind: "folder"; name: string; color: string };
+export type TabFavoriteItem<T> = { id: string; kind: "tab"; name: string; tab: T; groupId?: string };
+type LegacyGroupFavorite<T> = { id: string; kind: "group"; name?: string; group?: { name?: string; color?: string }; tabs?: T[] };
+export type StoredFavorite<T> = FavoriteFolder | TabFavoriteItem<T> | LegacyGroupFavorite<T>;
+// Favorites are stored as one list of folders and tab favorites. Older
+// versions stored "group favorites" (a snapshot of several tabs); each of
+// those becomes a folder holding one tab favorite per saved tab.
+export function migrateFavorites<T extends { paths: string[]; title?: string }>(
+  items: StoredFavorite<T>[],
+  newId: () => string,
+): { folders: FavoriteFolder[]; favorites: TabFavoriteItem<T>[]; migrated: boolean } {
+  const folders: FavoriteFolder[] = [], favorites: TabFavoriteItem<T>[] = [];
+  let migrated = false;
+  for (const item of items) {
+    if (item.kind === "folder") folders.push(item);
+    else if (item.kind === "tab") favorites.push(item);
+    else if (item.kind === "group") {
+      migrated = true;
+      const name = item.name || item.group?.name || "群組";
+      folders.push({ id: item.id, kind: "folder", name, color: item.group?.color || "#77dfc0" });
+      for (const saved of item.tabs || []) {
+        const tab = { ...saved } as T & { groupId?: string; favoriteId?: string };
+        delete tab.groupId; delete tab.favoriteId;
+        const label = tab.title || tab.paths[0]?.split("/").filter(Boolean).at(-1) || "/";
+        favorites.push({ id: newId(), kind: "tab", name: label, tab, groupId: item.id });
+      }
+    }
+  }
+  const known = new Set(folders.map((folder) => folder.id));
+  for (const favorite of favorites) if (favorite.groupId && !known.has(favorite.groupId)) { delete favorite.groupId; migrated = true; }
+  return { folders, favorites, migrated };
 }

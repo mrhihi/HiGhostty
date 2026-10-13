@@ -121,6 +121,26 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
 @property BOOL hasLastPerformKeyEvent;
 @end
 @implementation HGSurface
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    @try { return [sender.draggingPasteboard.types containsObject:NSPasteboardTypeFileURL] ? NSDragOperationCopy : NSDragOperationNone; }
+    @catch(NSException *exception) { [self reportInputException:exception]; return NSDragOperationNone; }
+}
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
+    @try { return [sender.draggingPasteboard.types containsObject:NSPasteboardTypeFileURL]; }
+    @catch(NSException *exception) { [self reportInputException:exception]; return NO; }
+}
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    @try {
+        NSArray<NSURL *> *urls=[sender.draggingPasteboard readObjectsForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
+        if(!urls.count||!_surface)return NO;
+        NSMutableArray<NSString *> *quoted=[NSMutableArray array];
+        for(NSURL *url in urls){NSString *path=url.path;if(!path.length)continue;[quoted addObject:[NSString stringWithFormat:@"'%@'",[path stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]]];}
+        if(!quoted.count)return NO;
+        NSString *text=[quoted componentsJoinedByString:@" "];
+        ghostty_surface_text(_surface,text.UTF8String,[text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+        return YES;
+    } @catch(NSException *exception) { [self reportInputException:exception]; return NO; }
+}
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 - (BOOL)isAccessibilityElement { return !self.hidden; }
@@ -611,11 +631,27 @@ static NSDictionary *initialize(NSWindow *window,NSString *label,NSString *resou
         engine=ghostty_app_new(&runtime,config);if(!engine)return @{@"error":@"無法建立 Ghostty app"};
         configureGlobalKeys();
         localMonitor=[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event){
-                    if(!engine)return event;ghostty_input_key_s key=keyEvent(event,GHOSTTY_ACTION_PRESS);if(ghostty_app_key(engine,key))return nil;
-            if([event.charactersIgnoringModifiers.lowercaseString isEqualToString:@"o"]&&(event.modifierFlags&NSEventModifierFlagCommand)){
-                HGSurface *s=focused(lastWindow);if(!s||!ghostty_surface_key_is_binding(s.surface,key,NULL)){emit(lastWindow,@{@"type":@"browse"});return nil;}
+            @try {
+                if(!engine)return event;
+                NSString *pressed=event.charactersIgnoringModifiers.lowercaseString;
+                NSEventModifierFlags flags=event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+                NSEventModifierFlags command=NSEventModifierFlagCommand, shift=NSEventModifierFlagShift;
+                NSEventModifierFlags relevant=flags&(command|shift|NSEventModifierFlagOption|NSEventModifierFlagControl);
+                if(relevant==(command|shift)&&[pressed isEqualToString:@"b"]){emit(lastWindow,@{@"type":@"toggle-sidebar"});return nil;}
+                if(relevant==command&&pressed.length==1){
+                    NSInteger value=[pressed isEqualToString:@"0"]?10:[pressed integerValue];
+                    if(value>=1&&value<=10){emit(lastWindow,@{@"type":@"goto-tab",@"value":@(value)});return nil;}
+                }
+                ghostty_input_key_s key=keyEvent(event,GHOSTTY_ACTION_PRESS);
+                if(ghostty_app_key(engine,key))return nil;
+                if([pressed isEqualToString:@"o"]&&(relevant&command)){
+                    HGSurface *s=focused(lastWindow);if(!s||!ghostty_surface_key_is_binding(s.surface,key,NULL)){emit(lastWindow,@{@"type":@"browse"});return nil;}
+                }
+                return event;
+            } @catch(NSException *exception) {
+                emit(lastWindow,@{@"type":@"warning",@"message":[NSString stringWithFormat:@"快捷鍵處理失敗：%@ %@",exception.name,exception.reason ?: @""]});
+                return event;
             }
-            return event;
         }];
         observers=[NSMutableArray array];NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
         for(NSString *name in @[NSApplicationDidBecomeActiveNotification,NSApplicationDidResignActiveNotification]) [observers addObject:[nc addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){ghostty_app_set_focus(engine,NSApp.active);}]];
@@ -711,12 +747,14 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
         else if([op isEqualToString:@"open-config"]){ghostty_action_s a={.tag=GHOSTTY_ACTION_OPEN_CONFIG};nativeAction(engine,(ghostty_target_s){.tag=GHOSTTY_TARGET_APP},a);}
         else if([op isEqualToString:@"open"]){
             NSString *identifier=req[@"id"],*path=req[@"path"];
-            HGSurface *view=[[HGSurface alloc] initWithFrame:NSMakeRect(0,0,800,600)];view.identifier=identifier;view.owner=label;view.cwd=path;view.title=@"";view.marked=[[NSMutableAttributedString alloc] initWithString:@""];view.hidden=YES;
+            HGSurface *view=[[HGSurface alloc] initWithFrame:NSMakeRect(0,0,800,600)];[view registerForDraggedTypes:@[NSPasteboardTypeFileURL]];view.identifier=identifier;view.owner=label;view.cwd=path;view.title=@"";view.marked=[[NSMutableAttributedString alloc] initWithString:@""];view.hidden=YES;
             NSView *web=findWebView(window.contentView);NSView *parent=web.superview ?: window.contentView;
             [parent addSubview:view positioned:NSWindowAbove relativeTo:web];surfaces[identifier]=view;
             ghostty_surface_config_s options=ghostty_surface_config_new();
             HGSurface *source=surfaces[req[@"source"]];if(source.surface)options=ghostty_surface_inherited_config(source.surface,[req[@"split"] boolValue]?GHOSTTY_SURFACE_CONTEXT_SPLIT:GHOSTTY_SURFACE_CONTEXT_TAB);
+            NSString *command=req[@"command"];
             options.platform_tag=GHOSTTY_PLATFORM_MACOS;options.platform.macos.nsview=(__bridge void *)view;options.userdata=(__bridge void *)view;options.working_directory=path.UTF8String;options.scale_factor=window.backingScaleFactor;
+            if(command.length)options.command=command.UTF8String;
             view.surface=ghostty_surface_new(engine,&options);
             view.wantsLayer=YES;view.layer.backgroundColor=[backgroundColor() colorWithAlphaComponent:numberConfig("background-opacity",1)].CGColor;
             if(!view.surface){[view removeFromSuperview];[surfaces removeObjectForKey:identifier];result=@{@"error":@"建立原生 Ghostty surface 失敗"};}else{[view syncSize];result=@{@"id":identifier,@"cwd":path};}
