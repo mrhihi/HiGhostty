@@ -1,0 +1,8 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 刻意不加相依套件：專案常放在 macFUSE 外接碟，少編譯越不容易踩到檔案系統問題。
+[dependencies]

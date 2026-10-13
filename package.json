@@ -1,0 +1,22 @@
+{
+  "name": "highostty",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc && vite build",
+    "tauri": "tauri",
+    "native:bootstrap": "node scripts/bootstrap-ghostty.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9",
+    "vite": "^7"
+  }
+}

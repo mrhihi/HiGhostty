@@ -1,0 +1,33 @@
+# 相依套件與前端輸出
+node_modules/
+/dist/
+
+# Rust / Tauri 建置產物（target 預設在 /private/tmp，這裡只防萬一）
+target/
+/src-tauri/gen/
+
+# npm run native:bootstrap 產生的 Ghostty 函式庫與資源
+/src-tauri/vendor/
+
+# 發佈產物
+*.dmg
+*.app/
+
+# macOS 與外接碟（exFAT／NTFS）產生的中繼資料
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes
+.fseventsd/
+
+# 編輯器與本機設定
+.vscode/
+.idea/
+*.swp
+.claude/settings.local.json
+
+# 環境變數與記錄檔
+.env
+.env.*
+*.log
+npm-debug.log*
