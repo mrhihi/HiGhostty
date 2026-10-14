@@ -339,13 +339,14 @@ fn version() -> Result {
     let (bump, reason) = suggest(&current, &log);
     let next = current.bump(bump);
     println!("建議下個版本：{next}（{reason}）");
-    println!("\n  cargo xtask release {next}");
-    println!(
-        "\n其他選擇：patch → {}、minor → {}、major → {}",
-        current.bump(Bump::Patch),
-        current.bump(Bump::Minor),
-        current.bump(Bump::Major)
-    );
+    println!("\n建議：\n  cargo xtask release {next}");
+    println!("\n其他選擇：");
+    for (label, b) in [("patch", Bump::Patch), ("minor", Bump::Minor), ("major", Bump::Major)] {
+        let v = current.bump(b);
+        if v != next {
+            println!("  cargo xtask release {v}    # {label}");
+        }
+    }
     Ok(())
 }
 
