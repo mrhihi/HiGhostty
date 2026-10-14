@@ -18,6 +18,10 @@ test("tmuxCommand attaches or creates, quoting cwd and command", () => {
   assert.throws(() => tmuxCommand("x; rm", "/"));
 });
 
+test("tmuxCommand uses a quoted absolute binary", () => {
+  assert.ok(tmuxCommand("hg-abcd1234", "/", undefined, false, "/opt/homebrew/bin/tmux").startsWith("'/opt/homebrew/bin/tmux' new-session -A -s hg-abcd1234"));
+});
+
 test("restorable keeps only tmux tabs and drops invalid sessions", () => {
   const tabs = [
     { paths: ["/a"], tmux: true, tmuxSessions: ["hg-abcd1234", "evil;"] },

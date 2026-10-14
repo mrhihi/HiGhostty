@@ -10,9 +10,7 @@ use std::{
     },
 };
 use tauri::{Emitter, Manager};
-mod attention;
 mod files;
-mod hooks;
 mod snippets;
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
@@ -46,21 +44,40 @@ extern "C" fn native_event(label: *const libc::c_char, event: *const libc::c_cha
         }
     });
 }
-#[tauri::command]
-fn hook_status() -> Result<Vec<hooks::Status>, String> {
-    Ok(hooks::status(&user_home()?))
+const PROMPT_RULES_TEMPLATE: &str = r#"{
+  "_readme": "提示辨識規則（使用者覆蓋檔）。規則排在內建規則前面；id 與內建相同即取代；disable 可停用內建規則。內建規則見專案 src/prompt-rules.json 與 docs/attention.md。",
+  "version": 1,
+  "agents": [],
+  "footers": [],
+  "disable": [],
+  "rules": []
 }
+"#;
+fn prompt_rules_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("prompt-rules.json"))
+}
+/// 使用者的提示辨識規則原文；檔案不存在回傳空字串。
 #[tauri::command]
-fn hook_install(app: tauri::AppHandle, agent: String) -> Result<(), String> {
-    let script = attention::script_path(&data_dir(&app)?);
-    if !script.exists() {
-        return Err("hg-notify 尚未就緒，請重新啟動 HiGhostty".into());
+fn prompt_rules_read(app: tauri::AppHandle) -> Result<String, String> {
+    match std::fs::read_to_string(prompt_rules_file(&app)?) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(err(e)),
     }
-    hooks::install(&user_home()?, &agent, &script)
 }
+/// 以預設文字編輯器開啟規則檔；不存在時先寫入範本。
 #[tauri::command]
-fn hook_remove(agent: String) -> Result<(), String> {
-    hooks::remove(&user_home()?, &agent)
+fn prompt_rules_open(app: tauri::AppHandle) -> Result<(), String> {
+    let path = prompt_rules_file(&app)?;
+    if !path.exists() {
+        std::fs::write(&path, PROMPT_RULES_TEMPLATE).map_err(err)?;
+    }
+    std::process::Command::new("open")
+        .arg("-t")
+        .arg(&path)
+        .spawn()
+        .map_err(err)?;
+    Ok(())
 }
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -71,6 +88,26 @@ fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .unwrap_or(app.path().app_config_dir().map_err(err)?);
     std::fs::create_dir_all(&dir).map_err(err)?;
     Ok(dir)
+}
+/// 主視窗大小（邏輯像素）；結束 app 時記住，下次啟動沿用。
+fn window_size_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+    data_dir(app).ok().map(|dir| dir.join("window-state.json"))
+}
+fn load_window_size(app: &tauri::AppHandle) -> Option<(f64, f64)> {
+    let value: Value = serde_json::from_slice(&std::fs::read(window_size_file(app)?).ok()?).ok()?;
+    let (w, h) = (value.get("width")?.as_f64()?, value.get("height")?.as_f64()?);
+    (w.is_finite() && h.is_finite() && w >= 720.0 && h >= 480.0 && w <= 10000.0 && h <= 10000.0).then_some((w, h))
+}
+fn save_window_size(window: &tauri::Window) {
+    // 全螢幕／最大化的尺寸不代表使用者要的大小。
+    if window.is_fullscreen().unwrap_or(false) || window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) else { return };
+    let logical = size.to_logical::<f64>(scale);
+    if let Some(path) = window_size_file(window.app_handle()) {
+        let _ = std::fs::write(path, json!({"width": logical.width, "height": logical.height}).to_string());
+    }
 }
 fn user_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
@@ -394,6 +431,33 @@ fn tmux_set_status(name: String, visible: bool) -> Result<(), String> {
     }
     Ok(())
 }
+/// 每個 tmux session 目前前景的指令名稱（pane_current_command），供待處理偵測判斷 agent；
+/// tmux 頁籤裡原生終端機看到的前景行程只是 tmux client。
+#[tauri::command]
+fn tmux_panes() -> Result<std::collections::HashMap<String, String>, String> {
+    let Some(tmux) = find_tmux() else { return Ok(Default::default()) };
+    let out = std::process::Command::new(tmux)
+        .args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_current_command}"])
+        .output()
+        .map_err(err)?;
+    let mut map = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some((session, command)) = line.split_once('\t') {
+            map.entry(session.to_string()).or_insert_with(|| command.to_string());
+        }
+    }
+    Ok(map)
+}
+/// tmux 的絕對路徑，供前端組成不經互動式 shell 的啟動命令。
+#[tauri::command]
+fn tmux_path() -> Option<String> {
+    if let Some(p) = find_tmux() {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    let out = std::process::Command::new("sh").args(["-lc", "command -v tmux"]).output().ok()?;
+    let path = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && path.starts_with('/')).then_some(path)
+}
 #[tauri::command]
 fn tmux_available() -> bool {
     find_tmux().is_some() || std::process::Command::new("sh").args(["-lc", "command -v tmux"]).output().map(|o| o.status.success()).unwrap_or(false)
@@ -479,18 +543,24 @@ fn main() {
         previous(info);
     }));
     tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Resized(_)) {
+                save_window_size(window);
+            }
+        })
         .setup(|app| {
             let _ = APP.set(app.handle().clone());
-            if let Ok(dir) = data_dir(app.handle()) {
-                attention::start(app.handle().clone(), dir);
+            if let (Some(window), Some((w, h))) = (app.get_webview_window("main"), load_window_size(app.handle())) {
+                let _ = window.set_size(tauri::LogicalSize::new(w, h));
+                let _ = window.center();
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             home,
-            hook_status,
-            hook_install,
-            hook_remove,
+            tmux_panes,
+            prompt_rules_read,
+            prompt_rules_open,
             resolve_path,
             files::list_files,
             files::dir_stamp,
@@ -509,6 +579,7 @@ fn main() {
             tmux_kill_session,
             tmux_set_status,
             tmux_available,
+            tmux_path,
             new_window,
             list_windows,
             focus_window,

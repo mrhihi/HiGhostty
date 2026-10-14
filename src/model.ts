@@ -33,6 +33,22 @@ export function orderTabsByFavorites<T extends { id: string; favoriteId?: string
     ...groupIds.flatMap((id) => favorites.filter((item) => item.groupId === id).flatMap((item) => tabs.filter((tab) => tab.favoriteId === item.id && groupOf(tab) === id))),
   ];
 }
+// Sub-tabs (one level only) sit right after their root tab; a sub-tab whose
+// root is gone is treated as a root so it never disappears.
+export function orderWithChildren<T extends { id: string; parentId?: string }>(tabs: T[]): T[] {
+  const ids = new Set(tabs.map((tab) => tab.id));
+  const isChild = (tab: T) => !!tab.parentId && ids.has(tab.parentId);
+  return tabs.filter((tab) => !isChild(tab)).flatMap((root) => [root, ...tabs.filter((tab) => isChild(tab) && tab.parentId === root.id)]);
+}
+// When a root closes, its first sub-tab becomes the root and adopts the rest,
+// so the tree never grows a second level. Returns the new root, if any.
+export function promoteChildren<T extends { id: string; parentId?: string }>(tabs: T[], rootId: string): T | undefined {
+  const [head, ...rest] = tabs.filter((tab) => tab.parentId === rootId);
+  if (!head) return undefined;
+  delete head.parentId;
+  for (const tab of rest) tab.parentId = head.id;
+  return head;
+}
 export function moveGroupedItem<T extends GroupedItem>(items: T[], id: string, targetGroupId: string | null, beforeId?: string): T[] {
   const moving = items.find((item) => item.id === id);
   if (!moving) return items;
@@ -228,4 +244,13 @@ export function migrateFavorites<T extends { paths: string[]; title?: string }>(
   const known = new Set(folders.map((folder) => folder.id));
   for (const favorite of favorites) if (favorite.groupId && !known.has(favorite.groupId)) { delete favorite.groupId; migrated = true; }
   return { folders, favorites, migrated };
+}
+// A tab linked to a favorite shows the favorite's name; otherwise its own title,
+// then the directory name.
+export function displayName(favoriteName: string | undefined, title: string | undefined, fallback: string): string {
+  return favoriteName || title || fallback;
+}
+// When a favorite goes away, its tabs keep the name they were showing.
+export function unlinkedTitle(favoriteName: string | undefined, title: string | undefined): string | undefined {
+  return favoriteName || title;
 }

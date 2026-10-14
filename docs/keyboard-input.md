@@ -73,7 +73,7 @@ NSApp sendEvent → tao TaoWindow sendEvent:（Rust extern "C"）→ NSWindow
 - [ ] Shift 打大寫、符號；單獨按放 Shift／Ctrl／Option／Cmd 不會閃退。
 - [ ] 中文輸入法（注音、拼音等）組字時顯示 preedit，選字送出後正確。
 - [ ] 切換輸入法（⌃Space 或 Caps Lock）後繼續輸入正常。
-- [ ] ⌃C、⌃D、⌘C／⌘V、⌘T、⌘D 正常。
+- [ ] ⌃C、⌃D、⌘C／⌘V、⌘T、⌘⇧T、⌘D 正常（含焦點在分割／分組收藏終端機時 ⌘T）。
 - [ ] 方向鍵、Backspace、Tab、Esc 正常。
 - [ ] log 中字母 `interpret` 為 `sentChars=1`，且有修飾鍵紀錄。
 - [ ] `~/Library/Logs/DiagnosticReports` 沒有新增 `highostty-*.ips`。

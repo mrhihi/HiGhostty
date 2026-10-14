@@ -15,9 +15,10 @@ export function validSession(name: unknown): name is string {
 const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
 // -A：session 已存在就 attach，否則建立；首次啟動與恢復用同一條命令。
-export function tmuxCommand(session: string, cwd: string, command?: string, hideStatus?: boolean): string {
+// bin 為 tmux 的絕對路徑（GUI app 的 PATH 找不到 Homebrew）；命令直接當 surface 的啟動命令，不經互動式 shell，所以不會進 history。
+export function tmuxCommand(session: string, cwd: string, command?: string, hideStatus?: boolean, bin = "tmux"): string {
   if (!validSession(session)) throw new Error("無效的 tmux session 名稱");
-  const parts = ["tmux", "new-session", "-A", "-s", session];
+  const parts = [bin === "tmux" ? bin : quote(bin), "new-session", "-A", "-s", session];
   if (cwd) parts.push("-c", quote(cwd));
   if (command?.trim()) parts.push(quote(command.trim()));
   // 狀態列是 session 層級設定；每次 attach 都明確套用，切換後重開才會一致。

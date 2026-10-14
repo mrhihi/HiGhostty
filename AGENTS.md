@@ -38,12 +38,13 @@
 - ⌘⇧P 在原生 local monitor 攔截；面板內快捷鍵避開 Ghostty app 層綁定（例如 ⌘N）。輸入法選字中不處理 Enter／方向鍵。
 - 匹配與排序邏輯只放 `src/snippets.ts` 並補 `tests/snippets.test.mjs`；改完照驗收清單實機操作。
 
-## 待處理提示（`src/attention.ts`、`src-tauri/src/{attention,hooks}.rs`、`bridge.m` 的 `scan`）
+## 待處理提示（`src/attention.ts`、`src/prompt-rules.{ts,json}`、`bridge.m` 的 `scan`）
 
-修改響鈴／agent 等待偵測或 hook 安裝前，先讀 `docs/attention.md`。重點：
+修改響鈴／agent 等待偵測或辨識規則前，先讀 `docs/attention.md`。重點：
 
-- 判定邏輯只放 `src/attention.ts` 並補 `tests/attention.test.mjs`；偵測看版面特徵，不要比對整句 agent 文案。
-- hook 安裝只能增刪 command 含 `hg-notify` 的項目，不可改動使用者其他設定；改動檔案前要備份、解析失敗不寫入；邏輯補 `hooks.rs` 單元測試。
+- 判定邏輯只放 `src/attention.ts`，規則載入與合併只放 `src/prompt-rules.ts`，並補 `tests/attention.test.mjs`、`tests/prompt-rules.test.mjs`。沒有 hook 機制，只靠響鈴／通知／標題 spinner 與畫面辨識。
+- 比對用的字串（關鍵字、頁尾、agent 行程名）放在規則檔 `src/prompt-rules.json`（使用者可用資料目錄的 `prompt-rules.json` 覆蓋），不要寫死在程式裡；規則檔必須維持可通過 `buildRules`，新增規則要補測試案例。
+- 使用者規則檔有誤時整份退回內建規則並顯示原因，不可讓偵測失效。
 - 「待處理」面板在 drawer（HTML），不要做會被終端機 NSView 蓋住的浮層。
 
 ## tmux 背景執行（`src/tmux.ts`、`src/main.ts` 的 `freezeSession`／`restoreSession`、`src-tauri/src/main.rs` 的 session 命令）

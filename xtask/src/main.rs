@@ -29,6 +29,7 @@ const USAGE: &str = "\
   build    [--debug]                          建置 HiGhostty.app
   publish  [--debug] [--skip-build]           打包成 dmg
            [--install | --no-install]         是否複製到 ~/Applications（未指定則詢問）
+  clean    [--all]                            清除建置產出與中間產物（--all 連 vendor、node_modules 一併清）
   push     [-m <訊息>]                        推送到 GitHub；帶 -m 會先 commit 所有變更
   version                                     顯示目前與建議的下個版本
   release  <X.Y.Z|patch|minor|major>          升版 → 建置 → dmg → commit → push → tag → GitHub Release
@@ -74,6 +75,11 @@ fn dispatch(args: &[String]) -> Result {
             };
             opts.finish()?;
             publish(debug, skip_build, install).map(|_| ())
+        }
+        "clean" => {
+            let all = opts.flag("--all");
+            opts.finish()?;
+            clean(all)
         }
         "push" => {
             let message = opts.value("-m")?;
@@ -141,6 +147,54 @@ fn remove_apple_double(dir: &Path) -> Result {
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------- clean
+
+/// 預設清 Cargo 輸出目錄（app、dmg、中間產物）與前端輸出；`--all` 另清需重新下載／編譯的
+/// `src-tauri/vendor`（要再跑 `npm run native:bootstrap`）、`node_modules` 與 xtask 自己的 target。
+fn clean(all: bool) -> Result {
+    let root = root();
+    let mut targets = vec![
+        target_dir(),
+        root.join("dist"),
+        root.join("src-tauri/target"),
+        root.join("src-tauri/gen"),
+    ];
+    if all {
+        targets.extend([
+            root.join("src-tauri/vendor"),
+            root.join("node_modules"),
+            root.join("xtask/target"),
+        ]);
+    }
+    let mut removed = 0;
+    for path in targets {
+        if !is_removable(&path, &root) {
+            return Err(format!("拒絕刪除 {}（路徑不安全）", path.display()));
+        }
+        if fs::symlink_metadata(&path).is_err() {
+            continue;
+        }
+        let result = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        result.map_err(|e| format!("無法刪除 {}：{e}", path.display()))?;
+        println!("✓ 已刪除 {}", path.display());
+        removed += 1;
+    }
+    if removed == 0 {
+        println!("沒有需要清除的項目");
+    }
+    Ok(())
+}
+
+/// `CARGO_TARGET_DIR` 可被覆寫，避免誤設成根目錄、家目錄或專案本身而整個刪掉。
+fn is_removable(path: &Path, root: &Path) -> bool {
+    let home = env::var_os("HOME").map(PathBuf::from);
+    path.is_absolute()
+        && path.components().count() > 2
+        && path != root
+        && !root.starts_with(path)
+        && home.as_deref() != Some(path)
 }
 
 // ---------------------------------------------------------------- publish
@@ -632,6 +686,17 @@ mod tests {
 
     fn log(subjects: &[&str], breaking: bool) -> CommitLog {
         CommitLog { tag: None, subjects: subjects.iter().map(|s| s.to_string()).collect(), breaking }
+    }
+
+    #[test]
+    fn clean_refuses_unsafe_paths() {
+        let root = Path::new("/Users/me/proj");
+        assert!(is_removable(Path::new("/private/tmp/highostty-target"), root));
+        assert!(!is_removable(Path::new("/"), root));
+        assert!(!is_removable(Path::new("/Users"), root));
+        assert!(!is_removable(Path::new("/Users/me"), root));
+        assert!(!is_removable(root, root));
+        assert!(!is_removable(Path::new("relative"), root));
     }
 
     #[test]

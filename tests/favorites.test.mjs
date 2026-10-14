@@ -35,3 +35,13 @@ test("current favorites pass through unchanged and orphaned group links are clea
   assert.equal(fixed.migrated, true);
   assert.equal("groupId" in fixed.favorites[0], false);
 });
+
+test("a linked tab shows the favorite name, otherwise its title, then the directory", async () => {
+  const { displayName, unlinkedTitle } = await import("../src/model.ts");
+  assert.equal(displayName("收藏名", "終端機標題", "dir"), "收藏名");
+  assert.equal(displayName(undefined, "終端機標題", "dir"), "終端機標題");
+  assert.equal(displayName(undefined, undefined, "dir"), "dir");
+  assert.equal(unlinkedTitle("收藏名", undefined), "收藏名");
+  assert.equal(unlinkedTitle("收藏名", "終端機標題"), "收藏名");
+  assert.equal(unlinkedTitle(undefined, "自訂"), "自訂");
+});

@@ -710,6 +710,7 @@ static NSDictionary *initialize(NSWindow *window,NSString *label,NSString *resou
                 NSEventModifierFlags command=NSEventModifierFlagCommand, shift=NSEventModifierFlagShift;
                 NSEventModifierFlags relevant=flags&(command|shift|NSEventModifierFlagOption|NSEventModifierFlagControl);
                 if(relevant==(command|shift)&&[pressed isEqualToString:@"b"]){emit(lastWindow,@{@"type":@"toggle-sidebar"});return nil;}
+                if(relevant==(command|shift)&&[pressed isEqualToString:@"t"]){emit(lastWindow,@{@"type":@"duplicate-tab"});return nil;}
                 if(relevant==(command|shift)&&[pressed isEqualToString:@"p"]){emit(lastWindow,@{@"type":@"toggle-palette"});return nil;}
                 if(relevant==command&&pressed.length==1){
                     // ⌘0 toggles the files panel like ⌘O; ⌘1～⌘9 switch tabs.
@@ -786,10 +787,13 @@ static NSDictionary *processInfo(HGSurface *surface) {
 }
 // Visible screen text plus the agent-looking process name of each requested
 // surface, for attention detection. The process walk is cached for a few seconds.
-static NSDictionary *scanSurfaces(NSArray *ids) {
+static NSDictionary *scanSurfaces(NSArray *ids,NSArray *agents) {
     static NSMutableDictionary<NSString *,NSDictionary *> *agentCache;
     if(!agentCache)agentCache=[NSMutableDictionary dictionary];
-    NSRegularExpression *agentName=[NSRegularExpression regularExpressionWithPattern:@"^(claude|codex|gemini|copilot|aider|opencode|node|python3?|bun|deno)\\b" options:0 error:nil];
+    // Agent process names come from the prompt rules (regex fragments); fall back to the built-in list.
+    NSRegularExpression *agentName=nil;
+    if([agents isKindOfClass:NSArray.class]&&agents.count)agentName=[NSRegularExpression regularExpressionWithPattern:[NSString stringWithFormat:@"^(%@)\\b",[agents componentsJoinedByString:@"|"]] options:NSRegularExpressionCaseInsensitive error:nil];
+    if(!agentName)agentName=[NSRegularExpression regularExpressionWithPattern:@"^(claude|codex|gemini|copilot|aider|opencode|\\d+\\.\\d+\\.\\d+|node|python3?|bun|deno)\\b" options:0 error:nil];
     NSMutableDictionary *out=[NSMutableDictionary dictionary];
     for(NSString *identifier in ids){
         HGSurface *s=surfaces[identifier];if(!s||!s.surface||s.closing)continue;
@@ -809,7 +813,8 @@ static NSDictionary *scanSurfaces(NSArray *ids) {
 }
 static NSDictionary *destroySurface(HGSurface *surface,BOOL force) {
     NSDictionary *info=processInfo(surface);NSArray *running=info[@"running"];
-    if(!force&&(running.count||[info[@"needsConfirm"] boolValue]))return @{@"error":@"仍有工作執行，請確認終止",@"running":running};
+    // tmux 窗格的前景行程只是 tmux client；終止它不會結束 session（session 由前端另外決定是否 kill）。
+    if(!force&&!surface.tmux&&(running.count||[info[@"needsConfirm"] boolValue]))return @{@"error":@"仍有工作執行，請確認終止",@"running":running};
     NSArray *pids=info[@"pids"];
     for(NSDictionary *r in [pids reverseObjectEnumerator]){struct proc_bsdinfo current={0};int pid=[r[@"pid"] intValue];if(proc_pidinfo(pid,PROC_PIDTBSDINFO,0,&current,sizeof(current))==sizeof(current)&&current.pbi_start_tvsec*1000000ULL+current.pbi_start_tvusec==[r[@"start"] unsignedLongLongValue]){if(kill(pid,SIGKILL)<0&&errno!=ESRCH)return @{@"error":str(strerror(errno))};}}
     // Do not release a surface while descendants are still running. Retry is safe.
@@ -878,8 +883,6 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
             BOOL commandInShell=[req[@"commandInShell"] boolValue]&&command.length;
             options.platform_tag=GHOSTTY_PLATFORM_MACOS;options.platform.macos.nsview=(__bridge void *)view;options.userdata=(__bridge void *)view;options.working_directory=path.UTF8String;options.scale_factor=window.backingScaleFactor;
             if(command.length&&!commandInShell)options.command=command.UTF8String;
-            // Lets agent hooks (hg-notify) tell HiGhostty which terminal they run in.
-            ghostty_env_var_s surfaceEnv[1]={{"HIGHOSTTY_SURFACE_ID",identifier.UTF8String}};options.env_vars=surfaceEnv;options.env_var_count=1;
             view.surface=ghostty_surface_new(engine,&options);
             view.wantsLayer=YES;view.layer.backgroundColor=[backgroundColor() colorWithAlphaComponent:numberConfig("background-opacity",1)].CGColor;
             if(!view.surface){[view removeFromSuperview];[surfaces removeObjectForKey:identifier];result=@{@"error":@"建立原生 Ghostty surface 失敗"};}else{
@@ -907,7 +910,7 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
             if([req[@"restoreFocus"] boolValue]&&![req[@"width"] doubleValue]&&web&&window.firstResponder==web){HGSurface *f=focused(label);if(f&&!f.hidden)[window makeFirstResponder:f];}
         }else if([op isEqualToString:@"focus"]){HGSurface *s=surfaces[req[@"id"]];if(s&&!s.hidden&&window.firstResponder!=s)[window makeFirstResponder:s];}
         else if([op isEqualToString:@"focus-web"]){NSView *web=findWebView(window.contentView);if(web)[window makeFirstResponder:web];}
-        else if([op isEqualToString:@"scan"]){result=scanSurfaces(req[@"ids"]);}
+        else if([op isEqualToString:@"scan"]){result=scanSurfaces(req[@"ids"],req[@"agents"]);}
         else if([op isEqualToString:@"info"]){HGSurface *s=surfaces[req[@"id"]];result=s?processInfo(s):@{@"error":@"找不到終端機"};}
         else if([op isEqualToString:@"close"]){HGSurface *s=surfaces[req[@"id"]];result=s?destroySurface(s,[req[@"force"] boolValue]):@{@"closed":@YES};}
         else if([op isEqualToString:@"binding"]){HGSurface *s=surfaces[req[@"id"]];NSString *binding=req[@"action"];if(!s||!ghostty_surface_binding_action(s.surface,binding.UTF8String,[binding lengthOfBytesUsingEncoding:NSUTF8StringEncoding]))result=@{@"error":@"Ghostty 無法執行這個動作"};}

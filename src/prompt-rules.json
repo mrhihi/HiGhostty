@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "agents": ["claude", "codex", "gemini", "copilot", "aider", "opencode", "\\d+\\.\\d+\\.\\d+", "node", "python3?", "bun", "deno"],
+  "footers": ["esc to interrupt", "shift\\+tab to cycle", "bypass permissions on", "\\? for shortcuts", "context left"],
+  "disable": [],
+  "rules": [
+    { "id": "layout-confirm-menu", "kind": "confirm", "label": "等待確認", "layout": "confirm-menu", "confirmText": "enter to confirm" },
+    { "id": "trust", "kind": "trust", "label": "信任工作區？", "scope": "tail", "pattern": "do you trust|trust (?:the )?(?:files|this folder|this directory|this workspace)|信任(?:此|這個)?(?:資料夾|目錄|工作區)", "flags": "i" },
+    { "id": "approve", "kind": "confirm", "label": "等待核准", "scope": "tail", "pattern": "do you want to (?:proceed|make this edit|create|run|allow)|would you like to (?:run|proceed|make)|allow (?:this|the) (?:command|tool|action)|是否(?:允許|執行|核准)", "flags": "i" },
+    { "id": "layout-cursor-menu", "kind": "menu", "label": "等待選擇", "layout": "cursor-menu" },
+    { "id": "yesno", "kind": "yesno", "label": "等待確認 (y/n)", "scope": "tail", "pattern": "[\\[(]\\s*(?:y/n|yes/no)\\s*[\\])]", "flags": "i" },
+    { "id": "press-enter", "kind": "press-enter", "label": "等待按 Enter", "scope": "last", "pattern": "(?:press|hit)\\s+enter|按下?\\s*enter|按任意鍵", "flags": "i" },
+    { "id": "password", "kind": "password", "label": "等待輸入密碼", "scope": "last", "pattern": "password|passphrase|verification code|authentication code|one-time code|密碼|驗證碼", "flags": "i" },
+    { "id": "login", "kind": "login", "label": "等待登入", "scope": "last", "pattern": "sign in|log in|authorize|authorization|登入|授權", "flags": "i" },
+    { "id": "ask", "kind": "input", "label": "等待輸入？", "scope": "last", "pattern": "[?:：？]\\s*$", "confidence": "low" }
+  ]
+}

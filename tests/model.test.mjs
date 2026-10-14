@@ -8,6 +8,8 @@ import {
   neighbor,
   resizeSplit,
   equalize,
+  orderWithChildren,
+  promoteChildren,
 } from "../src/model.ts";
 test("splitting and closing retain every other surface", () => {
   let tree = { kind: "leaf", id: "a" };
@@ -50,4 +52,14 @@ test("resizing selects the closest matching branch and clamps the ratio", () => 
   equalize(tree);
   assert.equal(tree.second.ratio, 0.5);
   assert.equal(resizeSplit(tree, "a", 0, 0.1), false);
+});
+
+test("sub-tabs follow their root and promotion keeps a single level", () => {
+  const tabs = [{ id: "a" }, { id: "b" }, { id: "a1", parentId: "a" }, { id: "a2", parentId: "a" }, { id: "x", parentId: "gone" }];
+  assert.deepEqual(orderWithChildren(tabs).map((t) => t.id), ["a", "a1", "a2", "b", "x"]);
+  const head = promoteChildren(tabs, "a");
+  assert.equal(head.id, "a1");
+  assert.equal(head.parentId, undefined);
+  assert.equal(tabs.find((t) => t.id === "a2").parentId, "a1");
+  assert.equal(promoteChildren(tabs, "b"), undefined);
 });
