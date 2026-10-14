@@ -892,6 +892,9 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
             }
         }else if([op isEqualToString:@"layout"]){
             NSView *web=findWebView(window.contentView);NSArray *rects=req[@"rects"];
+            // 先全部隱藏再逐一顯示：隱藏 first responder 會讓視窗失去焦點（AppKit 不會在重新顯示時還原），
+            // 所以不是由 focus op 接著呼叫的 layout（尺寸變動、cwd 事件…）會把鍵盤焦點弄丟。記住它，布局後還原。
+            HGSurface *keepFocus=[window.firstResponder isKindOfClass:[HGSurface class]]?(HGSurface *)window.firstResponder:nil;
             for(HGSurface *s in surfaces.allValues)if([s.owner isEqualToString:label]){s.hidden=YES;if(s.surface)ghostty_surface_set_occlusion(s.surface,false);}
             double ratio=web.bounds.size.width/[req[@"viewportWidth"] doubleValue];if(!isfinite(ratio)||ratio<=0)ratio=1;
             for(NSDictionary *r in rects){HGSurface *s=surfaces[r[@"id"]];if(!s||![s.owner isEqualToString:label])continue;s.suspended=[req[@"suspended"] boolValue];
@@ -901,6 +904,7 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
                 if(s.surface){ghostty_surface_set_occlusion(s.surface,!s.hidden);if(!s.hidden)[s syncSize];}
                 applyCutout(s,web);
             }
+            if(keepFocus&&!keepFocus.hidden&&window.firstResponder!=keepFocus)[window makeFirstResponder:keepFocus];
         }else if([op isEqualToString:@"overlay-cutout"]){
             NSView *web=findWebView(window.contentView);
             if(!cutoutRequests)cutoutRequests=[NSMutableDictionary dictionary];

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  clampPreviewHeight,
   clampWidth,
   fileKindLabel,
   parentOf,
@@ -81,6 +82,10 @@ test("helpers", () => {
   assert.equal(shellQuote("/a b/it's"), `'/a b/it'\\''s'`);
   assert.equal(clampWidth(100, 1000), 240);
   assert.equal(clampWidth(900, 1000), 700);
+  assert.equal(clampPreviewHeight(10, 800), 80);
+  assert.equal(clampPreviewHeight(300, 800), 300);
+  assert.equal(clampPreviewHeight(790, 800), 560);
+  assert.equal(clampPreviewHeight(500, 60), 80);
   assert.equal(formatSize(512, false), "512 B");
   assert.equal(formatSize(12_300, false), "12 KB");
   assert.equal(formatSize(4_500_000, false), "4.5 MB");

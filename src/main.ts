@@ -130,7 +130,7 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 <section id="panel-workspace" class="panel-content"><div class="drawer-heading"><strong>工作區</strong><button id="new" class="icon-btn" title="新增頁籤" aria-label="新增頁籤">${icons.plus}</button></div><div id="tabs" role="tree" aria-label="工作區"></div></section>
 <section id="panel-favorites" class="panel-content"><div class="drawer-heading"><strong>收藏</strong><button id="favorite-add" class="icon-btn" title="新增收藏" aria-label="新增收藏">${icons.plus}</button><button id="favorite-group-add" class="icon-btn" title="新增群組" aria-label="新增群組">${icons.folderPlus}</button></div><div id="favorite-add-options" class="inline-actions" hidden><button id="favorite-current-tab" class="ghost-btn wide-button"></button><button id="favorite-from-dir" class="ghost-btn wide-button">從目錄建立收藏…</button></div><div id="favorites"></div></section>
 <section id="panel-snippets" class="panel-content"><div class="drawer-heading"><strong>指令片段</strong><button id="snippet-add" class="icon-btn" title="新增片段" aria-label="新增片段">${icons.plus}</button></div><div id="snippet-list"></div></section>
-<section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong>設定</strong></div><div class="settings-content"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn">開啟設定檔</button><button id="reload-config" class="ghost-btn">重新載入</button></div><h4>提示辨識規則</h4><p class="help">背景頁籤的 agent 停下來問你時，依規則辨識畫面並通知。規則檔可自行新增、取代或停用內建規則。</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn">開啟規則檔</button><button id="reload-rules" class="ghost-btn">重新載入</button></div><h4>診斷</h4><pre id="config-diagnostics"></pre><h4>快捷鍵</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span>切換頁籤</span><kbd>⌘⇧B</kbd><span>開合側欄</span><kbd>⌘⇧P</kbd><span>指令片段面板</span><kbd>⌘O / ⌘0</kbd><span>檔案面板</span><kbd>⇧⌘F</kbd><span>檔案面板滿版</span><kbd>⌘T</kbd><span>新頁籤</span><kbd>⌘⇧T</kbd><span>同目錄再開一個（子頁籤）</span><kbd>⌘D / ⌘⇧D</kbd><span>分割</span></div></div></section>
+<section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong>設定</strong></div><div class="settings-content"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn">開啟設定檔</button><button id="reload-config" class="ghost-btn">重新載入</button></div><h4>視窗</h4><p class="help">開啟 app 時主視窗的位置。大小一律沿用上次。</p><select id="window-placement"><option value="center">螢幕置中</option><option value="remember">記住上次位置</option></select><h4>提示辨識規則</h4><p class="help">背景頁籤的 agent 停下來問你時，依規則辨識畫面並通知。規則檔可自行新增、取代或停用內建規則。</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn">開啟規則檔</button><button id="reload-rules" class="ghost-btn">重新載入</button></div><h4>診斷</h4><pre id="config-diagnostics"></pre><h4>快捷鍵</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span>切換頁籤</span><kbd>⌘⇧B</kbd><span>開合側欄</span><kbd>⌘⇧P</kbd><span>指令片段面板</span><kbd>⌘O / ⌘0</kbd><span>檔案面板</span><kbd>⇧⌘F</kbd><span>檔案面板滿版</span><kbd>⌘T</kbd><span>新頁籤</span><kbd>⌘⇧T</kbd><span>同目錄再開一個（子頁籤）</span><kbd>⌘D / ⌘⇧D</kbd><span>分割</span></div></div></section>
 </div></section><section id="drawer-detail" aria-label="詳細內容"><div class="drawer-inner"></div></section>
 <section id="workspace"><div id="terminals" aria-label="原生 Ghostty 工作區"></div><div id="files-resizer" role="separator" aria-orientation="vertical" aria-label="調整檔案面板寬度" hidden></div><section id="files" aria-label="檔案" hidden></section><div id="empty" hidden><p>選擇目錄，開始工作。</p><button id="first">選擇資料夾…</button></div></section></main>
 <footer><span id="search-status"></span></footer>
@@ -1800,6 +1800,8 @@ async function handleEvent(event: NativeEvent) {
     case "exited":
       if (s) {
         s.exited = true;
+        // tmux 頁籤以命令啟動，Ghostty 會強制 wait-after-command；session 結束就直接關閉，不等按鍵。
+        if (s.tmuxSession) { await destroy(s.id, true); break; }
         renderTabs();
       }
       break;
@@ -2021,6 +2023,11 @@ action("reload-config", async () =>
   applyConfig(await native<NativeConfig>({ op: "reload" })),
 );
 action("open-rules", () => invoke("prompt_rules_open"));
+{
+  const placement = $("window-placement") as HTMLSelectElement;
+  invoke<string>("window_placement").then((mode) => { placement.value = mode; }).catch(() => {});
+  placement.addEventListener("change", () => { invoke("set_window_placement", { mode: placement.value }).catch(notify); });
+}
 action("reload-rules", () => loadPromptRules());
 action("close-palette", () => closeDialog("palette"));
 action("search-prev", () => searchBinding("navigate_search:previous"));

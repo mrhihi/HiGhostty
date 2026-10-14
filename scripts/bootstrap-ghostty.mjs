@@ -49,7 +49,10 @@ if (!zig) {
   if (
     arch === "aarch64" &&
     !/\barm64-macos\b/.test(
-      readFileSync(path.join(sdk, "usr/lib/libSystem.tbd"), "utf8"),
+      // 只看最上層的 targets 行；re-export 區段的 arm64-macos 不代表 libSystem 本身有 arm64 stub
+      readFileSync(path.join(sdk, "usr/lib/libSystem.tbd"), "utf8").match(
+        /^targets:.*$/m,
+      )?.[0] ?? "",
     )
   ) {
     arch = "x86_64";

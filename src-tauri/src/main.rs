@@ -17,6 +17,7 @@ static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
 static PENDING_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static RESOURCES: OnceLock<PathBuf> = OnceLock::new();
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+static STARTED: OnceLock<std::time::Instant> = OnceLock::new();
 extern "C" {
     fn hg_command(
         window: *mut std::ffi::c_void,
@@ -89,25 +90,109 @@ fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&dir).map_err(err)?;
     Ok(dir)
 }
-/// 主視窗大小（邏輯像素）；結束 app 時記住，下次啟動沿用。
+/// 主視窗大小與位置；結束 app 時記住，下次啟動沿用。`placement` 為 "center"（預設，螢幕置中）或 "remember"（沿用上次位置）。
 fn window_size_file(app: &tauri::AppHandle) -> Option<PathBuf> {
     data_dir(app).ok().map(|dir| dir.join("window-state.json"))
 }
+fn read_window_state(app: &tauri::AppHandle) -> Value {
+    window_size_file(app)
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| json!({}))
+}
+fn update_window_state(app: &tauri::AppHandle, patch: Value) {
+    let mut state = read_window_state(app);
+    if let (Some(map), Some(patch)) = (state.as_object_mut(), patch.as_object()) {
+        map.extend(patch.clone());
+    }
+    if let Some(path) = window_size_file(app) {
+        let _ = std::fs::write(path, state.to_string());
+    }
+}
 fn load_window_size(app: &tauri::AppHandle) -> Option<(f64, f64)> {
-    let value: Value = serde_json::from_slice(&std::fs::read(window_size_file(app)?).ok()?).ok()?;
+    let value = read_window_state(app);
     let (w, h) = (value.get("width")?.as_f64()?, value.get("height")?.as_f64()?);
     (w.is_finite() && h.is_finite() && w >= 720.0 && h >= 480.0 && w <= 10000.0 && h <= 10000.0).then_some((w, h))
 }
+fn remembers_position(app: &tauri::AppHandle) -> bool {
+    read_window_state(app).get("placement").and_then(Value::as_str) == Some("remember")
+}
+fn window_is_normal(window: &tauri::Window) -> bool {
+    // 全螢幕／最大化的尺寸與位置不代表使用者要的。
+    !(window.is_fullscreen().unwrap_or(false) || window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false))
+}
 fn save_window_size(window: &tauri::Window) {
-    // 全螢幕／最大化的尺寸不代表使用者要的大小。
-    if window.is_fullscreen().unwrap_or(false) || window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+    if !window_is_normal(window) {
         return;
     }
     let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) else { return };
     let logical = size.to_logical::<f64>(scale);
-    if let Some(path) = window_size_file(window.app_handle()) {
-        let _ = std::fs::write(path, json!({"width": logical.width, "height": logical.height}).to_string());
+    update_window_state(window.app_handle(), json!({"width": logical.width, "height": logical.height}));
+}
+fn save_window_position(window: &tauri::Window) {
+    if !window_is_normal(window) {
+        return;
     }
+    if let Ok(pos) = window.outer_position() {
+        update_window_state(window.app_handle(), json!({"x": pos.x, "y": pos.y}));
+    }
+}
+/// 上次位置仍有一部分落在某個螢幕內才採用（螢幕拔掉後退回置中）。
+fn load_window_position(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Option<tauri::PhysicalPosition<i32>> {
+    let state = read_window_state(app);
+    let (x, y) = (state.get("x")?.as_i64()? as i32, state.get("y")?.as_i64()? as i32);
+    let visible = window.available_monitors().ok()?.iter().any(|m| {
+        let (p, s) = (m.position(), m.size());
+        x + 100 > p.x && x < p.x + s.width as i32 - 100 && y >= p.y - 10 && y < p.y + s.height as i32 - 50
+    });
+    visible.then_some(tauri::PhysicalPosition::new(x, y))
+}
+/// 在視窗所在（或主）螢幕置中；用實際外框大小計算，避免 set_size 尚未生效造成偏移。
+fn center_window(window: &tauri::WebviewWindow) {
+    let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
+    let (Some(monitor), Ok(size)) = (monitor, window.outer_size()) else {
+        let _ = window.center();
+        return;
+    };
+    let (p, s) = (monitor.position(), monitor.size());
+    let x = p.x + (s.width as i32 - size.width as i32) / 2;
+    let y = p.y + (s.height as i32 - size.height as i32) / 2;
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+/// 剛啟動的一小段時間內，原生終端機會依 Ghostty 設定把視窗改成初始大小；
+/// 這段期間每次大小變動都重新套用記住的大小與位置，並且不把中途狀態寫回檔案。
+fn in_startup() -> bool {
+    STARTED.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(5))
+}
+fn apply_startup_layout(window: &tauri::WebviewWindow) {
+    let app = window.app_handle();
+    if let (Some((w, h)), Ok(size), Ok(scale)) = (load_window_size(app), window.inner_size(), window.scale_factor()) {
+        let current = size.to_logical::<f64>(scale);
+        if (current.width - w).abs() > 1.0 || (current.height - h).abs() > 1.0 {
+            // 會再觸發一次 Resized，屆時大小吻合才套用位置。
+            let _ = window.set_size(tauri::LogicalSize::new(w, h));
+            return;
+        }
+    }
+    match remembers_position(app).then(|| load_window_position(app, window)).flatten() {
+        Some(pos) => { let _ = window.set_position(pos); }
+        None => center_window(window),
+    }
+}
+#[tauri::command]
+fn window_placement(app: tauri::AppHandle) -> String {
+    if remembers_position(&app) { "remember" } else { "center" }.into()
+}
+#[tauri::command]
+fn set_window_placement(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    if mode != "center" && mode != "remember" {
+        return Err("未知的視窗位置模式".into());
+    }
+    update_window_state(&app, json!({"placement": mode}));
+    if let Some(window) = app.get_webview_window("main") {
+        save_window_position(&window.as_ref().window());
+    }
+    Ok(())
 }
 fn user_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
@@ -544,20 +629,31 @@ fn main() {
     }));
     tauri::Builder::default()
         .on_window_event(|window, event| {
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::Resized(_)) {
-                save_window_size(window);
+            if window.label() == "main" {
+                match event {
+                    tauri::WindowEvent::Resized(_) if in_startup() => {
+                        if let Some(win) = window.app_handle().get_webview_window("main") {
+                            apply_startup_layout(&win);
+                        }
+                    }
+                    tauri::WindowEvent::Resized(_) => save_window_size(window),
+                    tauri::WindowEvent::Moved(_) if !in_startup() => save_window_position(window),
+                    _ => {}
+                }
             }
         })
         .setup(|app| {
             let _ = APP.set(app.handle().clone());
-            if let (Some(window), Some((w, h))) = (app.get_webview_window("main"), load_window_size(app.handle())) {
-                let _ = window.set_size(tauri::LogicalSize::new(w, h));
-                let _ = window.center();
+            let _ = STARTED.set(std::time::Instant::now());
+            if let Some(window) = app.get_webview_window("main") {
+                apply_startup_layout(&window);
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             home,
+            window_placement,
+            set_window_placement,
             tmux_panes,
             prompt_rules_read,
             prompt_rules_open,

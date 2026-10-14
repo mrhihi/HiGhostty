@@ -111,9 +111,7 @@ fn dispatch(args: &[String]) -> Result {
 
 fn build(debug: bool) -> Result<PathBuf> {
     let root = root();
-    if !root.join("src-tauri/vendor/libghostty.a").exists() {
-        return Err("找不到 src-tauri/vendor/libghostty.a，請先執行 `npm run native:bootstrap`".into());
-    }
+    ensure_prerequisites(&root)?;
     // 外接碟上的 AppleDouble 檔會被 Tauri 當成 capability 讀取而失敗。
     remove_apple_double(&root.join("src-tauri/capabilities"))?;
 
@@ -130,6 +128,21 @@ fn build(debug: bool) -> Result<PathBuf> {
     }
     println!("✓ {}", app.display());
     Ok(app)
+}
+
+/// 建置前檢查並補齊相依：npm 套件（含 tauri CLI）與 Ghostty 原生函式庫。
+fn ensure_prerequisites(root: &Path) -> Result {
+    if !root.join("node_modules/.bin/tauri").exists() {
+        println!("找不到 node_modules（tauri CLI），安裝 npm 套件");
+        let install = if root.join("package-lock.json").exists() { "ci" } else { "install" };
+        run(Command::new("npm").arg(install).current_dir(root))?;
+    }
+    let vendor = root.join("src-tauri/vendor");
+    if !vendor.join("libghostty.a").exists() || !vendor.join("share").exists() {
+        println!("找不到 src-tauri/vendor 的 Ghostty 函式庫，執行 native:bootstrap（首次需下載並編譯，較久）");
+        run(Command::new("npm").args(["run", "native:bootstrap"]).current_dir(root))?;
+    }
+    Ok(())
 }
 
 fn app_path(debug: bool) -> PathBuf {

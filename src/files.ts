@@ -119,6 +119,13 @@ export function shellQuote(path: string) {
 export function clampWidth(width: number, viewport: number) {
   return Math.round(Math.max(MIN_WIDTH, Math.min(width, Math.max(MIN_WIDTH, viewport * 0.7))));
 }
+export const DEFAULT_PREVIEW_HEIGHT = 220;
+const MIN_PREVIEW_HEIGHT = 80;
+// Bottom preview height in columns view; leaves at least room for the heading and a few rows.
+export function clampPreviewHeight(height: number, panelHeight: number) {
+  const max = Math.max(MIN_PREVIEW_HEIGHT, panelHeight * 0.7);
+  return Math.round(Math.max(MIN_PREVIEW_HEIGHT, Math.min(height, max)));
+}
 export function formatSize(size: number, isDir: boolean) {
   if (isDir) return "—";
   if (size < 1000) return `${size} B`;

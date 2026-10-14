@@ -3,7 +3,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Menu } from "@tauri-apps/api/menu";
 import {
+  clampPreviewHeight,
   clampWidth,
+  DEFAULT_PREVIEW_HEIGHT,
   DEFAULT_WIDTH,
   fileKindLabel,
   formatDate,
@@ -76,12 +78,14 @@ export function initFilesPanel(host: FilesHost) {
 <button id="files-close" class="icon-btn" title="關閉（⌘O／⌘0）" aria-label="關閉檔案面板">${icons.close}</button>
 </div>
 <div class="files-columns"><button data-sort="name">名稱</button><button data-sort="size">大小</button><button data-sort="modified">修改日期</button></div>
-<div id="files-body"><div class="col-parent" aria-label="上層"></div><div id="files-list" role="tree" tabindex="0" aria-label="檔案" aria-multiselectable="true"></div><div class="col-preview" aria-label="預覽"></div></div>
+<div id="files-split"><div id="files-body"><div class="col-parent" aria-label="上層"></div><div id="files-list" role="tree" tabindex="0" aria-label="檔案" aria-multiselectable="true"></div><div class="col-child" aria-label="資料夾內容"></div></div><div id="files-preview-resizer" role="separator" aria-orientation="horizontal" aria-label="調整預覽高度"></div><div class="col-preview" aria-label="預覽"></div></div>
 <div id="files-status" role="status" hidden></div>`;
   const $ = (id: string) => document.getElementById(id)!;
   const list = $("files-list");
   const parentColumn = panel.querySelector<HTMLElement>(".col-parent")!;
+  const childColumn = panel.querySelector<HTMLElement>(".col-child")!;
   const previewColumn = panel.querySelector<HTMLElement>(".col-preview")!;
+  const previewResizer = $("files-preview-resizer");
 
   let cache = new Map<string, FileEntry[]>();
   let entries = new Map<string, FileEntry>();
@@ -97,10 +101,12 @@ export function initFilesPanel(host: FilesHost) {
   let showHidden = false;
   let sort: Sort = { key: "name", descending: false };
   let width = DEFAULT_WIDTH;
+  let previewHeight = DEFAULT_PREVIEW_HEIGHT;
   let view: FilesView = "list";
   // Selected after the next load: a path, or "first" for the first row.
   let pendingSelect: string | undefined;
   let previewToken = 0;
+  let childPick: FileEntry | undefined;
   let previewTimer: ReturnType<typeof setTimeout> | undefined;
   const previewCache = new Map<string, FileEntry[]>();
   const thumbnails = new Map<string, { image: string; kind: string }>();
@@ -109,6 +115,7 @@ export function initFilesPanel(host: FilesHost) {
     showHidden = localStorage.getItem("show-hidden") === "true";
     sort = { ...sort, ...JSON.parse(localStorage.getItem("files-sort") || "{}") };
     width = Number(localStorage.getItem("files-width")) || DEFAULT_WIDTH;
+    previewHeight = Number(localStorage.getItem("files-preview-height")) || DEFAULT_PREVIEW_HEIGHT;
   } catch {}
 
   const state = () => host.activeTab()?.files;
@@ -140,6 +147,8 @@ export function initFilesPanel(host: FilesHost) {
     resizer.hidden = !open || full;
     width = clampWidth(width, window.innerWidth);
     workspace.style.setProperty("--files-width", width + "px");
+    previewHeight = clampPreviewHeight(previewHeight, panel.clientHeight || window.innerHeight);
+    panel.style.setProperty("--preview-height", previewHeight + "px");
     $("files-full").innerHTML = full ? extraIcons.shrink : extraIcons.expand;
     $("files-full").title = full ? "結束滿版（⇧⌘F）" : "滿版（⇧⌘F）";
     panel.classList.toggle("view-columns", view === "columns");
@@ -311,28 +320,32 @@ export function initFilesPanel(host: FilesHost) {
   async function drawPreview() {
     const token = ++previewToken;
     const target = previewTarget(selection, entries);
+    // The child column lists a selected folder; the bottom pane describes the selection.
+    const child = document.createElement("div");
     const box = document.createElement("div");
-    if (target.kind === "many") {
-      box.className = "preview-note";
-      box.textContent = `已選取 ${target.count} 個項目`;
-    } else if (target.kind === "dir") {
-      const dir = target.entry.path;
-      let listing = previewCache.get(dir);
-      if (!listing) {
-        try { listing = await invoke<FileEntry[]>("list_files", { path: dir, showHidden }); }
-        catch (error) { listing = []; box.className = "preview-note"; box.textContent = String(error); }
-        if (token !== previewToken) return;
-        previewCache.set(dir, listing);
+    const addFacts = (name: string, rows: [string, string][]) => {
+      const title = document.createElement("strong");
+      title.textContent = name;
+      const facts = document.createElement("dl");
+      for (const [term, value] of rows) {
+        const dt = document.createElement("dt"), dd = document.createElement("dd");
+        dt.textContent = term;
+        dd.textContent = value;
+        facts.append(dt, dd);
       }
-      for (const entry of sortEntries(listing, sort)) box.append(miniRow(entry, false, () => go(dir, entry.path)));
-      if (!listing.length && !box.textContent) { box.className = "preview-note"; box.textContent = "此資料夾是空的"; }
-    } else if (target.kind === "file") {
-      const entry = target.entry, key = `${entry.path}|${entry.modified_ms}`;
+      const info = document.createElement("div");
+      info.className = "preview-info";
+      info.append(title, facts);
+      box.append(info);
+    };
+    // Fills the bottom pane with a file preview; false when a newer draw superseded this one.
+    const showFile = async (entry: FileEntry) => {
+      const key = `${entry.path}|${entry.modified_ms}`;
       let info = thumbnails.get(key);
       if (!info) {
         try { info = await invoke<{ image: string; kind: string }>("file_op", { request: { op: "preview", path: entry.path } }); }
         catch { info = { image: "", kind: "" }; }
-        if (token !== previewToken) return;
+        if (token !== previewToken) return false;
         thumbnails.set(key, info);
         // Keep the cache small; Map iterates oldest first.
         if (thumbnails.size > 64) thumbnails.delete(thumbnails.keys().next().value!);
@@ -344,29 +357,61 @@ export function initFilesPanel(host: FilesHost) {
         image.alt = "";
         box.append(image);
       }
-      const name = document.createElement("strong");
-      name.textContent = entry.name;
-      const facts = document.createElement("dl");
       const rows: [string, string][] = [
         ["種類", info.kind || fileKindLabel(entry.name, false)],
         ["大小", formatSize(entry.size, false)],
         ["修改日期", formatDate(entry.modified_ms)],
       ];
       if (entry.is_symlink) rows.push(["", "替身／符號連結"]);
-      for (const [term, value] of rows) {
-        const dt = document.createElement("dt"), dd = document.createElement("dd");
-        dt.textContent = term;
-        dd.textContent = value;
-        facts.append(dt, dd);
+      addFacts(entry.name, rows);
+      return true;
+    };
+    if (target.kind === "many") {
+      box.className = "preview-note";
+      box.textContent = `已選取 ${target.count} 個項目`;
+    } else if (target.kind === "dir") {
+      const dir = target.entry.path;
+      let listing = previewCache.get(dir);
+      if (!listing) {
+        try { listing = await invoke<FileEntry[]>("list_files", { path: dir, showHidden }); }
+        catch (error) { listing = []; child.className = "preview-note"; child.textContent = String(error); }
+        if (token !== previewToken) return;
+        previewCache.set(dir, listing);
       }
-      box.append(name, facts);
+      // A file picked in the child column stays there and is previewed below; folders still open.
+      const picked = childPick && parentOf(childPick.path) === dir ? listing.find((entry) => entry.path === childPick!.path) : undefined;
+      childPick = picked;
+      for (const entry of sortEntries(listing, sort))
+        child.append(miniRow(entry, entry.path === picked?.path, () => {
+          if (entry.is_dir) { go(dir, entry.path); return; }
+          childPick = entry;
+          if (quickLook) previewSelection(true).catch(host.notify);
+          drawPreview().catch(host.notify);
+        }));
+      if (!listing.length && !child.textContent) { child.className = "preview-note"; child.textContent = "此資料夾是空的"; }
+      if (picked) { if (!(await showFile(picked))) return; }
+      else {
+        box.className = "preview-file";
+        addFacts(target.entry.name, [
+          ["種類", "資料夾"],
+          ["項目", `${listing.length} 個`],
+          ["修改日期", formatDate(target.entry.modified_ms)],
+        ]);
+      }
+    } else if (target.kind === "file") {
+      if (!(await showFile(target.entry))) return;
     }
-    if (token === previewToken) previewColumn.replaceChildren(box);
+    if (token === previewToken) {
+      childColumn.replaceChildren(child);
+      previewColumn.replaceChildren(box);
+      childColumn.querySelector(".current")?.scrollIntoView({ block: "nearest" });
+    }
   }
   function setView(next: FilesView) {
     if (view === next) return;
     view = next;
     try { localStorage.setItem("files-view", view); } catch {}
+    childColumn.replaceChildren();
     previewColumn.replaceChildren();
     applyLayout();
     load().catch(host.notify);
@@ -555,7 +600,9 @@ export function initFilesPanel(host: FilesHost) {
     await host.editInTerminal(parentOf(entry.path), `sh -c '\${EDITOR:-vi} "$1"' sh ${shellQuote(entry.path)}`);
   }
   async function previewSelection(updateOnly = false) {
-    const paths = selection.paths.length ? selection.paths : [];
+    // A file picked in the child column is what the user is looking at, so preview that.
+    const picked = childPick && selection.paths.length === 1 && selection.paths[0] === parentOf(childPick.path) ? childPick.path : undefined;
+    const paths = picked ? [picked] : selection.paths;
     if (!paths.length) { if (quickLook) await host.native({ op: "files-quicklook-close" }); return; }
     await host.native({ op: updateOnly ? "files-quicklook-update" : "files-quicklook", paths, index: 0 });
     if (!updateOnly) quickLook = true;
@@ -692,7 +739,7 @@ export function initFilesPanel(host: FilesHost) {
       try { localStorage.setItem("files-sort", JSON.stringify(sort)); } catch {}
       draw();
     };
-  for (const column of [parentColumn, previewColumn]) column.addEventListener("contextmenu", (event) => event.preventDefault());
+  for (const column of [parentColumn, childColumn, previewColumn]) column.addEventListener("contextmenu", (event) => event.preventDefault());
   $("files-up").onclick = goUp;
   $("files-view-list").onclick = () => setView("list");
   $("files-view-columns").onclick = () => setView("columns");
@@ -725,6 +772,23 @@ export function initFilesPanel(host: FilesHost) {
     resizer.addEventListener("pointermove", move);
     resizer.addEventListener("pointerup", up, { once: true });
     resizer.addEventListener("pointercancel", up, { once: true });
+  });
+  previewResizer.addEventListener("pointerdown", (event) => {
+    previewResizer.setPointerCapture(event.pointerId);
+    previewResizer.classList.add("dragging");
+    const bottom = panel.getBoundingClientRect().bottom;
+    const move = (e: PointerEvent) => {
+      previewHeight = clampPreviewHeight(bottom - e.clientY, panel.clientHeight);
+      panel.style.setProperty("--preview-height", previewHeight + "px");
+    };
+    const up = () => {
+      previewResizer.classList.remove("dragging");
+      previewResizer.removeEventListener("pointermove", move);
+      try { localStorage.setItem("files-preview-height", String(previewHeight)); } catch {}
+    };
+    previewResizer.addEventListener("pointermove", move);
+    previewResizer.addEventListener("pointerup", up, { once: true });
+    previewResizer.addEventListener("pointercancel", up, { once: true });
   });
   window.addEventListener("focus", () => { if (isOpen()) load().catch(host.notify); });
   // Pick up changes made elsewhere (for example by commands in the terminal).
