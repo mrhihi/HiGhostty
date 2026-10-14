@@ -66,6 +66,28 @@ static NSString *pngDataURL(CGImageRef image) {
     NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
     return png ? [@"data:image/png;base64," stringByAppendingString:[png base64EncodedStringWithOptions:0]] : nil;
 }
+// Apps that can open a file, default first. LaunchServices can be slow, so this runs off the main thread.
+static NSString *appName(NSURL *app) {
+    NSString *name = [NSFileManager.defaultManager displayNameAtPath:app.path];
+    return [name.pathExtension isEqualToString:@"app"] ? name.stringByDeletingPathExtension : name;
+}
+static NSDictionary *openWithApps(NSString *path) {
+    NSURL *url = [NSURL fileURLWithPath:path];
+    NSWorkspace *workspace = NSWorkspace.sharedWorkspace;
+    NSURL *preferred = [workspace URLForApplicationToOpenURL:url];
+    NSMutableArray *apps = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    if (preferred) { [apps addObject:@{@"name": appName(preferred), @"path": preferred.path, @"isDefault": @YES}]; [seen addObject:preferred.path]; }
+    NSMutableArray *others = [NSMutableArray array];
+    for (NSURL *app in [workspace URLsForApplicationsToOpenURL:url]) {
+        if ([seen containsObject:app.path]) continue;
+        [seen addObject:app.path];
+        [others addObject:@{@"name": appName(app), @"path": app.path, @"isDefault": @NO}];
+    }
+    [others sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"name"] localizedStandardCompare:b[@"name"]]; }];
+    [apps addObjectsFromArray:others];
+    return @{@"apps": apps};
+}
 // Thumbnail for the files panel preview column; falls back to the file icon.
 static NSDictionary *preview(NSString *path) {
     NSURL *url = [NSURL fileURLWithPath:path];
@@ -120,6 +142,7 @@ static NSDictionary *filesOperation(NSDictionary *req) {
         return [fm moveItemAtPath:from toPath:to error:&error] ? @{@"paths": @[to], @"errors": @[]} : @{@"error": describe(error)};
     }
     if ([op isEqualToString:@"preview"]) return preview(req[@"path"]);
+    if ([op isEqualToString:@"open-with-apps"]) return openWithApps(req[@"path"]);
     if ([op isEqualToString:@"trash"]) {
         NSMutableArray *paths = [NSMutableArray array], *errors = [NSMutableArray array];
         for (NSString *path in req[@"paths"]) {
@@ -258,27 +281,6 @@ static NSDictionary *readPasteboard(void) {
     BOOL cut = marker && [marker isEqualToString:[paths componentsJoinedByString:@"\n"]];
     return @{@"paths": paths, @"cut": @(cut)};
 }
-static NSString *appName(NSURL *app) {
-    NSString *name = [NSFileManager.defaultManager displayNameAtPath:app.path];
-    return [name.pathExtension isEqualToString:@"app"] ? name.stringByDeletingPathExtension : name;
-}
-static NSDictionary *openWithApps(NSString *path) {
-    NSURL *url = [NSURL fileURLWithPath:path];
-    NSWorkspace *workspace = NSWorkspace.sharedWorkspace;
-    NSURL *preferred = [workspace URLForApplicationToOpenURL:url];
-    NSMutableArray *apps = [NSMutableArray array];
-    NSMutableSet *seen = [NSMutableSet set];
-    if (preferred) { [apps addObject:@{@"name": appName(preferred), @"path": preferred.path, @"isDefault": @YES}]; [seen addObject:preferred.path]; }
-    NSMutableArray *others = [NSMutableArray array];
-    for (NSURL *app in [workspace URLsForApplicationsToOpenURL:url]) {
-        if ([seen containsObject:app.path]) continue;
-        [seen addObject:app.path];
-        [others addObject:@{@"name": appName(app), @"path": app.path, @"isDefault": @NO}];
-    }
-    [others sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"name"] localizedStandardCompare:b[@"name"]]; }];
-    [apps addObjectsFromArray:others];
-    return @{@"apps": apps};
-}
 static NSDictionary *openPaths(NSArray<NSURL *> *urls, NSString *app) {
     if (!urls.count) return @{@"error": @"沒有選取項目"};
     NSWorkspace *workspace = NSWorkspace.sharedWorkspace;
@@ -302,7 +304,6 @@ NSDictionary *HGFilesCommand(NSWindow *window, NSDictionary *req, void (^emitEve
             [NSPasteboard.generalPasteboard clearContents];
             return [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString] ? @{} : @{@"error": @"無法寫入剪貼簿"};
         }
-        if ([op isEqualToString:@"files-open-with-apps"]) return openWithApps(req[@"path"]);
         if ([op isEqualToString:@"files-open"]) return openPaths(fileURLs(req[@"paths"]), req[@"app"]);
         if ([op isEqualToString:@"files-reveal"]) { [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:fileURLs(req[@"paths"])]; return @{}; }
         if ([op isEqualToString:@"files-quicklook"] || [op isEqualToString:@"files-quicklook-update"]) {

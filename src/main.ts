@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { Menu } from "@tauri-apps/api/menu";
+import { popupMenu as showMenu } from "./context-menu";
 import {
   leaves,
   split,
@@ -983,10 +983,7 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
 }
 async function popupMenu(items: MenuEntry[]) {
   try {
-    const menu = await Menu.new({ items: items.map((item) => "item" in item ? item : { text: item.text, action: () => { Promise.resolve().then(item.action).catch(notify); } }) });
-    await menu.popup();
-    // Item actions are delivered asynchronously; release the menu afterwards.
-    setTimeout(() => menu.close().catch(() => {}), 5000);
+    await showMenu({ items: items.map((item) => "item" in item ? item : { text: item.text, action: () => { Promise.resolve().then(item.action).catch(notify); } }) });
   } catch (error) { notify(error); }
 }
 function appendWorkspaceFavoriteRow(parent: HTMLElement, item: WorkspaceFavorite, folder?: FavoriteFolder) {

@@ -71,10 +71,15 @@ pub async fn list_files(path: String, show_hidden: bool) -> Result<Vec<FileEntry
     .map_err(err)?
 }
 // Cheap change detection for polling: the directory's own modification time.
+// Async so a slow volume never blocks the main thread.
 #[tauri::command]
-pub fn dir_stamp(path: String) -> Result<u64, String> {
-    let metadata = std::fs::metadata(expand_path(&path, None)?).map_err(err)?;
-    Ok(modified_ms(&metadata))
+pub async fn dir_stamp(path: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let metadata = std::fs::metadata(expand_path(&path, None)?).map_err(err)?;
+        Ok(modified_ms(&metadata))
+    })
+    .await
+    .map_err(err)?
 }
 #[tauri::command]
 pub async fn file_op(request: Value) -> Result<Value, String> {

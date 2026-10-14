@@ -28,6 +28,7 @@
 - 原生終端機 NSView 疊在 WebView 之上；面板必須是 `#terminals` 的兄弟元素、不可與終端機矩形重疊。右鍵選單一律用原生 `Menu.popup()`，不要做 HTML 浮動選單。
 - 會改動檔案的操作（拷貝、搬移、改名、新增、垃圾桶）集中在 `files.m` 的 `hg_files`，同名改名規則只在這裡實作；它在背景執行緒執行，不可碰 AppKit UI。剪貼簿、Quick Look、打開方式等 AppKit 操作走 `hg_command` 的 `files-*` op（主執行緒）。
 - 原生程式沿用 `@try/@catch`，不讓 Objective-C exception 漏出。
+- 原生右鍵選單一律走 `src/context-menu.ts` 的 `popupMenu`；選單開著時送 `Menu.new`／`close` 會讓整個 App 死結。
 - 純狀態邏輯放 `src/files.ts` 並補 `tests/files.test.mjs`；`npm test` 不涵蓋原生操作，改完照 `docs/files-panel.md` 的驗收清單實機操作。
 
 ## 指令片段面板（`src/snippet-palette.ts`、`src/snippets.ts`、`src-tauri/src/snippets.rs`）

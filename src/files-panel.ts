@@ -1,7 +1,7 @@
 // Per-tab files panel shown beside (or instead of) the terminal. Pure state
 // lives in files.ts; this module owns the DOM and talks to the native layer.
 import { invoke } from "@tauri-apps/api/core";
-import { Menu } from "@tauri-apps/api/menu";
+import { popupMenu } from "./context-menu";
 import {
   clampPreviewHeight,
   clampWidth,
@@ -110,6 +110,8 @@ export function initFilesPanel(host: FilesHost) {
   let previewTimer: ReturnType<typeof setTimeout> | undefined;
   const previewCache = new Map<string, FileEntry[]>();
   const thumbnails = new Map<string, { image: string; kind: string }>();
+  // Entries behind the read-only rows in the parent and child columns, for their context menus.
+  const miniEntries = new WeakMap<Element, FileEntry>();
   try {
     view = localStorage.getItem("files-view") === "columns" ? "columns" : "list";
     showHidden = localStorage.getItem("show-hidden") === "true";
@@ -298,6 +300,7 @@ export function initFilesPanel(host: FilesHost) {
     element.title = host.displayPath(entry.path);
     element.innerHTML = `<span class="file-name-cell"><span class="file-icon">${entry.is_dir ? icons.folder : icons.file}</span><span class="file-name"></span>${entry.is_dir ? `<span class="file-chevron">${icons.chevron}</span>` : ""}</span>`;
     element.querySelector(".file-name")!.textContent = entry.name;
+    miniEntries.set(element, entry);
     // Keep the keyboard on the current column after clicking a side column.
     element.onclick = () => { onClick(); list.focus(); };
     return element;
@@ -461,11 +464,13 @@ export function initFilesPanel(host: FilesHost) {
   // selectAfter: path to select once listed, or "first" for the first row.
   function go(path: string, selectAfter?: string) {
     const files = state();
-    if (!files) return;
+    if (!files) return Promise.resolve();
     pendingSelect = selectAfter;
     update(navigate(files, path, host.cwd()));
     status("");
-    load().catch(host.notify);
+    const loaded = load();
+    loaded.catch(host.notify);
+    return loaded;
   }
   // Going up selects the folder we came from.
   function goUp() {
@@ -489,10 +494,12 @@ export function initFilesPanel(host: FilesHost) {
   async function afterChange(result: OpResult | undefined, error?: unknown) {
     report(result, error);
     await load();
-    if (result?.paths.length) setSelection({ paths: result.paths.filter((path) => entries.has(path)), anchor: result.paths[0] });
+    // Results in a side column keep the current selection, so that column stays put.
+    const shown = result?.paths.filter((path) => entries.has(path)) || [];
+    if (shown.length) setSelection({ paths: shown, anchor: shown[0] });
   }
-  async function copy(cut: boolean) {
-    const paths = topLevelPaths(selection.paths);
+  async function copy(cut: boolean, targets = selection.paths) {
+    const paths = topLevelPaths(targets);
     if (!paths.length) return;
     await host.native({ op: "files-pasteboard-write", paths, cut });
     cutPaths = new Set(cut ? paths : []);
@@ -514,8 +521,8 @@ export function initFilesPanel(host: FilesHost) {
     } catch (e) { error = e; }
     await afterChange(result, error);
   }
-  async function duplicate() {
-    const paths = topLevelPaths(selection.paths);
+  async function duplicate(targets = selection.paths) {
+    const paths = topLevelPaths(targets);
     const merged: OpResult = { paths: [], errors: [] };
     let error: unknown;
     try {
@@ -527,28 +534,42 @@ export function initFilesPanel(host: FilesHost) {
     } catch (e) { error = e; }
     await afterChange(merged, error);
   }
-  async function trash() {
-    const paths = topLevelPaths(selection.paths);
+  async function trash(targets = selection.paths) {
+    const paths = topLevelPaths(targets);
     if (!paths.length) return;
+    // Items in a side column leave the current selection alone.
+    const side = !paths.some((path) => entries.has(path));
     // Select the row after the last trashed one, like Finder.
-    const after = order.slice(order.indexOf(selection.paths.at(-1)!) + 1).find((path) => !paths.some((gone) => path === gone || path.startsWith(gone + "/")));
+    const after = order.slice(order.indexOf(targets.at(-1)!) + 1).find((path) => !paths.some((gone) => path === gone || path.startsWith(gone + "/")));
     let result: OpResult | undefined, error: unknown;
     try { result = await run({ op: "trash", paths }); } catch (e) { error = e; }
     report(result, error);
     await load();
-    setSelection(after && entries.has(after) ? { paths: [after], anchor: after } : { paths: [] });
+    if (!side) setSelection(after && entries.has(after) ? { paths: [after], anchor: after } : { paths: [] });
   }
-  async function create(kind: "folder" | "file", entry?: FileEntry) {
+  // at: a folder from a side column's menu.
+  async function create(kind: "folder" | "file", entry?: FileEntry, at?: string) {
     // Columns mode only shows the current folder, so new items go there.
-    const directory = view === "columns" ? targetDirectory() : targetDirectory(entry);
+    const directory = at || (view === "columns" ? targetDirectory() : targetDirectory(entry));
     let result: OpResult | undefined;
     try {
       result = await run({ op: kind === "folder" ? "create-folder" : "create-file", directory, name: kind === "folder" ? "未命名檔案夾" : "未命名.txt" });
     } catch (error) { report(undefined, error); return; }
     const files = state();
-    if (files && directory !== files.path) update(toggleExpanded(files, directory, true));
-    await afterChange(result);
+    if (view === "columns" && files && directory !== files.path) {
+      // Renaming happens in the current column, so move into that folder first.
+      report(result);
+      await go(directory, result.paths[0]);
+    } else {
+      if (files && directory !== files.path) update(toggleExpanded(files, directory, true));
+      await afterChange(result);
+    }
     if (result.paths[0]) rename(result.paths[0]);
+  }
+  // Renames an item from either the current column or a side column.
+  async function renameItem(path: string) {
+    if (!entries.has(path)) await go(parentOf(path), path);
+    rename(path);
   }
   function rename(path = selection.paths.at(-1)) {
     const entry = path ? entries.get(path) : undefined;
@@ -590,8 +611,8 @@ export function initFilesPanel(host: FilesHost) {
     if (targets.length === 1 && targets[0].is_dir) { go(targets[0].path, "first"); return; }
     if (targets.length) await host.native({ op: "files-open", paths: targets.map((entry) => entry.path) });
   }
-  async function openWith(app: string) {
-    await host.native({ op: "files-open", paths: selection.paths, app });
+  async function openWith(app: string, paths = selection.paths) {
+    await host.native({ op: "files-open", paths, app });
   }
   async function editInTerminal(entry: FileEntry) {
     const files = state();
@@ -599,10 +620,10 @@ export function initFilesPanel(host: FilesHost) {
     // Run through sh so ${EDITOR} works the same under zsh, bash and fish.
     await host.editInTerminal(parentOf(entry.path), `sh -c '\${EDITOR:-vi} "$1"' sh ${shellQuote(entry.path)}`);
   }
-  async function previewSelection(updateOnly = false) {
+  async function previewSelection(updateOnly = false, targets?: string[]) {
     // A file picked in the child column is what the user is looking at, so preview that.
     const picked = childPick && selection.paths.length === 1 && selection.paths[0] === parentOf(childPick.path) ? childPick.path : undefined;
-    const paths = picked ? [picked] : selection.paths;
+    const paths = targets || (picked ? [picked] : selection.paths);
     if (!paths.length) { if (quickLook) await host.native({ op: "files-quicklook-close" }); return; }
     await host.native({ op: updateOnly ? "files-quicklook-update" : "files-quicklook", paths, index: 0 });
     if (!updateOnly) quickLook = true;
@@ -613,51 +634,50 @@ export function initFilesPanel(host: FilesHost) {
   }
 
   // ---- Context menu (native NSMenu, so it never hides behind a terminal) ----
-  async function popup(items: MenuEntry[]) {
-    const menu = await Menu.new({ items });
-    await menu.popup();
-    // Item actions are delivered asynchronously; release the menu afterwards.
-    setTimeout(() => menu.close().catch(() => {}), 5000);
-  }
+  const popup = (items: MenuEntry[]) => popupMenu({ items });
   const act = (fn: () => unknown) => () => { Promise.resolve().then(fn).catch((error) => status(String(error))); };
-  async function itemMenu(entry: FileEntry) {
-    const many = selection.paths.length > 1;
+  // targets: the selection, or a single row from a side column.
+  async function itemMenu(entry: FileEntry, targets = selectedEntries()) {
+    const paths = targets.map((target) => target.path);
+    const many = paths.length > 1;
+    // New items from a side row go next to it, in the folder that column lists.
+    const at = entries.has(entry.path) ? undefined : parentOf(entry.path);
     const sep = { item: "Separator" as const };
     let apps: App[] = [];
     if (!entry.is_dir && !many) {
-      try { apps = (await host.native<{ apps: App[] }>({ op: "files-open-with-apps", path: entry.path })).apps; } catch {}
+      try { apps = (await invoke<{ apps: App[] }>("file_op", { request: { op: "open-with-apps", path: entry.path } })).apps; } catch {}
     }
-    const openWithItems: MenuEntry[] = apps.map((app) => ({ text: app.isDefault ? `${app.name}（預設）` : app.name, action: act(() => openWith(app.path)) }));
+    const openWithItems: MenuEntry[] = apps.map((app) => ({ text: app.isDefault ? `${app.name}（預設）` : app.name, action: act(() => openWith(app.path, paths)) }));
     if (apps.length > 1 && apps[0].isDefault) openWithItems.splice(1, 0, sep);
     const items: MenuEntry[] = [
-      { text: entry.is_dir && !many ? "打開" : "用預設 App 打開", action: act(() => open()) },
+      { text: entry.is_dir && !many ? "打開" : "用預設 App 打開", action: act(() => open(targets)) },
       ...(openWithItems.length ? [{ text: "打開方式", items: openWithItems }] : []),
       ...(!entry.is_dir && !many ? [{ text: "在終端機中編輯", action: act(() => editInTerminal(entry)) }] : []),
-      { text: "Quick Look", action: act(() => previewSelection()) },
+      { text: "Quick Look", action: act(() => previewSelection(false, at ? paths : undefined)) },
       sep,
       ...(entry.is_dir && !many ? [{ text: "在新頁籤開啟終端機", action: act(() => host.openTerminal(entry.path)) }] : []),
-      { text: "插入路徑到終端機", action: act(() => host.insertIntoTerminal(selection.paths.map(shellQuote).join(" ") + " ")) },
-      { text: "拷貝路徑", action: act(() => host.native({ op: "files-pasteboard-text", text: selection.paths.join("\n") })) },
+      { text: "插入路徑到終端機", action: act(() => host.insertIntoTerminal(paths.map(shellQuote).join(" ") + " ")) },
+      { text: "拷貝路徑", action: act(() => host.native({ op: "files-pasteboard-text", text: paths.join("\n") })) },
       sep,
-      { text: "剪下", action: act(() => copy(true)) },
-      { text: "拷貝", action: act(() => copy(false)) },
+      { text: "剪下", action: act(() => copy(true, paths)) },
+      { text: "拷貝", action: act(() => copy(false, paths)) },
       { text: entry.is_dir && !many ? "貼到此資料夾" : "貼上", action: act(() => paste(targetDirectory(many ? undefined : entry))) },
-      { text: "複製一份", action: act(duplicate) },
-      { text: "重新命名", enabled: !many, action: act(() => rename(entry.path)) },
+      { text: "複製一份", action: act(() => duplicate(paths)) },
+      { text: "重新命名", enabled: !many, action: act(() => renameItem(entry.path)) },
       sep,
-      { text: "新增資料夾", action: act(() => create("folder", many ? undefined : entry)) },
-      { text: "新增檔案", action: act(() => create("file", many ? undefined : entry)) },
-      { text: "在 Finder 中顯示", action: act(() => host.native({ op: "files-reveal", paths: selection.paths })) },
+      { text: "新增資料夾", action: act(() => create("folder", many ? undefined : entry, at)) },
+      { text: "新增檔案", action: act(() => create("file", many ? undefined : entry, at)) },
+      { text: "在 Finder 中顯示", action: act(() => host.native({ op: "files-reveal", paths })) },
       sep,
-      { text: "丟到垃圾桶", action: act(trash) },
+      { text: "丟到垃圾桶", action: act(() => trash(paths)) },
     ];
     await popup(items);
   }
-  async function backgroundMenu() {
-    const dir = targetDirectory();
+  async function backgroundMenu(dir = targetDirectory()) {
+    const at = dir === state()?.path ? undefined : dir;
     await popup([
-      { text: "新增資料夾", action: act(() => create("folder")) },
-      { text: "新增檔案", action: act(() => create("file")) },
+      { text: "新增資料夾", action: act(() => create("folder", undefined, at)) },
+      { text: "新增檔案", action: act(() => create("file", undefined, at)) },
       { text: "貼上", action: act(() => paste(dir)) },
       { item: "Separator" },
       { text: "在新頁籤開啟終端機", action: act(() => host.openTerminal(dir)) },
@@ -739,7 +759,32 @@ export function initFilesPanel(host: FilesHost) {
       try { localStorage.setItem("files-sort", JSON.stringify(sort)); } catch {}
       draw();
     };
-  for (const column of [parentColumn, childColumn, previewColumn]) column.addEventListener("contextmenu", (event) => event.preventDefault());
+  // Side columns: a row acts on that item, empty space on the folder the column lists.
+  function sideMenu(event: MouseEvent, folder: () => string | undefined) {
+    event.preventDefault();
+    const element = (event.target as Element).closest(".file-row");
+    const entry = element ? miniEntries.get(element) : undefined;
+    if (entry) {
+      // Highlight a file in the child column like a click does, without moving the columns.
+      if (childColumn.contains(element) && !entry.is_dir && childPick?.path !== entry.path) {
+        childPick = entry;
+        drawPreview().catch(host.notify);
+      }
+      itemMenu(entry, [entry]).catch((error) => status(String(error)));
+      return;
+    }
+    const dir = folder();
+    if (dir) backgroundMenu(dir).catch((error) => status(String(error)));
+  }
+  parentColumn.addEventListener("contextmenu", (event) => sideMenu(event, () => {
+    const path = state()?.path;
+    return path && path !== "/" ? parentOf(path) : undefined;
+  }));
+  childColumn.addEventListener("contextmenu", (event) => sideMenu(event, () => {
+    const target = previewTarget(selection, entries);
+    return target.kind === "dir" ? target.entry.path : undefined;
+  }));
+  previewColumn.addEventListener("contextmenu", (event) => event.preventDefault());
   $("files-up").onclick = goUp;
   $("files-view-list").onclick = () => setView("list");
   $("files-view-columns").onclick = () => setView("columns");

@@ -38,6 +38,9 @@
     - 單選檔案 → 內容欄留空；預覽區上方是縮圖（盡量放大），下方是名稱、種類、大小、修改日期。
     - 在內容欄點檔案 → 該檔案在內容欄反白、不移動欄位，預覽區顯示它；點資料夾仍會進入。
     - 多選 → 預覽區顯示「已選取 N 個項目」。
+  - **側欄右鍵**：上層欄與內容欄的項目也有右鍵選單，只對按到的那一項操作，不改變目前欄的選取。在空白處按右鍵 → 對該欄列出的資料夾開背景選單。
+    - 重新命名，以及在別的資料夾新增項目時，會先移到該資料夾並選取該項，再就地改名，因為改名只能在目前欄進行。
+    - 在內容欄的檔案上按右鍵，會像單擊一樣把它反白。
   - **縮圖**：`hg_files` 的 `preview` op 在背景執行緒用 `QLThumbnailGenerator` 產生，最長邊 256pt @2x，最多等 3 秒。失敗時改用 `NSWorkspace iconForFile:`，種類取自 `UTType.localizedDescription`。
     - 回傳 PNG data URL，CSP 已允許 `img-src data:`。
     - 前端以「路徑＋修改時間」快取 64 筆。
@@ -72,6 +75,9 @@
 | ⌘O（字母 O）或 ⌘0 | 面板沒開 → 開啟並聚焦；開著但焦點在終端機 → 聚焦列表；焦點已在列表 → 關閉 |
 
 **右鍵選單**用 `@tauri-apps/api/menu` 的 `Menu.popup()` 產生原生 NSMenu，貼近終端機也不會被遮住。
+- 一律經 `src/context-menu.ts` 的 `popupMenu`（邏輯在 `src/native-menu.ts`），不要直接呼叫 `Menu.new`／`popup`／`close`。
+  - 原因：Tauri 的 popup 在選單開著的整段期間持有 webview resources table 的鎖，主執行緒則在選單的 tracking loop 裡繼續處理網頁 IPC。這時任何要拿這把鎖的 IPC（`Menu.new`、`close`）都會讓主執行緒永遠卡住，整個 App 凍結。
+  - 所以選單開著時忽略新的右鍵；舊選單在下一次 popup 開頭才 close，不用計時器。
 - 項目上：打開、打開方式（預設 App 列第一）、在終端機中編輯、Quick Look、在新頁籤開啟終端機、插入路徑到終端機、拷貝路徑、剪下／拷貝／貼上／複製一份／重新命名、新增資料夾／檔案、在 Finder 中顯示、丟到垃圾桶。
 - 空白處：新增資料夾、新增檔案、貼上、在新頁籤開啟終端機、在 Finder 中打開、重新整理。
 
@@ -105,7 +111,9 @@
 - 刪除：一律 `trashItemAtURL` 丟到垃圾桶，不提供永久刪除。
 - 部分成功時，面板底部列出失敗項目，不跳 toast。
 
-AppKit 相關的操作走 `hg_command` 的 `files-*` op（主執行緒）：`files-pasteboard-write`、`files-pasteboard-read`、`files-pasteboard-text`、`files-open`（可指定 App）、`files-open-with-apps`、`files-reveal`、`files-quicklook`／`-update`／`-close`。另外兩個 op 在 `bridge.m`：
+`hg_files` 也負責兩個唯讀查詢，避免慢速磁碟或 LaunchServices 造成彩球：`preview`（縮圖）與 `open-with-apps`（「打開方式」清單，只用 NSWorkspace 的 URL 查詢，不碰 UI）。同理，輪詢用的 `dir_stamp` 也是 async command，不在主執行緒 `stat`。
+
+AppKit 相關的操作走 `hg_command` 的 `files-*` op（主執行緒）：`files-pasteboard-write`、`files-pasteboard-read`、`files-pasteboard-text`、`files-open`（可指定 App）、`files-reveal`、`files-quicklook`／`-update`／`-close`。另外兩個 op 在 `bridge.m`：
 - `insert-text`：把文字送進終端機，不送 Enter。
 - `focus-web`：讓 WebView 成為 first responder；⌘O 聚焦列表時需要它。
 
@@ -131,8 +139,11 @@ AppKit 相關的操作走 `hg_command` 的 `files-*` op（主執行緒）：`fil
 - [ ] 三欄下 ←→ 進出資料夾，回上層時選回原資料夾；點上層欄、預覽欄的項目會跳過去，鍵盤仍在目前欄。
 - [ ] 預覽欄：圖片、PDF 顯示縮圖；沒有縮圖的檔案顯示系統圖示與種類；多選顯示數量。
 - [ ] 三欄模式下的右鍵、剪下貼上、改名、新增資料夾、Finder 拖入都正常；窄面板（約 360px）仍可用。
+- [ ] 上層欄／內容欄的項目與空白處按右鍵都有選單；拷貝、貼到此資料夾、改名（會先跳到該層）、丟到垃圾桶、新增資料夾都正常，目前欄的選取不變。
+- [ ] 外接碟或慢速磁碟上開著面板、反覆在少見類型的檔案上按右鍵，不會出現彩球。
 - [ ] 打開方式子選單列出 App 並標出預設；雙擊檔案用預設 App 開啟；「在終端機中編輯」在右側分割開啟 `$EDITOR`，結束後保留 shell。
 - [ ] 右鍵選單是原生選單，在面板靠終端機那一側按右鍵也不會被遮住。
+- [ ] 選了選單項目或按 Esc 後 5 秒內再按右鍵、快速連按右鍵，檔案面板與頁籤列都不會卡死。
 - [ ] Finder 拖到面板空白處／資料夾列會複製進對應資料夾；拖到終端機仍是貼上路徑。
 - [ ] 在終端機 `touch x`，2 秒內出現在面板。
 - [ ] 焦點在列表時，⌘C／⌘V／⌘A／空白鍵不會被 WebView 預設行為（捲動、全選文字）搶走。
