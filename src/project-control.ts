@@ -26,6 +26,26 @@ export function agentKindOf(command: string | undefined): ProjectAgentKind | und
   return (PROJECT_AGENT_KINDS as readonly string[]).includes(name ?? "") ? (name as ProjectAgentKind) : undefined;
 }
 
+// A supported agent's start command split for editing: the agent is chosen from a list, the
+// rest (arguments) stays free text. `prefix` is any leading `VAR=value` words, `program` what ran.
+export type AgentCommand = { prefix: string; program: string; kind: ProjectAgentKind; args: string };
+export function parseAgentCommand(command: string | undefined): AgentCommand | undefined {
+  const kind = agentKindOf(command);
+  if (!kind) return undefined;
+  const words = (command ?? "").trim().split(/\s+/).filter(Boolean);
+  const prefix: string[] = [];
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) prefix.push(words.shift()!);
+  const program = words.shift()!;
+  const wrapped = program.split("/").pop() === "gh";
+  const full = wrapped ? `${program} ${words.shift()}` : program;
+  return { prefix: prefix.join(" "), program: full, kind, args: words.join(" ") };
+}
+// The command after the user picks an agent and edits the arguments; an unchanged agent keeps its exact program.
+export function buildAgentCommand(parsed: AgentCommand, kind: ProjectAgentKind, args: string): string {
+  const program = kind === parsed.kind ? parsed.program : kind;
+  return [parsed.prefix, program, args.trim()].filter(Boolean).join(" ");
+}
+
 // Terminals that may become members: the first pane of a tab that was opened with a start
 // command for a supported agent and runs in tmux. Only those keep the same identity (the tmux session) after a restart.
 export function memberCandidates<S extends { id: string; tmuxSession?: string; exited?: boolean }>(

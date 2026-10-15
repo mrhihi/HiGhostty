@@ -43,9 +43,9 @@ import builtinRules from "./prompt-rules.json?raw";
 import { newSessionName, restorable, tmuxCommand, validSession } from "./tmux";
 import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, previewSide, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
 import { runProjectControl } from "./project-ctl";
-import { memberCandidates } from "./project-control";
+import { buildAgentCommand, instanceKey, memberCandidates, parseAgentCommand, PROJECT_AGENT_KINDS, type ProjectAgentKind } from "./project-control";
 import { initProjectPanel } from "./project-panel";
-import { startProjectEvents } from "./project-store";
+import { loadKnownProjects, memberOfInstance, startProjectEvents } from "./project-store";
 import "./style.css";
 
 type MenuEntry = { text: string; action: () => unknown } | { item: "Separator" };
@@ -381,6 +381,38 @@ function folderFavorites(folderId?: string) {
 function dialogsOpen() {
   return !!document.querySelector("dialog[open]");
 }
+// A terminal that is a project member keeps its identity only if it is an agent started from a list
+// choice inside tmux, so those two settings cannot be edited freely while it is a member.
+function projectLock(tab: Tab) {
+  for (const id of leaves(tab.tree)) {
+    const surface = surfaces.get(id);
+    const hit = surface && memberOfInstance(instanceKey(surface));
+    if (hit) return hit;
+  }
+  return undefined;
+}
+function favoriteProjectLock(favoriteId: string) {
+  for (const tab of tabs) {
+    if (tab.favoriteId !== favoriteId) continue;
+    const hit = projectLock(tab);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+// The agent as a list plus free-text arguments; writes the rebuilt command back into `command`.
+function lockedCommandField(command: HTMLInputElement): HTMLElement | undefined {
+  const parsed = parseAgentCommand(command.value);
+  if (!parsed) return undefined;
+  const kind = document.createElement("select");
+  for (const option of PROJECT_AGENT_KINDS) kind.append(Object.assign(document.createElement("option"), { value: option, textContent: option }));
+  kind.value = parsed.kind;
+  kind.setAttribute("aria-label", t("project.lockedAgent"));
+  const args = document.createElement("input"); args.className = "mono"; args.value = parsed.args; args.placeholder = t("project.lockedArgs"); args.setAttribute("aria-label", t("project.lockedArgs"));
+  const update = () => { command.value = buildAgentCommand(parsed, kind.value as ProjectAgentKind, args.value); command.dispatchEvent(new Event("input")); };
+  kind.onchange = update; args.oninput = update;
+  const row = document.createElement("div"); row.className = "inline-actions"; row.append(kind, args);
+  return row;
+}
 function detail(): Detail | undefined { return drawerState.detailStack.at(-1); }
 function renderDrawer() {
   const primary = $("drawer-primary"), secondary = $("drawer-detail");
@@ -485,12 +517,13 @@ function renderDetail() {
     host.append(labeled(t("app.name"), title), help(t("app.nameHelp")));
     host.append(formCaption(t("app.cap.launch")));
     const command = document.createElement("input"); command.id = "tab-command-value"; command.className = "mono"; command.value = tab.command || ""; command.placeholder = t("app.shellPlaceholder"); command.setAttribute("aria-label", t("app.launchCommand"));
-    host.append(labeled(t("app.launchCommand"), command), help(t("app.tabCommandHelp")));
+    const lock = projectLock(tab);
+    host.append(labeled(t("app.launchCommand"), (lock && lockedCommandField(command)) || command), help(lock ? t("project.lockedHelp", { project: lock.projectName }) : t("app.tabCommandHelp")));
     const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = !!tab.commandInShell; commandInShell.disabled = !command.value.trim();
     const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode(t("app.loadShell")));
     host.append(commandInShellLabel, help(t("app.loadShellHelp")));
     host.append(formCaption(t("app.cap.background")));
-    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!tab.tmux;
+    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!tab.tmux || !!lock; tmuxBox.disabled = !!lock;
     const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode(t("app.useTmux")));
     host.append(tmuxLabel, help(t("app.tmuxHelpTab")));
     const tmuxStatus = document.createElement("input"); tmuxStatus.type = "checkbox"; tmuxStatus.checked = !!tab.tmuxHideStatus; tmuxStatus.disabled = !tmuxBox.checked;
@@ -567,12 +600,13 @@ function renderDetail() {
     host.append(labeled(t("app.group"), groupSelect));
     const savedCommand = item?.tab.command ?? sourceTab?.command ?? "";
     const command = document.createElement("input"); command.id = "favorite-command"; command.className = "mono"; command.value = draft.command ?? savedCommand; command.placeholder = t("app.shellPlaceholder"); command.setAttribute("aria-label", t("app.launchCommand"));
-    host.append(formCaption(t("app.cap.launch")), labeled(t("app.launchCommand"), command), help(t("app.favoriteCommandHelp")));
+    const lock = item ? favoriteProjectLock(item.id) : undefined;
+    host.append(formCaption(t("app.cap.launch")), labeled(t("app.launchCommand"), (lock && lockedCommandField(command)) || command), help(lock ? t("project.lockedHelp", { project: lock.projectName }) : t("app.favoriteCommandHelp")));
     const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = draft.commandInShell ?? (item?.tab.commandInShell ?? sourceTab?.commandInShell ?? false); commandInShell.disabled = !command.value.trim();
     const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode(t("app.loadShell")));
     host.append(commandInShellLabel, help(t("app.loadShellHelpNext")));
     host.append(formCaption(t("app.cap.background")));
-    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = draft.tmux ?? !!(item?.tab.tmux ?? sourceTab?.tmux);
+    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!lock || (draft.tmux ?? !!(item?.tab.tmux ?? sourceTab?.tmux)); tmuxBox.disabled = !!lock;
     const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode(t("app.useTmux")));
     host.append(tmuxLabel, help(t("app.tmuxHelpFavorite")));
     const tmuxStatus = document.createElement("input"); tmuxStatus.type = "checkbox"; tmuxStatus.checked = draft.tmuxHideStatus ?? !!(item?.tab.tmuxHideStatus ?? sourceTab?.tmuxHideStatus); tmuxStatus.disabled = !tmuxBox.checked;
@@ -2375,6 +2409,7 @@ async function start() {
     eventQueue = eventQueue.then(() => handleEvent(payload)).catch(notify);
   });
   await startProjectEvents();
+  loadKnownProjects().catch(() => {});
   await listen<ControlRequest>("control-request", ({ payload }) => { handleControl(payload).catch(notify); });
   applyConfig(await native<NativeConfig>({ op: "init" }));
   initialized = true;

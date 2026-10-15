@@ -409,12 +409,7 @@ export function initProjectPanel(host: ProjectHost) {
     const kind = el("select");
     for (const k of PROJECT_AGENT_KINDS) kind.append(Object.assign(el("option", undefined, k), { value: k }));
     field(t("project.coordinatorKind"), kind);
-    const tmux = el("input");
-    tmux.type = "checkbox";
-    tmux.checked = true;
-    const tmuxRow = el("label", "toggle");
-    tmuxRow.append(tmux, el("span", undefined, t("project.useTmux")));
-    form.append(tmuxRow);
+    form.append(el("div", "help", t("project.coordinatorTmux")));
     const git = el("input");
     git.type = "checkbox";
     git.checked = true;
@@ -434,7 +429,7 @@ export function initProjectPanel(host: ProjectHost) {
       if (!path || !name.value.trim() || busy) return host.notify(t("project.needFolder"));
       busy = true;
       submit.disabled = true;
-      guard(create({ name: name.value.trim(), path, kind: kind.value as AgentKind, tmux: tmux.checked, gitExclude: git.checked }))
+      guard(create({ name: name.value.trim(), path, kind: kind.value as AgentKind, tmux: true, gitExclude: git.checked }))
         .finally(() => { busy = false; submit.disabled = false; });
     };
     view.append(form);

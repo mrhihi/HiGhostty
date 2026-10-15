@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgv, authorize } from "../src/control.ts";
 import { decide, reduce, emptyState } from "../src/projects.ts";
-import { agentKindOf, memberCandidates, surfaceForInstance, instanceKey, parseInput, helloBody, messageBody, callerMember, getResult, inboxResult, projectErrorReply, MAX_INPUT_BYTES } from "../src/project-control.ts";
+import { buildAgentCommand, parseAgentCommand, agentKindOf, memberCandidates, surfaceForInstance, instanceKey, parseInput, helloBody, messageBody, callerMember, getResult, inboxResult, projectErrorReply, MAX_INPUT_BYTES } from "../src/project-control.ts";
 
 const NOW = "2026-10-15T00:00:00.000Z";
 const user = { kind: "user" };
@@ -141,4 +141,18 @@ test("agentKindOf accepts the four supported agents only in their plain form", (
   ]) assert.equal(agentKindOf(command), kind, command);
   for (const command of [undefined, "", "  ", "vim", "aider", "opencode", "gh pr list", "gh", "cd x && claude", "echo claude", "claudex", "FOO=1"])
     assert.equal(agentKindOf(command), undefined, String(command));
+});
+
+test("agent commands split into a chosen agent and free-text arguments and rebuild losslessly", () => {
+  const cases = ["claude", "claude --model opus", "FOO=1 codex resume", "/usr/local/bin/gemini -y", "gh copilot", "gh copilot suggest"];
+  for (const command of cases) {
+    const parsed = parseAgentCommand(command);
+    assert.ok(parsed, command);
+    assert.equal(buildAgentCommand(parsed, parsed.kind, parsed.args), command, command);
+  }
+  const p = parseAgentCommand("FOO=1 /opt/bin/claude --model opus");
+  assert.deepEqual([p.prefix, p.program, p.kind, p.args], ["FOO=1", "/opt/bin/claude", "claude", "--model opus"]);
+  assert.equal(buildAgentCommand(p, "codex", "resume"), "FOO=1 codex resume");
+  assert.equal(buildAgentCommand(p, "claude", ""), "FOO=1 /opt/bin/claude");
+  assert.equal(parseAgentCommand("vim x"), undefined);
 });

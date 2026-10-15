@@ -16,6 +16,7 @@
 - **沒有 owner／epoch／heartbeat**：journal 的 revision CAS 與 `flock` 已足夠序列化；S3 才需要 owner。
 - **instance 身分**：沒有 `HIGHOSTTY_INSTANCE_ID`，改用 `instanceKey`：tmux 頁籤是 `tmux:<session>`（重開 App 後仍認得），其他是 `surface:<id>`（重開後顯示離線，需重新綁定或「重新啟動」）。generation 固定 1。
 - **成員候選**：只列「啟動指令是 claude／codex／copilot（含 `gh copilot`）／gemini、且在 tmux 執行」的頁籤的第一個窗格（`memberCandidates`、`agentKindOf`；只認單純形式，`cd x && claude` 之類不算；前置 `VAR=值` 可以）。建立專案時的 coordinator 種類也限這四種，讓身分（tmux session）在重開 App 後仍成立。手動在一般 shell 開的 agent 不能加入；窗格分割出來的 shell 也不列。
+- **成員鎖定**：成為成員（含 coordinator）的頁籤，在「編輯頁籤」與「編輯收藏」裡啟動指令只能用清單選 agent（參數仍可自由輸入，`parseAgentCommand`／`buildAgentCommand`），tmux 勾選鎖住；移除成員後解除。App 啟動時 `loadKnownProjects()` 會載入索引內所有專案，重開後的成員頁籤才認得出來。Coordinator 一律用 tmux（建立表單沒有勾選框）。
 - **專案內容切換**：不做 `ContentState`，比照檔案面板的全版模式：`updateLayout()` 把專案視為 `terminalHidden()`，送空 rects；`native()` 在專案開著時略過 `focus` op。S2 前要評估是否改成規格的 `ContentState`。
 - **沒有 `project.json` 快照、artifact、`prevHash`**。
 - **投遞**：只由「持有 coordinator 終端機的視窗」投遞；idle 才送；寫入 `sending` 之後不自動重送（失敗標 `uncertain`）。
@@ -41,3 +42,4 @@
 9. 預覽窗、files panel、⌘⇧P、待處理浮層與專案畫面切換後版面都正常，標題列仍可拖曳。
 10. 側欄「×」只從清單移除，資料夾與 journal 不動；再用「開啟既有專案」可開回。
 11. 全域控制模式為「唯讀」或「關閉」時，專案畫面頂端顯示需完整模式的提示與「開啟設定」；改成「完整」後 3 秒內提示消失。
+12. 成員（含 coordinator）頁籤的「編輯頁籤」：啟動指令是 agent 下拉＋參數、tmux 勾選灰掉且已勾；從專案移除成員後恢復一般輸入。對應收藏的「編輯收藏」同樣鎖住。重開 App 後鎖仍在。

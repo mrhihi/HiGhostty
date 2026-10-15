@@ -3,8 +3,8 @@
 // commit re-decides on the fresh state. Does not touch the DOM.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { decide, emptyState, reduce } from "./projects";
-import type { ActionBody, Actor, ProjectError, ProjectEvent, ProjectState, Result } from "./project-types";
+import { decide, emptyState, memberForInstance, reduce } from "./projects";
+import type { ActionBody, Actor, Member, ProjectError, ProjectEvent, ProjectState, Result } from "./project-types";
 
 type Transaction = { revision: number; actionId: string; events: ProjectEvent[] };
 type Snapshot = { root: string; revision: number; transactions: Transaction[]; readonlyReason: string | null };
@@ -37,6 +37,21 @@ export async function refresh(root: string): Promise<Loaded> {
   const known = loaded.get(root);
   const snapshot = await invoke<Snapshot>("project_snapshot", { root, afterRevision: known?.revision ?? 0 });
   return apply(root, snapshot, known);
+}
+
+// The project member an agent instance belongs to, across every project this window has loaded.
+export function memberOfInstance(instance: string): { root: string; projectName: string; member: Member } | undefined {
+  for (const project of loaded.values()) {
+    const member = memberForInstance(project.state, instance);
+    if (member) return { root: project.root, projectName: project.state.config?.name ?? "", member };
+  }
+  return undefined;
+}
+// Load every remembered project so member terminals are recognized before any project view is opened.
+export async function loadKnownProjects(): Promise<void> {
+  for (const item of await indexList().catch(() => [])) {
+    if (item.exists) await openProject(item.root).catch(() => {});
+  }
 }
 
 export const current = (root: string) => loaded.get(root);

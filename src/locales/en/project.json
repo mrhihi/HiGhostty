@@ -50,12 +50,15 @@
   "project.noFolder": "No folder chosen",
   "project.chooseFolder": "Choose folder…",
   "project.coordinatorKind": "Coordinator agent",
-  "project.useTmux": "Run in tmux so it keeps running",
   "project.gitExclude": "Keep .highostty out of Git (local exclude)",
   "project.create": "Create project",
   "project.needFolder": "Choose a folder and enter a name",
   "project.needFull": "Agents can only read this project until agent control is set to Full; they cannot introduce themselves or reply.",
   "project.needFullOff": "Agent control is off, so agents cannot reach this project at all.",
   "project.openSettings": "Open settings",
-  "project.pickRule": "Only tabs started with Claude Code, Codex, GitHub Copilot CLI or Gemini CLI (command claude, codex, copilot or gemini) and run in tmux can be members, so they stay linked after a restart."
+  "project.pickRule": "Only tabs started with Claude Code, Codex, GitHub Copilot CLI or Gemini CLI (command claude, codex, copilot or gemini) and run in tmux can be members, so they stay linked after a restart.",
+  "project.lockedHelp": "This terminal is a member of project “{project}”. Its agent can only be chosen from the list and it always runs in tmux, so it stays linked after a restart. Remove it from the project to change this.",
+  "project.lockedAgent": "Agent",
+  "project.lockedArgs": "Arguments (optional)",
+  "project.coordinatorTmux": "Runs in tmux so it keeps running and stays linked after a restart"
 }

@@ -50,12 +50,15 @@
   "project.noFolder": "尚未選擇資料夾",
   "project.chooseFolder": "選擇資料夾…",
   "project.coordinatorKind": "Coordinator agent",
-  "project.useTmux": "在 tmux 中執行（關閉 App 後仍持續）",
   "project.gitExclude": "不把 .highostty 放進 Git（本機排除）",
   "project.create": "建立專案",
   "project.needFolder": "請選擇資料夾並輸入名稱",
   "project.needFull": "在「agent 控制指令」改為「完整」之前，agent 只能讀取這個專案，不能自我介紹或回覆。",
   "project.needFullOff": "agent 控制指令已關閉，agent 完全無法連到這個專案。",
   "project.openSettings": "開啟設定",
-  "project.pickRule": "只能選用 Claude Code、Codex、GitHub Copilot CLI、Gemini CLI（指令為 claude、codex、copilot、gemini）啟動且在 tmux 執行的頁籤，這樣重開 App 後仍能連回。"
+  "project.pickRule": "只能選用 Claude Code、Codex、GitHub Copilot CLI、Gemini CLI（指令為 claude、codex、copilot、gemini）啟動且在 tmux 執行的頁籤，這樣重開 App 後仍能連回。",
+  "project.lockedHelp": "這個終端機是專案「{project}」的成員。agent 只能從清單選擇，且一律在 tmux 執行，重開 App 後才能維持連結。要修改請先把它從專案移除。",
+  "project.lockedAgent": "Agent",
+  "project.lockedArgs": "參數（選填）",
+  "project.coordinatorTmux": "在 tmux 中執行，關閉 App 後仍持續、重開後仍連得上"
 }
