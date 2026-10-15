@@ -94,7 +94,7 @@ const TAIL_LINES = 12;
 const QUESTION_END = /[?:？：]$/;
 const clean = (line: string) => line.replace(/^[❯›>▶●○◉]\s*/, "").trim();
 
-type Menu = { question: string; options: string[]; selected?: number };
+type Menu = { question: string; options: string[]; selected?: number; exact?: boolean };
 // Numbered options with a cursor on one of them (Claude, Codex, Gemini menus).
 function numberedMenu(lines: string[]): Menu | undefined {
   const tail = lines.slice(-LAYOUT_LINES);
@@ -104,7 +104,21 @@ function numberedMenu(lines: string[]): Menu | undefined {
   if (found.length < 2) return undefined;
   const first = found[0];
   const question = tail.slice(Math.max(0, first - 6), first).reverse().find((line) => QUESTION_END.test(line)) ?? tail[first - 1] ?? "";
-  return { question: clean(question), options: found.map((index) => clean(tail[index])), selected: found.indexOf(cursor) };
+  const options = found.map((index) => clean(tail[index]));
+  return { question: clean(question), options, selected: found.indexOf(cursor), exact: exactBlock(tail, found, cursor, options) };
+}
+// Is `found` one unbroken block of rows numbered 1, 2, 3… with the cursor on exactly one of them? Anything else (an
+// earlier numbered list in the output, an echoed "> 1. …" line, radio dots on every row, description lines between
+// options) means row N on screen is not options[N], so no key may be pressed on that reading.
+const FIRST_NUMBER = /^\s*(?:[❯›>▶●○◉]\s*)?(\d+)[.)]/;
+const NEEDS_TYPING = /type something|chat about this|something else/i;
+const CHECKBOX_AFTER_NUMBER = /^\d+[.)]\s*(?:\[[ x✔✓*]\]|\([ x*]\)|[☐☑☒])/i;
+function exactBlock(tail: string[], found: number[], cursor: number, options: string[]): boolean {
+  if (!found.includes(cursor)) return false;
+  if (found.some((index, i) => i > 0 && index !== found[i - 1] + 1)) return false;
+  if (found.some((index, i) => Number(FIRST_NUMBER.exec(tail[index])?.[1]) !== i + 1)) return false;
+  if (found.filter((index) => /^\s*[❯›>▶●○◉]/.test(tail[index])).length !== 1) return false;
+  return !options.some((option) => CHECKBOX_AFTER_NUMBER.test(option) || NEEDS_TYPING.test(option));
 }
 // "Enter to confirm" footer with an unnumbered list above it.
 function confirmMenu(lines: string[], confirmText: string): Menu | undefined {
@@ -163,7 +177,7 @@ export function recognizePrompt(lines: string[], rules: CompiledRules): Prompt |
       const hit = region.findLast((line) => rule.re!.test(line));
       if (hit !== undefined) {
         const menu = numberedMenu(all);
-        prompt = { kind: rule.kind, label: rule.label, question: menu?.question || hit, options: menu?.options ?? [], selected: menu?.selected };
+        prompt = { kind: rule.kind, label: rule.label, question: menu?.question || hit, options: menu?.options ?? [], selected: menu?.selected, ...(menu?.exact ? { exact: true } : {}) };
       }
     }
     if (prompt) return rule.low ? { ...prompt, low: true } : prompt;
@@ -221,7 +235,7 @@ export function idleStep(previous: IdleTrack | undefined, text: string, now: num
 export const MAX_MENU_OPTIONS = 9;
 const CHECKBOX_ROW = /^\s*(?:\[[ x✔✓*]\]|\([ x*]\)|[☐☑☒✓])/i;
 export function menuAnswerable(prompt: Prompt | undefined): prompt is Prompt & { selected: number } {
-  if (!prompt || prompt.low || !["menu", "confirm", "trust"].includes(prompt.kind)) return false;
+  if (!prompt || prompt.low || prompt.exact !== true || !["menu", "confirm", "trust"].includes(prompt.kind)) return false;
   const n = prompt.options.length;
   if (n < 2 || n > MAX_MENU_OPTIONS || !Number.isInteger(prompt.selected) || prompt.selected! < 0 || prompt.selected! >= n) return false;
   return !prompt.options.some((option) => CHECKBOX_ROW.test(option));
@@ -234,6 +248,8 @@ export function menuKeys(prompt: Prompt | undefined, index: number): string[] | 
 }
 // Before anything is sent the screen is read again: the same question, the same options and the cursor where we
 // thought it was. Anything else means the person or the agent moved on, and the card must be redrawn instead.
+// The menu without its cursor row: still the same menu after our arrow keys moved the cursor.
+export const promptIdentity = (prompt: Prompt | undefined): string => (prompt ? JSON.stringify([prompt.kind, prompt.question, prompt.options]) : "");
 export const sameMenu = (shown: Prompt, now: Prompt | null | undefined): boolean => !!now && promptKey(now) === promptKey(shown);
 // After sending we wait for the screen to change; if it never does, let the person try again or go there themselves.
 export const ANSWER_LOCK_MS = 15_000;

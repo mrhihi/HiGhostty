@@ -208,7 +208,7 @@ test("an agent's own alert outranks a detected prompt and survives prompt cleari
 });
 
 import { menuAnswerable, menuKeys, sameMenu } from "../src/attention.ts";
-const menu = (over = {}) => ({ kind: "menu", label: "x", question: "Pick one?", options: ["1. A", "2. B", "3. C"], selected: 0, ...over });
+const menu = (over = {}) => ({ kind: "menu", label: "x", question: "Pick one?", options: ["1. A", "2. B", "3. C"], selected: 0, exact: true, ...over });
 
 test("a plain single-choice menu is answered by arrows then Enter", () => {
   assert.deepEqual(menuKeys(menu(), 0), ["enter"]);
@@ -236,4 +236,44 @@ test("the screen must still show the same menu with the cursor in the same place
   assert.equal(sameMenu(menu(), menu({ question: "Other?" })), false);
   assert.equal(sameMenu(menu(), menu({ options: ["1. A", "2. B"] })), false);
   assert.equal(sameMenu(menu(), null), false);
+});
+
+test("menuAnswerable needs a prompt read as one exact block", () => {
+  assert.equal(menuAnswerable(menu({ exact: false })), false);
+  assert.equal(menuAnswerable(menu({ exact: undefined })), false);
+});
+
+// Real screens: the parser must say "exact" only when row N on screen is options[N].
+const screen = (...lines) => lines;
+const read = (lines) => recognizePrompt(lines, rules);
+test("a normal permission menu is exact and answerable", () => {
+  const p = read(screen("Edit file src/a.ts", "Do you want to proceed?", "❯ 1. Yes", "  2. Yes, and don't ask again", "  3. No, and tell Claude what to do differently (esc)"));
+  assert.equal(p.exact, true);
+  assert.deepEqual(menuKeys(p, 2), ["down", "down", "enter"]);
+});
+
+test("an earlier numbered list in the output makes the menu inexact", () => {
+  const p = read(screen("I suggest:", "1. Rewrite module", "2. Add tests", "3. Ship", "────────", "Do you want to proceed?", "❯ 1. Yes", "  2. Yes, and don't ask again", "  3. No"));
+  assert.notEqual(p.exact, true);
+  assert.equal(menuKeys(p, 0), undefined);
+});
+
+test("an echoed numbered input line before the menu makes it inexact", () => {
+  const p = read(screen("> 1. fix the bug", "Do you want to proceed?", "1. Yes", "❯ 2. No"));
+  assert.notEqual(p?.exact, true);
+});
+
+test("checkbox lists with numbers, radio dots on every row and type-it-yourself options are inexact", () => {
+  const boxes = read(screen("Pick any?", "❯ 1. [ ] Alpha", "  2. [ ] Beta", "  3. [✔] Gamma", "  4. Type something", "Enter to select · ↑/↓ to navigate · Esc to cancel"));
+  assert.notEqual(boxes?.exact, true);
+  assert.equal(menuAnswerable(boxes), false);
+  const radios = read(screen("Which one?", "○ 1. A", "● 2. B", "○ 3. C", "Enter to select · Esc to cancel"));
+  assert.notEqual(radios?.exact, true);
+  const typing = read(screen("Which?", "❯ 1. One", "  2. Two", "  3. Chat about this"));
+  assert.notEqual(typing?.exact, true);
+});
+
+test("a confirm-style list with description lines is never answerable", () => {
+  const p = read(screen("Choose a model?", "❯ Alpha", "  first desc", "  Beta", "  second desc", "Enter to confirm"));
+  assert.equal(menuAnswerable(p), false);
 });

@@ -37,7 +37,7 @@ import { restoreFiles, sameSaved, saveFiles, type FilesState, type SavedFiles } 
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
 import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDetail, togglePanel, type Detail, type DrawerState, type Panel } from "./drawer";
-import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, menuAnswerable, menuKeys, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
+import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, menuAnswerable, menuKeys, promptIdentity, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
 import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./prompt-rules";
 import builtinRules from "./prompt-rules.json?raw";
 import { newSessionName, restorable, tmuxCommand, validSession, withProgramPath } from "./tmux";
@@ -1064,24 +1064,41 @@ const answering = new Map<string, { key: string; at: number }>();
 async function answerPrompt(surfaceId: string, shown: Prompt, index: number) {
   const keys = menuKeys(shown, index);
   if (!keys || answering.has(surfaceId)) return;
-  answering.set(surfaceId, { key: promptKey(shown), at: Date.now() });
+  // Locked by the menu's identity, not its cursor row: our own arrow keys move the cursor, which must not unlock it.
+  answering.set(surfaceId, { key: promptIdentity(shown), at: Date.now() });
   renderAttention();
   let sent = false;
+  const read = async () => {
+    const screen = (await scanScreens([surfaceId]))[surfaceId];
+    return screen?.agent ? recognizePrompt(screen.text.split("\n"), promptRules) : null;
+  };
+  const press = async (key: string) => {
+    const reply = await native<{ error?: string }>({ op: "key", id: surfaceId, key });
+    if (reply?.error) throw new Error(reply.error);
+  };
+  const refuse = () => { answering.delete(surfaceId); notify(t("app.answerChanged")); scanAttention().catch(notify); };
   try {
     // Read the screen again right now: the same question, options and cursor row, or nothing is pressed.
-    const screen = (await scanScreens([surfaceId]))[surfaceId];
-    const now = screen?.agent ? recognizePrompt(screen.text.split("\n"), promptRules) : null;
-    if (!sameMenu(shown, now)) {
-      answering.delete(surfaceId);
-      notify(t("app.answerChanged"));
-      scanAttention().catch(notify);
-      return;
-    }
-    for (const [i, key] of keys.entries()) {
+    if (!sameMenu(shown, await read())) return refuse();
+    const moves = keys.slice(0, -1);
+    for (const [i, key] of moves.entries()) {
       if (i) await new Promise((resolve) => setTimeout(resolve, 60));
       sent = true;
-      await native({ op: "key", id: surfaceId, key });
+      await press(key);
     }
+    // Enter only if the cursor really is on the chosen row now; the screen may have moved on while we pressed.
+    if (moves.length) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const now = await read();
+      if (!now || promptIdentity(now) !== promptIdentity(shown) || now.selected !== index || now.exact !== true) {
+        // Arrow keys already went out: stay locked (no second attempt) and tell the person where things stand.
+        notify(t("app.answerChanged"));
+        renderAttention();
+        return;
+      }
+    }
+    sent = true;
+    await press("enter");
   } catch (error) {
     // Part of the keys may have gone out: stay locked until the screen changes instead of inviting a second try.
     if (!sent) answering.delete(surfaceId);
@@ -1276,7 +1293,7 @@ async function scanAttention() {
   for (const [id, screen] of Object.entries(found)) {
     screens.set(id, screen);
     const lock = answering.get(id);
-    if (lock && (Date.now() - lock.at > ANSWER_LOCK_MS || promptKey((screen.agent ? recognizePrompt(screen.text.split("\n"), promptRules) : null) ?? undefined) !== lock.key)) answering.delete(id);
+    if (lock && (Date.now() - lock.at > ANSWER_LOCK_MS || promptIdentity((screen.agent ? recognizePrompt(screen.text.split("\n"), promptRules) : null) ?? undefined) !== lock.key)) answering.delete(id);
     if (!screen.agent) { idleTracks.delete(id); dismissed.delete(id); setAttention(clearSource(attention, id, "prompt")); continue; }
     const step = idleStep(idleTracks.get(id), screen.text, now, promptRules);
     idleTracks.set(id, step.track);

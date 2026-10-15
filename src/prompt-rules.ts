@@ -3,7 +3,9 @@
 // optional user file in the data directory. DOM-free so it can be tested directly.
 export const PROMPT_KINDS = ["menu", "yesno", "confirm", "press-enter", "password", "login", "trust", "input"] as const;
 export type PromptKind = (typeof PROMPT_KINDS)[number];
-export type Prompt = { kind: PromptKind; label: string; question: string; options: string[]; selected?: number; low?: boolean };
+// `exact`: the options are one contiguous numbered block 1..n with a single cursor row, so "row N" on screen is
+// `options[N]` and arrow keys move one row at a time. Only then may a card press keys for the person.
+export type Prompt = { kind: PromptKind; label: string; question: string; options: string[]; selected?: number; low?: boolean; exact?: boolean };
 export const SCOPES = ["last", "tail", "after-rule", "box-body", "above-box"] as const;
 export type Scope = (typeof SCOPES)[number];
 export type CompiledRule = {
