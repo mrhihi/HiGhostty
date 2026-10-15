@@ -53,3 +53,13 @@
 - **與規格不同**：artifact 文字直接放進 journal 事件（沒有獨立檔案與 sha256）；一個專案只有一個 plan id，每次提交是新版本；同一專案內一位成員同時只接一個任務，`result-ready` 即釋放。
 - **不變式（測試涵蓋）**：沒有回報不改變狀態；舊 attempt 的回報只留紀錄、不動新 attempt；沒有 `InputWillStart` 就收到的回報標 `unmatched`、不推進、不存成果；`uncertain` 不能直接重試；`needs-input` 的 Issue 在後續 progress／result／終結回報時自動關閉；coordinator 驗收必須逐項對上完成條件並附屬於該任務的成果 ID。
 - `reportId` 為不透明字串，去重鍵是 taskId＋attemptId＋reportId，相同 ID 內容不同回 `report_conflict`。
+
+### S2 的 `ctl project` 指令
+
+`plan submit`、`run start`、`run pause`、`task get`、`task result`、`task report`、`task accept`、`task rework`（連同 S1 的 `get`／`inbox`／`hello`／`message`）。解析在 `src/project-control.ts`，接線在 `src/project-ctl.ts`，指令表在 `src/control.ts`，測試 `tests/project-ctl-tasks.test.mjs`。
+
+- coordinator 專用：`plan submit`、`run start`、`run pause`、`task result`、`task accept`、`task rework`。成員專用：`task get`（只能讀指派給自己的任務）、`task report`。
+- `run start` 只會建立「引用使用者訊息」的同意；沒有對應的使用者訊息回 `needs_user_decision`（使用者要從畫面按「開始」）。
+- `task report` 的 actionId 是 `report:<taskId>:<attemptId>:<reportId>`，重送同一份是 no-op；回應的 `stale` 非空表示被保存但沒有生效。
+- **與規格不同**：多了 `task result`（規格只讓成員讀 `task get`，但 coordinator 驗收前必須能讀成果）。
+- 尚未做：人按「交付」的 UI、任務 prompt（`[HiGhostty project task protocol v1]`）的組裝與投遞、回覆 needs-input（`ReplyIssue`）、計畫／任務畫面。

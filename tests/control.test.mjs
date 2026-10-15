@@ -327,7 +327,7 @@ test("every example command in the skill parses against the command table", () =
 
 test("the skill mentions every command (except ping) and every error code", () => {
   for (const op of OPS.filter((op) => op.name !== "ping")) assert.ok(skill.includes(op.name), `${op.name} is not in the skill`);
-  for (const code of ["disabled", "forbidden", "bad_args", "unknown_op", "not_found", "busy", "agent_blocked", "agent_prompt_stalled", "timeout", "failed", "unavailable", "project_unavailable", "revision_conflict", "storage_readonly", "needs_user_decision"]) assert.ok(skill.includes("`" + code + "`"), `${code} is not explained`);
+  for (const code of ["disabled", "forbidden", "bad_args", "unknown_op", "not_found", "busy", "agent_blocked", "agent_prompt_stalled", "timeout", "failed", "unavailable", "invalid_plan", "stale_attempt", "report_conflict", "project_unavailable", "revision_conflict", "storage_readonly", "needs_user_decision"]) assert.ok(skill.includes("`" + code + "`"), `${code} is not explained`);
 });
 
 test("the skill's write examples are the ones that need full mode", () => {

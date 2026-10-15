@@ -69,6 +69,14 @@ export const OPS: OpSpec[] = [
   { name: "project inbox", write: false, args: ["projectId"], flags: { after: "number" }, summary: "讀自己（coordinator）的收件匣：使用者在專案討論區送的訊息，每則有固定 seq 與 messageId；--after N 只取 seq 大於 N 的。重讀不代表處理完成" },
   { name: "project hello", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '向專案自我介紹並確認握手：stdin 傳 {"protocolVersion":1,"purpose":"一句話用途","reportMode":"protocol"|"screen","reportNeedsApproval"?:true}；reportNeedsApproval 表示執行 highostty ctl 時需要使用者核准' },
   { name: "project message", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）在專案討論區回覆：stdin 傳 {"text":"…","inReplyTo"?:"messageId","messageId"?:"自訂唯一字串，重送去重用"}' },
+  { name: "project plan submit", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）提交計畫草稿：stdin 傳 {"actionId"?,"basePlanVersion"?:N,"plan":{"title"?,"objective","scope"?,"steps":[{"key","memberId","title"?,"instruction","dependsOn"?:[key],"completion":["明確的完成條件"],"inputFrom"?:[{"stepKey","artifactNames":[]}]}]}}；一次回報全部錯誤，成功回 planId、version。basePlanVersion 過期回 revision_conflict' },
+  { name: "project run start", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）開始執行計畫：stdin 傳 {"actionId"?,"planId"?,"version"?,"instructionMessageId":"使用者要求執行的那則訊息 messageId"}；沒有對應的使用者訊息時回 needs_user_decision，請使用者在專案畫面按「開始」' },
+  { name: "project run pause", write: true, args: ["projectId"], summary: "（coordinator）暫停目前的 run：停止後續交付，不取消已在進行的工作" },
+  { name: "project task get", write: false, args: ["projectId", "taskId"], summary: "（被指派的成員）讀這個任務的目標、完成條件、輸入成果與退回意見；只有該任務的成員能讀" },
+  { name: "project task result", write: false, args: ["projectId", "taskId"], summary: "（coordinator）讀任務的成果（摘要與附件內容），驗收前核對用" },
+  { name: "project task report", write: true, args: ["projectId", "taskId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（被指派的成員）回報任務：stdin 傳 {"reportId":"唯一字串","attemptId","kind":"accepted|progress|needs-input|declined|result|failed|cancelled","summary","question"?,"artifacts"?:[{"name","mediaType":"text/plain|text/markdown|application/json","text"}]}；附件每份 128 KiB、總計 256 KiB；先完成工作再單獨回報' },
+  { name: "project task accept", write: true, args: ["projectId", "taskId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）驗收成果：stdin 傳 {"actionId"?,"attemptId","checks":[{"criterion":"完成條件原文","evidenceArtifactIds":["成果 id"]}]}，每項完成條件都要有對應' },
+  { name: "project task rework", write: true, args: ["projectId", "taskId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）退回重做：stdin 傳 {"actionId"?,"attemptId","feedback":"哪裡要改"}' },
 ];
 
 // Flags every command accepts. `--timeout` (ms) bounds how long the CLI waits for the reply.

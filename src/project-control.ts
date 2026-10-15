@@ -2,7 +2,8 @@
 // Pure; main.ts only wires it to the store. Command names live in control.ts's OPS.
 import { errReply, okReply, type ErrorCode, type Reply } from "./control.ts";
 import { coordinatorOf, inboxFor, memberForInstance, MAX_MESSAGE_CHARS } from "./projects.ts";
-import type { ActionBody, ProjectError, ProjectState } from "./project-types.ts";
+import { activeRun, buildTaskPayload, queueReasonOf, stepOf } from "./project-tasks.ts";
+import type { ActionBody, ProjectError, ProjectState, ReportKind } from "./project-types.ts";
 
 // The CLI reads at most this much from stdin (control.rs enforces the same limit).
 export const MAX_INPUT_BYTES = 256 * 1024;
@@ -122,6 +123,7 @@ export const notMemberReply = () => errReply("forbidden", "這個終端機不是
 
 export function getResult(state: ProjectState, revision: number) {
   const coordinator = coordinatorOf(state);
+  const run = activeRun(state) ?? state.runs.at(-1);
   return {
     name: state.config?.name,
     revision,
@@ -131,6 +133,16 @@ export function getResult(state: ProjectState, revision: number) {
       bound: !!state.bindings[m.id], handshake: !!state.handshakes[m.id],
     })),
     messages: state.messages.length,
+    plan: state.plans.length ? { id: state.plans[0].id, latestVersion: state.plans.at(-1)!.version } : null,
+    run: run
+      ? {
+          id: run.id, status: run.status, planVersion: run.planVersion,
+          tasks: state.tasks.filter((t) => t.runId === run.id).map((t) => ({
+            id: t.id, step: t.stepKey, member: t.memberId, status: t.status, attemptId: t.attempt?.id,
+            waitingFor: t.status === "queued" ? queueReasonOf(state, t) ?? null : undefined, cancelRequested: t.cancelRequested || undefined,
+          })),
+        }
+      : null,
   };
 }
 
@@ -141,3 +153,118 @@ export function inboxResult(state: ProjectState, memberId: string, after: unknow
 }
 
 export { okReply };
+
+const bad = (message: string) => ({ ok: false as const, reply: errReply("bad_args", message) });
+type Built = { ok: true; body: ActionBody; actionId?: string } | { ok: false; reply: Reply };
+const optionalString = (v: unknown) => (v === undefined || (typeof v === "string" && !!v) ? undefined : "必須是非空字串");
+
+export function planSubmitBody(value: Record<string, unknown>, newId: () => string): Built {
+  const extra = unknownKeys(value, ["actionId", "basePlanVersion", "plan"]);
+  if (extra.length) return bad(`plan submit 不認得欄位：${extra.join("、")}`);
+  if (value.plan === undefined) return bad("缺少 plan");
+  if (value.basePlanVersion !== undefined && !(Number.isInteger(value.basePlanVersion) && (value.basePlanVersion as number) >= 0)) return bad("basePlanVersion 必須是非負整數");
+  const problem = optionalString(value.actionId);
+  if (problem) return bad(`actionId ${problem}`);
+  return { ok: true, actionId: value.actionId as string | undefined, body: { type: "SubmitPlan", planId: newId(), plan: value.plan, basePlanVersion: value.basePlanVersion as number | undefined } };
+}
+
+// The coordinator names the user's message; plan and version default to the latest.
+export function runStartBody(state: ProjectState, value: Record<string, unknown>, newId: () => string): Built {
+  const extra = unknownKeys(value, ["actionId", "planId", "version", "instructionMessageId"]);
+  if (extra.length) return bad(`run start 不認得欄位：${extra.join("、")}`);
+  for (const key of ["actionId", "planId", "instructionMessageId"]) { const p = optionalString(value[key]); if (p) return bad(`${key} ${p}`); }
+  if (typeof value.instructionMessageId !== "string") return bad("缺少 instructionMessageId（使用者要求執行的那則訊息）");
+  const latest = state.plans.at(-1);
+  if (!latest) return bad("還沒有計畫；先用 plan submit 提交");
+  const version = value.version === undefined ? latest.version : value.version;
+  if (!Number.isInteger(version)) return bad("version 必須是整數");
+  const plan = state.plans.find((p) => p.version === version);
+  if (!plan) return bad(`沒有計畫版本 ${version}`);
+  if (value.planId !== undefined && value.planId !== plan.id) return bad("planId 不符");
+  return {
+    ok: true, actionId: value.actionId as string | undefined,
+    body: {
+      type: "StartRun", runId: newId(), planId: plan.id, version: version as number, taskIds: plan.steps.map(() => newId()),
+      consent: { id: newId(), source: "user-message", sourceMessageId: value.instructionMessageId },
+    },
+  };
+}
+
+const REPORT_KINDS: ReportKind[] = ["accepted", "progress", "needs-input", "declined", "result", "failed", "cancelled"];
+export function taskReportBody(taskId: string, value: Record<string, unknown>): Built {
+  const extra = unknownKeys(value, ["reportId", "attemptId", "kind", "summary", "question", "artifacts"]);
+  if (extra.length) return bad(`task report 不認得欄位：${extra.join("、")}`);
+  if (typeof value.reportId !== "string" || !value.reportId) return bad("reportId 必須是非空字串");
+  if (typeof value.attemptId !== "string" || !value.attemptId) return bad("attemptId 必須是非空字串");
+  if (!REPORT_KINDS.includes(value.kind as ReportKind)) return bad(`kind 必須是 ${REPORT_KINDS.join("、")}`);
+  if (value.summary !== undefined && typeof value.summary !== "string") return bad("summary 必須是字串");
+  if (value.question !== undefined && typeof value.question !== "string") return bad("question 必須是字串");
+  const artifacts: { name: string; mediaType: "text/plain"; text: string }[] = [];
+  if (value.artifacts !== undefined) {
+    if (!Array.isArray(value.artifacts)) return bad("artifacts 必須是陣列");
+    for (const raw of value.artifacts) {
+      const a = raw as Record<string, unknown> | null;
+      if (!a || typeof a.name !== "string" || typeof a.mediaType !== "string" || typeof a.text !== "string") return bad("每個附件需要字串 name、mediaType、text");
+      const extraA = unknownKeys(a, ["name", "mediaType", "text"]);
+      if (extraA.length) return bad(`附件不認得欄位：${extraA.join("、")}`);
+      artifacts.push(a as never);
+    }
+  }
+  return {
+    ok: true,
+    // Same report sent twice maps onto the same action, so a resend is a no-op even before the rules see it.
+    actionId: `report:${taskId}:${value.attemptId}:${value.reportId}`,
+    body: { type: "ReceiveReport", taskId, report: { reportId: value.reportId, attemptId: value.attemptId, kind: value.kind as ReportKind, summary: (value.summary as string | undefined) ?? "", question: value.question as string | undefined, artifacts } },
+  };
+}
+
+export function acceptBody(taskId: string, value: Record<string, unknown>): Built {
+  const extra = unknownKeys(value, ["actionId", "attemptId", "checks"]);
+  if (extra.length) return bad(`task accept 不認得欄位：${extra.join("、")}`);
+  if (typeof value.attemptId !== "string" || !value.attemptId) return bad("attemptId 必須是非空字串");
+  const checks: { criterion: string; evidenceArtifactIds: string[] }[] = [];
+  if (value.checks !== undefined) {
+    if (!Array.isArray(value.checks)) return bad("checks 必須是陣列");
+    for (const raw of value.checks) {
+      const c = raw as Record<string, unknown> | null;
+      if (!c || typeof c.criterion !== "string" || !Array.isArray(c.evidenceArtifactIds) || c.evidenceArtifactIds.some((x) => typeof x !== "string")) return bad("每項 check 需要字串 criterion 與字串陣列 evidenceArtifactIds");
+      checks.push({ criterion: c.criterion, evidenceArtifactIds: c.evidenceArtifactIds as string[] });
+    }
+  }
+  const problem = optionalString(value.actionId);
+  if (problem) return bad(`actionId ${problem}`);
+  return { ok: true, actionId: value.actionId as string | undefined, body: { type: "AcceptResult", taskId, attemptId: value.attemptId, checks } };
+}
+
+export function reworkBody(taskId: string, value: Record<string, unknown>): Built {
+  const extra = unknownKeys(value, ["actionId", "attemptId", "feedback"]);
+  if (extra.length) return bad(`task rework 不認得欄位：${extra.join("、")}`);
+  if (typeof value.attemptId !== "string" || !value.attemptId) return bad("attemptId 必須是非空字串");
+  if (typeof value.feedback !== "string" || !value.feedback.trim()) return bad("feedback 必須是非空字串");
+  const problem = optionalString(value.actionId);
+  if (problem) return bad(`actionId ${problem}`);
+  return { ok: true, actionId: value.actionId as string | undefined, body: { type: "RequestRework", taskId, attemptId: value.attemptId, feedback: value.feedback } };
+}
+
+// `project task get`: only the member the task is assigned to may read its inputs.
+export function taskGetResult(state: ProjectState, memberId: string, taskId: string): Reply {
+  const task = state.tasks.find((t) => t.id === taskId);
+  if (!task) return errReply("not_found", "沒有這個任務");
+  if (task.memberId !== memberId) return errReply("forbidden", "這個任務不是指派給你的");
+  const payload = buildTaskPayload(state, taskId);
+  return payload ? okReply({ ...payload, status: task.status, step: stepOf(state, task)?.key }) : errReply("not_found", "找不到任務的計畫內容");
+}
+
+// `project task result`: what the coordinator checks before accepting.
+export function taskResultResult(state: ProjectState, taskId: string): Reply {
+  const task = state.tasks.find((t) => t.id === taskId);
+  if (!task) return errReply("not_found", "沒有這個任務");
+  const step = stepOf(state, task);
+  const reports = state.reports.filter((r) => r.taskId === task.id).map((r) => ({ reportId: r.reportId, attemptId: r.attemptId, kind: r.kind, summary: r.summary, stale: r.stale }));
+  return okReply({
+    taskId: task.id, status: task.status, attemptId: task.attempt?.id, completion: step?.completion ?? [],
+    resultArtifacts: state.artifacts.filter((a) => task.resultArtifactIds.includes(a.id)).map(({ id, name, mediaType, text }) => ({ id, name, mediaType, text })),
+    reports,
+    openQuestions: state.issues.filter((i) => i.taskId === task.id && i.kind === "question" && !i.resolvedAt).map((i) => ({ id: i.id, text: i.text })),
+  });
+}
