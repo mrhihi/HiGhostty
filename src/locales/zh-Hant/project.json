@@ -169,5 +169,12 @@
   "project.plan.steps": "步驟與完成條件（{n}）",
   "project.unread": "{n} 則新",
   "project.task.status.waiting-help": "等待協助",
-  "project.activity.waiting-help": "等待協助"
+  "project.activity.waiting-help": "等待協助",
+  "project.banner.start-plan": "{project}・計畫「{title}」可以開始",
+  "project.banner.question": "{project}・{name} 有問題等你回答",
+  "project.banner.review-result": "{project}・「{title}」等你驗收",
+  "project.banner.uncertain": "{project}・不確定「{title}」有沒有送到 {name}",
+  "project.banner.terminal-blocked": "{project}・{name} 的終端機在等你",
+  "project.banner.more": "另有 {n} 項",
+  "project.banner.handle": "處理"
 }

@@ -85,3 +85,11 @@ export function pruneMarks(marks: Marks, items: ActionItem[]): void {
   for (const id of marks.seen) if (!live.has(id)) marks.seen.delete(id);
   for (const id of marks.snoozed.keys()) if (!live.has(id)) marks.snoozed.delete(id);
 }
+
+// The one line shown above the terminals: the most pressing unseen item across projects, and how many others wait.
+// Never opens anything by itself (docs/project-collaboration-v2-plan.md §5.3).
+export function bannerOf<T extends { item: ActionItem }>(entries: T[], marks: Marks, now: number): { first?: T; more: number } {
+  const open = entries.filter((e) => !marks.seen.has(e.item.id) && (marks.snoozed.get(e.item.id) ?? 0) <= now)
+    .sort((a, b) => ORDER.indexOf(a.item.kind) - ORDER.indexOf(b.item.kind));
+  return { first: open[0], more: Math.max(0, open.length - 1) };
+}

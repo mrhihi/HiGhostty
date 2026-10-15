@@ -22,7 +22,10 @@
 鈴鐺與浮層也顯示專案需要使用者的事：計畫待開始、worker 提問、指定由使用者驗收的成果、派送結果不確定。
 - 清單由 `actionItems(state)` 從 journal 推導（DOM-free，`tests/project-attention.test.mjs`）；卡片在浮層最上方，可直接開始計畫、回答、通過／退回、核對。
 - 「忽略」只標已讀（`projectMarks`，存 localStorage `project-attention-seen` 並用 `storage` 事件跨視窗同步）、讓徽章不計；卡片留著，來源在 journal 解決後才消失。
-- 尚未做：「稍後」、背景新待辦的單行提示、原生選項原地回答（計畫 P4）。
+- **單行提示**（`#project-banner`）：有未看過的專案待辦且待處理浮層沒開時，終端機上方顯示一行（最優先的一項＋「另有 N 項」），按「處理」才開浮層，× 把目前這些標為已看；不自動展開、不搶焦點。純邏輯是 `bannerOf`。
+  - 版面：`#workspace` 的子元素改為 `#terminal-column`（直向：提示列＋`#terminals`）｜分隔線｜檔案面板。提示列是 `#terminals` 的兄弟、不蓋在終端機上，`#terminals` 變矮時既有的 `ResizeObserver` 會重算原生矩形與預覽窗；檔案面板全螢幕與專案畫面開著時整個 `#terminal-column` 隱藏。
+  - 驗收（debug 與 release 各一次）：(1) 有待辦時終端機被推下約 30px，`stty size` 的列數減少、沒有被蓋住；(2) 處理後提示消失、列數恢復；(3) 同時開檔案面板（含全螢幕）、預覽窗（右側與下方）、⌘⇧P 片段面板、待處理浮層，版面與焦點都正常，開浮層時提示列會收起；(4) 拖曳視窗標題列、視窗縮放、分割與 zoom 正常；(5) 輸入法組字中提示出現／消失不打斷輸入。
+- 尚未做：「稍後」
 
 ## 辨識規則（資料，可維護）
 - 內建：`src/prompt-rules.json`（隨 App 打包）。

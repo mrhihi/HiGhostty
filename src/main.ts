@@ -49,7 +49,7 @@ import { allLoaded, dispatch as projectDispatch, loadKnownProjects, memberOfInst
 import { validModel, type Member } from "./project-types";
 import { createDelivery } from "./project-delivery";
 import { launchSpecFromCommand } from "./project-launch";
-import { actionItems, emptyMarks, parseSeen, pruneMarks, unseen, type ActionItem } from "./project-attention";
+import { actionItems, bannerOf, emptyMarks, parseSeen, pruneMarks, unseen, type ActionItem } from "./project-attention";
 import { ownedTerminals } from "./project-cards";
 import { cardSignature, renderProjectCard, type ProjectCardActions, type ProjectItem } from "./project-attention-cards";
 import "./style.css";
@@ -155,7 +155,7 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 <section id="panel-snippets" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.snippets">Snippets</strong><button id="snippet-add" class="icon-btn" title="New snippet" data-i18n-title="app.addSnippet" aria-label="New snippet" data-i18n-aria-label="app.addSnippet">${icons.plus}</button></div><div id="snippet-list"></div></section>
 <section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.settings">Settings</strong></div><div class="settings-content"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn" data-i18n="settings.openConfig">Open config file</button><button id="reload-config" class="ghost-btn" data-i18n="settings.reload">Reload</button></div><h4 data-i18n="settings.window">Window</h4><p class="help" data-i18n="settings.windowHelp">Where the main window appears when the app opens. The size is always restored from last time.</p><select id="window-placement"><option value="center" data-i18n="settings.placementCenter">Center on screen</option><option value="remember" data-i18n="settings.placementRemember">Remember last position</option></select><h4 data-i18n="settings.rules">Prompt detection rules</h4><p class="help" data-i18n="settings.rulesHelp">When an agent in a background tab stops to ask you something, the screen is recognized by these rules and you are notified. The rules file can add, replace or disable built-in rules.</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn" data-i18n="settings.openRules">Open rules file</button><button id="reload-rules" class="ghost-btn" data-i18n="settings.reload">Reload</button></div><h4 data-i18n="settings.control">Agent control commands</h4><p class="help" data-i18n="settings.controlHelp">Lets agents inside terminals use highostty ctl to read other tabs, run in the background, and more. Read-only: view only. Full: can also open tabs and send input. Only newly opened tabs get the related environment variables.</p><select id="control-mode"><option value="off" data-i18n="settings.controlOff">Off</option><option value="readonly" data-i18n="settings.controlReadonly">Read-only</option><option value="full" data-i18n="settings.controlFull">Full</option></select><p class="help" data-i18n="settings.skillHelp">The skill teaches an agent how to use these commands. Nothing is written until you press a button: it goes into each agent's skills folder (skills/highostty/SKILL.md under ~/.claude, ~/.codex, ~/.copilot, ~/.gemini) and can be removed at any time. For other agents, copy the content into their global instructions.</p><div id="skill-list"></div><p id="skill-status"></p><div class="button-row"><button id="copy-skill" class="ghost-btn" data-i18n="settings.copySkill">Copy skill content</button></div><h4 data-i18n="settings.diagnostics">Diagnostics</h4><pre id="config-diagnostics"></pre><h4 data-i18n="settings.shortcuts">Shortcuts</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span data-i18n="settings.sc.switchTab">Switch tabs</span><kbd>⌘⇧B</kbd><span data-i18n="settings.sc.sidebar">Toggle sidebar</span><kbd>⌘⇧P</kbd><span data-i18n="settings.sc.snippets">Snippets palette</span><kbd>⌘O / ⌘0</kbd><span data-i18n="settings.sc.files">Files panel</span><kbd>⇧⌘F</kbd><span data-i18n="settings.sc.filesFull">Files panel full screen</span><kbd>⌘T</kbd><span data-i18n="settings.sc.newTab">New tab</span><kbd>⌘⇧T</kbd><span data-i18n="settings.sc.childTab">Another tab in the same folder (child tab)</span><kbd>⌘D / ⌘⇧D</kbd><span data-i18n="settings.sc.split">Split</span></div></div></section>
 </div></section><section id="drawer-detail" aria-label="Details" data-i18n-aria-label="app.detail"><div class="drawer-inner"></div></section>
-<section id="workspace"><div id="terminals" aria-label="Native Ghostty workspace" data-i18n-aria-label="app.terminalsLabel"></div><div id="files-resizer" role="separator" aria-orientation="vertical" aria-label="Resize files panel" data-i18n-aria-label="app.resizeFiles" hidden></div><section id="files" aria-label="Files" data-i18n-aria-label="app.files" hidden></section><div id="empty" hidden><p data-i18n="app.emptyHint">Choose a folder to get started.</p><button id="first" data-i18n="app.chooseFolder">Choose folder…</button></div></section></main>
+<section id="workspace"><div id="terminal-column"><div id="project-banner" role="status" hidden></div><div id="terminals" aria-label="Native Ghostty workspace" data-i18n-aria-label="app.terminalsLabel"></div></div><div id="files-resizer" role="separator" aria-orientation="vertical" aria-label="Resize files panel" data-i18n-aria-label="app.resizeFiles" hidden></div><section id="files" aria-label="Files" data-i18n-aria-label="app.files" hidden></section><div id="empty" hidden><p data-i18n="app.emptyHint">Choose a folder to get started.</p><button id="first" data-i18n="app.chooseFolder">Choose folder…</button></div></section></main>
 <footer><span id="app-version" title="HiGhostty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/><path d="M12 8l4 4-4 4-4-4z"/></svg><span id="app-version-text"></span></span><span id="search-status"></span></footer>
 <dialog id="confirm"><h3 data-i18n="app.confirmTitle">Close terminal?</h3><p data-i18n="app.confirmBody">These jobs are still running. Confirming will terminate them.</p><pre id="processes"></pre><div class="actions"><button id="cancel-close" data-i18n="app.cancel">Cancel</button><button id="force-close" class="danger" data-i18n="app.forceClose">Terminate and close</button></div></dialog>
 <dialog id="palette"><h3 id="palette-title" data-i18n="app.paletteTitle">Commands</h3><div id="palette-items"></div><div class="actions"><button id="close-palette" data-i18n="app.close">Close</button></div></dialog>
@@ -1109,6 +1109,29 @@ onProjectChanged(() => {
   // A terminal just became (or stopped being) a project's: move it between the workspace and the project list.
   if (projectOwned().signature !== lastOwnedSignature) renderTabs();
 });
+// One line above the terminals when a project needs the user. It sits outside #terminals (a sibling in the
+// terminal column), so the native views simply get a smaller rectangle; it never opens the drop or takes focus.
+let bannerSig = "";
+function renderProjectBanner(projects: ProjectItem[]) {
+  const banner = $("project-banner");
+  const { first, more } = attentionDrop.isOpen() ? { first: undefined, more: 0 } : bannerOf(projects, projectMarks, Date.now());
+  const sig = first ? `${first.item.id}|${more}|${first.projectName}|${first.item.summary}` : "";
+  if (sig === bannerSig) return;
+  bannerSig = sig;
+  banner.hidden = !first;
+  banner.replaceChildren();
+  if (!first) return;
+  const member = first.state.members.find((m) => m.id === first.item.memberId)?.name ?? "";
+  const text = document.createElement("span");
+  text.className = "banner-text";
+  text.textContent = t(`project.banner.${first.item.kind}`, { project: first.projectName, name: member, title: first.item.summary }) + (more ? ` ${t("project.banner.more", { n: more })}` : "");
+  const handle = button(t("project.banner.handle"), () => attentionDrop.open());
+  handle.className = "ghost-btn";
+  const dismiss = button("×", () => { for (const p of projects) projectMarks.seen.add(p.item.id); saveSeen(); renderAttention(); }, t("app.dismiss"));
+  dismiss.className = "icon-btn";
+  dismiss.setAttribute("aria-label", t("app.dismiss"));
+  banner.append(text, handle, dismiss);
+}
 function renderAttention() {
   const projects = projectItems();
   // Seen ids are never pruned here: projects load one by one, so an item missing now may belong to one not loaded yet.
@@ -1118,6 +1141,7 @@ function renderAttention() {
     const el = $(id); el.hidden = count === 0; if (id === "bell-count") el.textContent = badgeText(count);
   }
   $("bell-btn").classList.toggle("has-alert", count > 0);
+  renderProjectBanner(projects);
   if (!attentionDrop.isOpen()) { lastAttentionSig = undefined; return; }
   const list = attentionDrop.list;
   const alerts = sorted(attention);

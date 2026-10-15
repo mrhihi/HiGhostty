@@ -147,6 +147,7 @@ body:not(.term-pointer) .row:hover { background: var(--hover); }
 .inline-actions[hidden] { display: none; }
 .inline-actions button:disabled { color: var(--text-faint); }
 #workspace { flex: 1; position: relative; min-width: 0; display: flex; overflow: hidden; --files-width: 360px; }
+#terminal-column { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 #terminals { flex: 1; min-width: 0; min-height: 0; position: relative; background: var(--terminal-background); color: var(--terminal-foreground); }
 .surface-outline { position: absolute; border: 1px solid rgb(255 255 255 / .09); pointer-events: none; }
 .surface-outline.focused { border-color: var(--accent); }
@@ -166,7 +167,7 @@ input:focus-visible, select:focus-visible { outline-offset: 0; }
 #files-resizer:hover, #files-resizer.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
 #files-resizer[hidden], #files[hidden] { display: none; }
 #files { flex: 0 0 var(--files-width); min-width: 0; display: flex; flex-direction: column; background: var(--surface-1); container-type: inline-size; }
-#workspace.files-full #terminals { display: none; }
+#workspace.files-full #terminals, #workspace.files-full #terminal-column { display: none; }
 #workspace.files-full #files { flex: 1 1 auto; }
 .files-heading { height: 40px; flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 0 6px; }
 .files-heading .active { background: var(--selected); color: var(--accent); }
@@ -476,7 +477,7 @@ body.standalone #app, body.standalone #preview { position: fixed; inset: 0; }
 .project-list-block .caption span { flex: 1; }
 #project-view { flex: 1 1 auto; min-width: 0; display: flex; background: var(--surface-1); color: var(--text); overflow: hidden; }
 #project-view[hidden] { display: none; }
-#workspace.project-open #terminals, #workspace.project-open #files, #workspace.project-open #files-resizer, #workspace.project-open #empty { display: none; }
+#workspace.project-open #terminals, #workspace.project-open #terminal-column, #workspace.project-open #files, #workspace.project-open #files-resizer, #workspace.project-open #empty { display: none; }
 .project-main { flex: 1; min-width: 0; overflow: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
 .project-title-row { display: flex; align-items: center; gap: 8px; }
 .project-title-row input { flex: 1; min-width: 0; }
@@ -530,3 +531,7 @@ body.standalone #app, body.standalone #preview { position: fixed; inset: 0; }
 .project-chat-toggle:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
 .project-chat.folded { flex: 0 0 auto; width: 200px; max-height: none; }
 @media (max-width: 900px) { .project-chat.folded { width: auto; } }
+/* One-line project hint above the terminals. A sibling of #terminals, so the native views just get a smaller rectangle. */
+#project-banner { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 10px; min-height: 30px; background: var(--surface-2); border-bottom: 1px solid var(--surface-0); border-left: 3px solid var(--attention); font-size: 14px; }
+#project-banner[hidden] { display: none; }
+#project-banner .banner-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

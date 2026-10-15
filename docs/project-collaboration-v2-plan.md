@@ -5,7 +5,7 @@
 | 工作包 | 進度（`npm test`／`tsc`／`vite build` 通過；**均未實機驗收**） |
 | --- | --- |
 | P0 | 成員啟動設定（`project-launch.ts`）、Execution 與 notice 型別完成；各 CLI 結構化 adapter 未驗證，仍走 tmux 互動 session |
-| P1 | 待辦投影（`project-attention.ts`）、浮層專案卡片、成員小卡、計畫摘要化、coordinator／工作 session 掛專案子列、討論區收合完成；單行背景提示、「稍後」未做 |
+| P1 | 待辦投影（`project-attention.ts`）、浮層專案卡片、成員小卡、計畫摘要化、coordinator／工作 session 掛專案子列、討論區收合完成；「稍後」未做；單行背景提示已寫（**版面改動待實機驗收**） |
 | P2 | opt-in 的每任務獨立 session（`handOverIsolated`）完成；controller 單一化、Rust registry、重啟恢復、execution 環境變數未做 |
 | P3 | 求助 run 並行（上限 2）、coordinator notice 喚醒完成；`waiting-help` 完成；協助 task 掛原 run（目前是並行的另一個 run）、依賴循環檢查、notice ack 指令未做 |
 | P4 | 已讀跨視窗同步完成；原生選項原地回答、舊資料收編不需新程式（見 `docs/projects.md`） |

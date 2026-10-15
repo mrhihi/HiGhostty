@@ -169,5 +169,12 @@
   "project.plan.steps": "Steps and completion conditions ({n})",
   "project.unread": "{n} new",
   "project.task.status.waiting-help": "Waiting for help",
-  "project.activity.waiting-help": "Waiting for help"
+  "project.activity.waiting-help": "Waiting for help",
+  "project.banner.start-plan": "{project} · plan “{title}” is ready to start",
+  "project.banner.question": "{project} · {name} has a question for you",
+  "project.banner.review-result": "{project} · “{title}” is waiting for your review",
+  "project.banner.uncertain": "{project} · not sure “{title}” reached {name}",
+  "project.banner.terminal-blocked": "{project} · {name}'s terminal is waiting for you",
+  "project.banner.more": "+{n} more",
+  "project.banner.handle": "Handle"
 }

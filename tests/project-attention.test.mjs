@@ -65,3 +65,17 @@ test("stored seen marks are read defensively", async () => {
   assert.deepEqual(parseSeen('{"a":1}'), []);
   assert.deepEqual(parseSeen(null), []);
 });
+
+test("the banner shows the most pressing unseen item and counts the rest", async () => {
+  const { bannerOf } = await import("../src/project-attention.ts");
+  const e = (id, kind) => ({ item: { id, kind } });
+  const entries = [e("a", "start-plan"), e("b", "question"), e("c", "review-result")];
+  const marks = emptyMarks();
+  assert.deepEqual([bannerOf(entries, marks, 0).first.item.id, bannerOf(entries, marks, 0).more], ["b", 2]);
+  marks.seen.add("b");
+  assert.deepEqual([bannerOf(entries, marks, 0).first.item.id, bannerOf(entries, marks, 0).more], ["c", 1]);
+  marks.snoozed.set("c", 100);
+  assert.equal(bannerOf(entries, marks, 50).first.item.id, "a");
+  assert.equal(bannerOf(entries, marks, 100).first.item.id, "c", "a snooze ends");
+  assert.deepEqual(bannerOf([], marks, 0), { first: undefined, more: 0 });
+});
