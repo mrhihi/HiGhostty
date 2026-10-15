@@ -5,7 +5,10 @@
 import { t } from "./i18n";
 import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import { INSTANCE_GENERATION, instanceKey, PROJECT_AGENT_KINDS, surfaceForInstance } from "./project-control";
-import { introPrompt, memberStatus, messagePrompt, queuedBatch, type MemberStatus } from "./project-prompts";
+import { introPrompt, memberStatus, messagePrompt, queuedBatch, queuedReplies, replyPrompt, taskPrompt, type MemberStatus } from "./project-prompts";
+import { renderRun, type RunActions } from "./project-run-view";
+import { activeRun } from "./project-tasks";
+import type { ActionBody } from "./project-types";
 import { coordinatorOf } from "./projects";
 import { current, dispatch, indexList, onProjectChanged, openProject, type IndexItem, type Loaded } from "./project-store";
 import type { AgentKind, Member, ProjectState } from "./project-types";
@@ -208,6 +211,112 @@ export function initProjectPanel(host: ProjectHost) {
     if (!done.ok) throw new Error(done.error.message);
   }
 
+  // ---- plan, run and tasks (S2: every delivery is a button press) ----
+  const drafts = new Map<string, string>();
+  let inFlight = 0;
+  async function act(task: () => Promise<unknown>) {
+    inFlight++;
+    renderIfChanged();
+    try { await task(); } catch (error) { host.notify(error); } finally { inFlight--; renderIfChanged(); }
+  }
+  async function must(body: ActionBody, actionId?: string) {
+    if (!root) throw new Error(t("project.notOpen"));
+    const done = await dispatch(root, user, body, actionId);
+    if (!done.ok) throw new Error(done.error.message);
+    return done.value;
+  }
+  const stateNow = () => loaded()?.state;
+  const surfaceOfMember = (memberId: string) => {
+    const binding = stateNow()?.bindings[memberId];
+    return binding && surfaceForInstance(binding.instanceId, host.surfaces());
+  };
+  async function startRun() {
+    const state = stateNow();
+    const plan = state?.plans.at(-1);
+    if (!plan) return;
+    await must({
+      type: "StartRun", runId: crypto.randomUUID(), planId: plan.id, version: plan.version, taskIds: plan.steps.map(() => crypto.randomUUID()),
+      consent: { id: crypto.randomUUID(), source: "start-button" },
+    });
+  }
+  // Typing into the worker comes after PrepareDispatch and InputWillStart are in the journal; if the
+  // checks fail nothing is typed and the task goes back to the queue.
+  async function deliverTask(taskId: string) {
+    const first = stateNow();
+    const before = first?.tasks.find((x) => x.id === taskId);
+    const surface = before && surfaceOfMember(before.memberId);
+    if (!first?.config || !before || !surface) return host.notify(t("project.notOnline"));
+    const attemptId = crypto.randomUUID(), effectId = crypto.randomUUID();
+    await must({ type: "PrepareDispatch", taskId, attemptId, effectId });
+    const state = stateNow()!;
+    const task = state.tasks.find((x) => x.id === taskId)!;
+    const prompt = taskPrompt(first.config.id, task, state);
+    let started = false;
+    try {
+      if (!prompt) throw new Error(t("project.task.noPrompt"));
+      const result = await host.sendPrompt(surface.id, prompt, async () => {
+        await must({ type: "RecordInputStart", taskId, attemptId, effectId });
+        started = true;
+      });
+      if (result === "sent") await must({ type: "RecordInputResult", taskId, attemptId, effectId, outcome: "sent" });
+      else {
+        await must({ type: "RecordInputResult", taskId, attemptId, effectId, outcome: "not-sent" });
+        host.notify(t(result === "blocked" ? "project.agentBlocked" : result === "busy" ? "project.agentBusy" : "project.notOnline"));
+      }
+    } catch (error) {
+      await dispatch(root!, user, { type: "RecordInputResult", taskId, attemptId, effectId, outcome: started ? "unknown" : "not-sent" }).catch(() => {});
+      throw error;
+    }
+  }
+  const runActions: RunActions = {
+    start: () => void act(startRun),
+    pause: () => void act(async () => { const run = stateNow() && activeRun(stateNow()!); if (run) await must({ type: "PauseRun", runId: run.id }); }),
+    resume: () => void act(async () => { const run = stateNow() && activeRun(stateNow()!); if (run) await must({ type: "ResumeRun", runId: run.id }); }),
+    deliver: (taskId) => void act(() => deliverTask(taskId)),
+    accept: (taskId) => void act(async () => {
+      const task = stateNow()?.tasks.find((x) => x.id === taskId);
+      if (task?.attempt) await must({ type: "AcceptResult", taskId, attemptId: task.attempt.id });
+    }),
+    rework: (taskId, feedback) => void act(async () => {
+      const task = stateNow()?.tasks.find((x) => x.id === taskId);
+      if (task?.attempt) await must({ type: "RequestRework", taskId, attemptId: task.attempt.id, feedback });
+    }),
+    cancel: (taskId) => void act(() => must({ type: "RequestCancel", taskId })),
+    retry: (taskId) => void act(() => must({ type: "RetryTask", taskId })),
+    reconcile: (taskId, decision) => void act(async () => {
+      const task = stateNow()?.tasks.find((x) => x.id === taskId);
+      if (task?.attempt) await must({ type: "ReconcileTask", taskId, attemptId: task.attempt.id, decision });
+    }),
+    reply: (issueId, text) => void act(async () => { await must({ type: "ReplyIssue", issueId, replyId: crypto.randomUUID(), text }); await deliverReplies(); }),
+    goTerminal: (memberId) => { const surface = surfaceOfMember(memberId); if (surface) guard(host.showTerminal(surface.id)); },
+    online: (memberId) => !!surfaceOfMember(memberId),
+    pending: () => inFlight > 0,
+  };
+  // Answers to a worker's question are typed into its terminal like a task: journal first, idle only.
+  async function deliverReplies() {
+    const project = loaded();
+    if (!root || delivering || !project?.state.config || project.readonlyReason) return;
+    delivering = true;
+    const at = root;
+    try {
+      for (const { task, replies } of queuedReplies(project.state)) {
+        const surface = surfaceOfMember(task.memberId);
+        if (!surface) continue;
+        try {
+          const result = await host.sendPrompt(surface.id, replyPrompt(project.state.config.id, task, replies), async () => {
+            for (const reply of replies) await must({ type: "SetReplyDelivery", replyId: reply.id, delivery: "sending" });
+          });
+          if (result === "sent") for (const reply of replies) await dispatch(at, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "sent" });
+        } catch (error) {
+          for (const reply of replies) await dispatch(at, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "uncertain" }).catch(() => {});
+          host.notify(error);
+        }
+      }
+    } finally {
+      delivering = false;
+    }
+  }
+
   // ---- conversation ----
   async function send(text: string) {
     if (!root) return;
@@ -256,7 +365,7 @@ export function initProjectPanel(host: ProjectHost) {
   function signature() {
     const project = loaded();
     const live = host.surfaces().map((x) => instanceKey(x)).sort();
-    return JSON.stringify([mode, picking, project?.state, project?.readonlyReason, mode === "create" ? [] : live, introSent.size, controlMode]);
+    return JSON.stringify([mode, picking, project?.state, project?.readonlyReason, mode === "create" ? [] : live, introSent.size, controlMode, inFlight]);
   }
   function renderIfChanged() {
     if (isOpen() && signature() !== shown) render();
@@ -285,7 +394,7 @@ export function initProjectPanel(host: ProjectHost) {
       notice.append(" ", open);
       main.append(notice);
     }
-    main.append(renderMembers(state));
+    main.append(renderMembers(state), renderRun(state, runActions, drafts));
     view.append(main, renderConversation(state));
     applyI18n(view);
   }
@@ -439,11 +548,11 @@ export function initProjectPanel(host: ProjectHost) {
   onProjectChanged((changed) => {
     if (changed !== root) return;
     renderIfChanged();
-    guard(deliver());
+    guard(deliver().then(deliverReplies));
   });
   onLocaleChange(() => { renderList(); if (isOpen()) render(); });
   // Messages wait for an idle coordinator; check now and then.
-  setInterval(() => { if (isOpen() && mode === "project") guard(deliver()); }, 2000);
+  setInterval(() => { if (isOpen() && mode === "project") guard(deliver().then(deliverReplies)); }, 2000);
   setInterval(() => { pollMode().catch(() => {}); renderIfChanged(); }, 3000);
   pollMode().catch(() => {});
   refreshList().catch(host.notify);

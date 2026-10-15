@@ -12,7 +12,7 @@ export const MAX_NAME_CHARS = 80;
 
 export const emptyState = (): ProjectState => ({
   config: null, members: [], bindings: {}, handshakes: {}, messages: [], messageSeq: 0,
-  plans: [], consents: [], runs: [], tasks: [], artifacts: [], reports: [], issues: [],
+  plans: [], consents: [], runs: [], tasks: [], artifacts: [], reports: [], issues: [], replies: [],
 });
 
 const err = (code: ProjectErrorCode, message: string): Result<never, ProjectError> => ({ ok: false, error: { code, message } });

@@ -3,7 +3,7 @@
 // projects.ts routes the S2 action types here. Not covered yet: ReplyIssue, ObservedBlocked,
 // SubmitObservedResult, DeliverNow, cross-project reservation (S3).
 import type {
-  Actor, Artifact, Attempt, Issue, Member, PlanVersion, ProjectError, ProjectErrorCode, ProjectEvent, ProjectState, Report, ReportInput,
+  Actor, Artifact, Attempt, Issue, IssueReply, Member, PlanVersion, ProjectError, ProjectErrorCode, ProjectEvent, ProjectState, Report, ReportInput,
   Result, Step, Task, TaskActionBody, TaskStatus,
 } from "./project-types.ts";
 
@@ -129,6 +129,18 @@ export function queueReasonOf(state: ProjectState, task: Task): QueueReason | un
 export const eligibleTasks = (state: ProjectState): Task[] =>
   state.tasks.filter((t) => t.status === "queued" && queueReasonOf(state, t) === undefined);
 
+// What stops a plan from starting; structured so the screen can translate it.
+export type StartBlocker = { kind: "coordinator-hello" } | { kind: "unbound"; memberId: string; memberName: string };
+export function startBlockers(state: ProjectState, plan: PlanVersion): StartBlocker[] {
+  const out: StartBlocker[] = [];
+  const coordinator = state.members.find((m) => m.role === "coordinator");
+  if (coordinator && !state.handshakes[coordinator.id]) out.push({ kind: "coordinator-hello" });
+  for (const id of new Set(plan.steps.map((s) => s.memberId))) {
+    if (!state.bindings[id]) out.push({ kind: "unbound", memberId: id, memberName: state.members.find((m) => m.id === id)?.name ?? id });
+  }
+  return out;
+}
+
 // ---- decide ----
 const err = (code: ProjectErrorCode, message: string, details?: unknown): Result<never, ProjectError> => ({ ok: false, error: { code, message, details } });
 type Ev = (type: ProjectEvent["type"], data: Record<string, unknown>) => ProjectEvent;
@@ -162,12 +174,11 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       if (runOf(state, body.runId)) return err("already_exists", "runId 重複");
       if (activeRun(state)) return err("invalid_state", "專案已有進行中的計畫；一次只能執行一份");
       if (body.taskIds.length !== plan.steps.length || new Set(body.taskIds).size !== body.taskIds.length) return err("bad_args", "taskIds 必須與步驟一一對應且不重複");
-      const blockers: string[] = [];
-      if (coordinator && !state.handshakes[coordinator.id]) blockers.push("coordinator 尚未完成 hello");
-      for (const id of new Set(plan.steps.map((s) => s.memberId))) {
-        if (!state.bindings[id]) blockers.push(`成員「${state.members.find((m) => m.id === id)?.name ?? id}」沒有綁定終端機`);
+      const blocked = startBlockers(state, plan);
+      if (blocked.length) {
+        const blockers = blocked.map((b) => (b.kind === "coordinator-hello" ? "coordinator 尚未完成 hello" : `成員「${b.memberName}」沒有綁定終端機`));
+        return err("invalid_state", `無法開始：${blockers.join("；")}`, blockers);
       }
-      if (blockers.length) return err("invalid_state", `無法開始：${blockers.join("；")}`, blockers);
       const consent = body.consent;
       if (consent.source === "start-button" ? !isUser : !isCoordinator) return err("forbidden", "同意來源與操作者不符");
       if (consent.source === "user-message") {
@@ -229,6 +240,24 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       if (!task) return err("not_found", "沒有這個任務");
       if (actor.kind !== "member" || actor.memberId !== task.memberId) return err("forbidden", "只有被指派的成員能回報這個任務");
       return receiveReport(state, task, actor, body.report, ev);
+    }
+    case "ReplyIssue": {
+      if (!isUser) return err("forbidden", "只有使用者能回覆提問");
+      const issue = state.issues.find((i) => i.id === body.issueId);
+      if (!issue || issue.kind !== "question" || !issue.taskId) return err("not_found", "沒有這個提問");
+      if (issue.resolvedAt) return err("invalid_state", "這個提問已經結束");
+      const task = taskOf(state, issue.taskId);
+      if (!task?.attempt || task.status !== "needs-input") return err("invalid_state", "任務已不在等待回答");
+      const text = body.text.trim();
+      if (!text) return err("bad_args", "回覆不可空白");
+      if (text.length > MAX_ARTIFACT_CHARS) return err("bad_args", "回覆過長");
+      if (state.replies.some((r) => r.id === body.replyId)) return err("already_exists", "replyId 重複");
+      return ok([ev("IssueReplyQueued", { reply: { id: body.replyId, issueId: issue.id, taskId: task.id, attemptId: task.attempt.id, text, delivery: "queued" } })]);
+    }
+    case "SetReplyDelivery": {
+      if (!isUser) return err("forbidden", "只有使用者能更新投遞狀態");
+      if (!state.replies.some((r) => r.id === body.replyId)) return err("not_found", "沒有這則回覆");
+      return ok([ev("ReplyDeliveryChanged", { replyId: body.replyId, delivery: body.delivery })]);
     }
     case "AcceptResult": {
       if (!userOrCoordinator) return err("forbidden", "只有使用者或 coordinator 能驗收");
@@ -393,6 +422,10 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
     }
     case "IssueOpened":
       return { ...state, issues: [...state.issues, d.issue as Issue] };
+    case "IssueReplyQueued":
+      return { ...state, replies: [...state.replies, d.reply as IssueReply] };
+    case "ReplyDeliveryChanged":
+      return { ...state, replies: state.replies.map((r) => (r.id === d.replyId ? { ...r, delivery: d.delivery as IssueReply["delivery"] } : r)) };
     case "IssueResolved":
       return { ...state, issues: state.issues.map((i) => (i.id === d.issueId ? { ...i, resolvedAt: event.at } : i)) };
     case "TaskCancelRequested":
@@ -425,6 +458,7 @@ export type TaskPayload = {
   instruction: string;
   completion: string[];
   inputs: { fromStep: string; artifacts: { id: string; name: string; mediaType: string; text: string }[]; missing: string[] }[];
+  replies: { id: string; question: string; answer: string }[];
   rework?: { feedback: string; previousArtifacts: { id: string; name: string; mediaType: string; text: string }[] };
 };
 // Inputs are the accepted results of upstream tasks in the same run, frozen by artifact id: a later
@@ -447,5 +481,6 @@ export function buildTaskPayload(state: ProjectState, taskId: string): TaskPaylo
   return {
     taskId: task.id, attemptId: task.attempt?.id, stepKey: step.key, title: step.title, objective: plan.objective, scope: plan.scope,
     instruction: step.instruction, completion: step.completion, inputs, ...(rework ? { rework } : {}),
+    replies: state.replies.filter((r) => r.taskId === task.id && r.attemptId === task.attempt?.id).map((r) => ({ id: r.id, question: state.issues.find((i) => i.id === r.issueId)?.text ?? "", answer: r.text })),
   };
 }

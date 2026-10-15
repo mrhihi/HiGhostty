@@ -62,4 +62,23 @@
 - `run start` 只會建立「引用使用者訊息」的同意；沒有對應的使用者訊息回 `needs_user_decision`（使用者要從畫面按「開始」）。
 - `task report` 的 actionId 是 `report:<taskId>:<attemptId>:<reportId>`，重送同一份是 no-op；回應的 `stale` 非空表示被保存但沒有生效。
 - **與規格不同**：多了 `task result`（規格只讓成員讀 `task get`，但 coordinator 驗收前必須能讀成果）。
-- 尚未做：人按「交付」的 UI、任務 prompt（`[HiGhostty project task protocol v1]`）的組裝與投遞、回覆 needs-input（`ReplyIssue`）、計畫／任務畫面。
+- 已接畫面（見下一節）。
+
+## S2 畫面與交付（`src/project-run-view.ts`、`src/project-panel.ts`）
+
+- **畫面**：成員下方的「計畫」區：最新計畫版本（步驟、負責人、相依、完成條件）、「開始」（列出阻礙：coordinator 未 hello、成員未綁定）、暫停／繼續、任務卡。任務卡依狀態顯示：交付、取消、提問與回答框、核對 uncertain（沒收到／正在做／失敗）、成果（`textContent` 顯示，不當標記）與驗收／退回（必填意見）、重試。草稿存在 `drafts`，重畫不會丟。
+- **交付流程**（`deliverTask`）：`PrepareDispatch` → `sendPrompt`（idle 檢查通過後才呼叫 `beforeInput`，即 `RecordInputStart` 寫入 journal）→ 輸入 → `RecordInputResult sent`。檢查沒過（忙碌／blocked／不在線）：不輸入，記 `not-sent` 回到佇列。輸入開始後出錯：記 `unknown`（任務變 uncertain，需人核對）。
+- **回覆提問**（`ReplyIssue`）：使用者回答後排進 `replies`；`deliverReplies` 對仍在 `needs-input` 的任務、且 attempt 相符者，用 `replyPrompt` 通知 worker，答案本身由 `project task get` 的 `replies` 讀取（prompt 不放內文）。舊 attempt 或已離開等待的回覆不會再被輸入。
+- **prompt**：`taskPrompt`（`[HiGhostty project task protocol v1]`）只放標頭、ID、一行目標、讀取與回報指令，不放任務資料與指令內文。
+- 一次只投遞一份（`delivering` 旗標，與討論訊息共用）；只有持有成員終端機的視窗能交付。
+
+### S2 驗收（實機，加在上面清單之後）
+
+13. 請 coordinator 提交計畫（`plan submit`）：計畫區出現步驟；錯誤的計畫回 `invalid_plan` 並列出全部問題；coordinator 未 hello 或成員未綁定時「開始」灰掉並寫明原因。
+14. 按「開始」：任務出現；第一步可「交付」，第二步顯示等待前一步。
+15. 按「交付」：worker 收到 `[HiGhostty project task protocol v1]` prompt，用 `task get` 讀到資料並以 `task report` 回報；任務依序變成已送出／進行中／成果待驗收。worker 忙碌或停在核准畫面時按交付：不輸入任何東西，任務回到等待，並顯示原因。
+16. 成果待驗收：可展開看附件；「驗收通過」後下一步可交付；「退回重做」要填意見，重新交付後 `task get` 有 `rework`。全部驗收後顯示「計畫已完成」。
+17. worker 回 `needs-input`：任務卡顯示提問，回答後 worker 收到通知並用 `task get` 讀到 `replies`，繼續後回 progress／result。
+18. 在輸入進行中強制結束 App 再開：任務是 uncertain，不會自動重送；選「沒收到」回到等待、「正在做」或「標為失敗」。
+19. worker 的核准被拒、只回到 idle 沒有回報：任務維持原狀，不會被判成功或失敗。
+20. 暫停後不能再交付；繼續後恢復；取消進行中的任務只記錄要求，不自動中斷 worker。

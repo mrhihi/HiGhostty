@@ -95,6 +95,9 @@ export type ReportKind = "accepted" | "progress" | "needs-input" | "declined" | 
 export type Report = { reportId: string; taskId: string; attemptId: string; kind: ReportKind; summary: string; fingerprint: string; stale?: "old-attempt" | "unmatched" | "terminal" };
 export type Issue = { id: string; taskId?: string; memberId: string; kind: "question" | "terminal-blocked" | "delivery-unknown" | "offline"; text: string; resolvedAt?: string };
 
+// A user's answer to a worker's question; delivered into the worker's terminal like a task.
+export type IssueReply = { id: string; issueId: string; taskId: string; attemptId: string; text: string; delivery: MessageDelivery };
+
 export type ProjectState = {
   config: ProjectConfig | null;
   members: Member[];
@@ -109,6 +112,7 @@ export type ProjectState = {
   artifacts: Artifact[];
   reports: Report[];
   issues: Issue[];
+  replies: IssueReply[];
 };
 
 export type Actor = { kind: "user" } | { kind: "member"; memberId: string };
@@ -120,7 +124,7 @@ export type ProjectEvent = {
     | "MemberPurposeUpdated" | "HandshakeRecorded" | "MessageQueued" | "MessageAdded" | "MessageDeliveryChanged"
     | "PlanVersionCreated" | "ExecutionConsentRecorded" | "RunStarted" | "RunPaused" | "RunResumed" | "RunCompleted"
     | "TaskQueued" | "TaskDispatchPrepared" | "InputWillStart" | "TaskStatusChanged" | "ReportReceived"
-    | "IssueOpened" | "IssueResolved" | "TaskCancelRequested" | "TaskReworkRequested" | "TaskRetryRequested";
+    | "IssueOpened" | "IssueResolved" | "IssueReplyQueued" | "ReplyDeliveryChanged" | "TaskCancelRequested" | "TaskReworkRequested" | "TaskRetryRequested";
   at: string;
   actor: Actor;
   data: Record<string, unknown>;
@@ -155,6 +159,8 @@ export type TaskActionBody =
   | { type: "RecordInputStart"; taskId: string; attemptId: string; effectId: string }
   | { type: "RecordInputResult"; taskId: string; attemptId: string; effectId: string; outcome: "sent" | "not-sent" | "unknown" }
   | { type: "ReceiveReport"; taskId: string; report: ReportInput }
+  | { type: "ReplyIssue"; issueId: string; replyId: string; text: string }
+  | { type: "SetReplyDelivery"; replyId: string; delivery: MessageDelivery }
   | { type: "AcceptResult"; taskId: string; attemptId: string; checks?: { criterion: string; evidenceArtifactIds: string[] }[] }
   | { type: "RequestRework"; taskId: string; attemptId: string; feedback: string }
   | { type: "RequestCancel"; taskId: string }
