@@ -33,10 +33,18 @@ export async function openProject(root: string, create = false, gitExclude = fal
   return known ? refresh(snapshot.root) : apply(snapshot.root, snapshot);
 }
 
-export async function refresh(root: string): Promise<Loaded> {
-  const known = loaded.get(root);
-  const snapshot = await invoke<Snapshot>("project_snapshot", { root, afterRevision: known?.revision ?? 0 });
-  return apply(root, snapshot, known);
+// Catching up is serialized per project: two overlapping refreshes (a change event and a commit) must not
+// apply on the same base and let the older answer win.
+const refreshing = new Map<string, Promise<Loaded>>();
+export function refresh(root: string): Promise<Loaded> {
+  const run = async () => {
+    const known = loaded.get(root);
+    const snapshot = await invoke<Snapshot>("project_snapshot", { root, afterRevision: known?.revision ?? 0 });
+    return apply(root, snapshot, known);
+  };
+  const next = (refreshing.get(root) ?? Promise.resolve(undefined as unknown as Loaded)).then(run, run);
+  refreshing.set(root, next.catch(() => undefined as unknown as Loaded));
+  return next;
 }
 
 // The project member an agent instance belongs to, across every project this window has loaded.

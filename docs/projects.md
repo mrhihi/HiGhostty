@@ -111,3 +111,15 @@
 - **沒有 Rust 的 owner／epoch／heartbeat／RuntimeRegistry／effect 路由**。理由：journal 的 revision 檢查加上「只有持有終端機的視窗才會對它輸入」已能避免重複派送（兩個視窗搶同一個任務時，`PrepareDispatch` 會因狀態已變而被拒）；跨專案排隊與重開後的 reservation 都由 journal 狀態推導。代價：持有成員終端機的視窗關掉時，該成員的任務不會被推進（成員本來就離線）。
 - `DeliverNow` 不允許用在 blocked（規格寫「略過 busy／blocked／manual」；對 blocked 輸入等於替使用者回答詢問）與沒有 agent 的畫面。
 - 沒有 `project.json` 快照；artifact 內嵌於 journal（見 S2）。
+
+### 獨立審查後的修正
+
+- 同一任務在回答後再次 `needs-input`：原本被當成過期回報丟掉；現在關掉舊提問、開新提問。
+- 討論訊息與提問回答的投遞：輸入前失敗退回 `queued`（會再試），輸入開始後才標 `uncertain`；重開後仍停在 `sending` 的項目由 `recoverAll` 標 `uncertain`。這兩種投遞現在也遵守人工暫停，且控制模式不是「完整」時不輸入。
+- 自我介紹 prompt 改走 `delivery.intro`：與其他輸入排同一個佇列、遵守人工暫停。
+- `RecordInputStart` 會再檢查 run 狀態：交付準備好之後若被暫停或結案，不會再輸入（`handOver` 回到 queued）。
+- `PrepareDispatch` 提交後若追上最新狀態時出錯，會釋放該交付，不會卡在 dispatching。
+- `refresh` 依專案序列化，避免兩個同時進行的更新讓舊結果覆蓋新結果。
+- Rust：journal 寫入失敗時截掉半行；移除清單項目不再關掉整個程序共用的 store。
+- 重新綁定既有成員會把 `reportMode` 重設為 `screen`，直到它再次 hello。
+- 已知未處理：原生 `focus` 事件在專案畫面開著時仍會更新 `active`（不會讓終端機取得鍵盤，`native()` 會擋 focus op）；待實機觀察。

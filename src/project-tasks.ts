@@ -257,6 +257,8 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       if (!task?.attempt) return err("not_found", "沒有這個任務或嘗試");
       if (task.attempt.id !== body.attemptId || task.attempt.effectId !== body.effectId) return err("stale_attempt", "attempt 或 effect 不符");
       if (task.status !== "dispatching") return err("invalid_state", `任務目前是 ${task.status}`);
+      // A pause or close between the hand-over being prepared and the typing must win: nothing has been typed yet.
+      if (runOf(state, task.runId)?.status !== "running") return err("invalid_state", "計畫已暫停或結束，不再輸入");
       return ok([ev("InputWillStart", { taskId: task.id, attemptId: body.attemptId })]);
     }
     case "RecordInputResult": {
@@ -445,7 +447,7 @@ function receiveReport(state: ProjectState, task: Task, actor: Actor, input: Rep
   const allowed: Record<ReportInput["kind"], TaskStatus[]> = {
     accepted: ["sent", "uncertain", "dispatching"],
     progress: ["sent", "accepted", "running", "uncertain", "dispatching", "needs-input"],
-    "needs-input": ["sent", "accepted", "running", "uncertain", "dispatching"],
+    "needs-input": ["sent", "accepted", "running", "uncertain", "dispatching", "needs-input"],
     declined: ["sent", "accepted", "needs-input", "uncertain", "dispatching"],
     result: ["sent", "accepted", "running", "needs-input", "uncertain", "dispatching"],
     failed: ACTIVE,
@@ -457,6 +459,8 @@ function receiveReport(state: ProjectState, task: Task, actor: Actor, input: Rep
   };
   events.push(ev("TaskStatusChanged", { taskId: task.id, status: to[input.kind], ...(input.kind === "result" ? { resultArtifactIds: artifacts.map((_, i) => `${task.id}:${input.attemptId}:${input.reportId}:${i}`), cancelledBeforeResult: task.cancelRequested || undefined } : {}) }));
   if (input.kind === "needs-input") {
+    // A new question replaces any earlier open one (the worker asked again after an answer).
+    events.push(...closeQuestions());
     events.push(ev("IssueOpened", { issue: { id: `issue:${task.id}:${input.attemptId}:${input.reportId}`, taskId: task.id, memberId: task.memberId, kind: "question", text: input.question!.trim() } }));
   } else if (input.kind !== "accepted") {
     events.push(...closeQuestions());

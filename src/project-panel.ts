@@ -122,7 +122,6 @@ export function initProjectPanel(host: ProjectHost) {
   }
   async function forget(item: IndexItem) {
     await invoke("project_index_remove", { root: item.root });
-    await invoke("project_close", { root: item.root }).catch(() => {});
     if (root === item.root) { root = undefined; setOpen(false); }
     await refreshList();
   }
@@ -183,15 +182,10 @@ export function initProjectPanel(host: ProjectHost) {
     await sendIntro(memberId);
   }
   async function sendIntro(memberId: string) {
-    const project = loaded();
-    const member = project?.state.members.find((m) => m.id === memberId);
-    const binding = project?.state.bindings[memberId];
-    if (!root || !project?.state.config || !member || !binding) return;
-    const surface = surfaceForInstance(binding.instanceId, host.surfaces());
-    if (!surface) return host.notify(t("project.notOnline"));
-    const result = await host.sendPrompt(surface.id, introPrompt(project.state.config.id, project.state.config.name, member), async () => {});
+    if (!root) return;
+    const result = await host.delivery.intro(root, memberId);
     if (result === "sent") introSent.add(memberId);
-    else host.notify(t(result === "blocked" ? "project.agentBlocked" : result === "busy" ? "project.agentBusy" : "project.notOnline"));
+    else host.notify(t(result === "blocked" ? "project.agentBlocked" : result === "busy" ? "project.agentBusy" : result === "held" ? "project.task.wait.held" : "project.notOnline"));
   }
   async function addMember(candidate: { id: string; tmuxSession?: string; title: string; cwd: string }, name: string, purpose: string) {
     if (!root) return;

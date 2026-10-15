@@ -179,7 +179,10 @@ export function reduce(state: ProjectState, event: ProjectEvent): ProjectState {
       };
       // A new binding means the agent behind it may differ, so the old handshake no longer counts.
       const { [id]: _h, ...handshakes } = state.handshakes;
-      return { ...state, bindings: { ...state.bindings, [id]: binding }, handshakes };
+      // ...and so does what it told us about how it reports (when an existing member moves to another agent):
+      // until it says hello again, assume the screen.
+      const members = state.members.map((m) => (prev && m.id === id && m.role === "worker" ? { ...m, reportMode: "screen" as const } : m));
+      return { ...state, members, bindings: { ...state.bindings, [id]: binding }, handshakes };
     }
     case "MemberPurposeUpdated":
       return {

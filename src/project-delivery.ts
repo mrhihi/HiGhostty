@@ -5,12 +5,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { holdInstance, isHeld, giveBack as releaseHold, leaveInstance, tickHold, type Holds } from "./project-hold";
 import { instanceKey, surfaceForInstance } from "./project-control";
-import { messagePrompt, queuedBatch, queuedReplies, replyPrompt, taskPrompt } from "./project-prompts";
+import { introPrompt, messagePrompt, queuedBatch, queuedReplies, replyPrompt, taskPrompt } from "./project-prompts";
 import { blockedBy, busyElsewhere, nextDeliverable, verdict, type ScheduleContext, type SkipReason } from "./project-schedule";
 import { coordinatorOf } from "./projects";
 import { allLoaded, current, dispatch } from "./project-store";
 import type { Observed } from "./project-tasks";
-import type { ProjectState } from "./project-types";
+import type { ActionBody, ProjectState } from "./project-types";
 
 export type SendResult = "sent" | "busy" | "blocked" | "gone";
 type Surf = { id: string; tmuxSession?: string };
@@ -87,7 +87,14 @@ export function createDelivery(host: DeliveryHost) {
       if (!before.ok) return before;
 
       const attemptId = crypto.randomUUID(), effectId = crypto.randomUUID();
-      const prepared = await dispatch(root, user, { type: "PrepareDispatch", taskId, attemptId, effectId });
+      let prepared;
+      try {
+        prepared = await dispatch(root, user, { type: "PrepareDispatch", taskId, attemptId, effectId });
+      } catch (error) {
+        // The commit may have landed even though catching up afterwards failed; release it so the task is not stuck.
+        await dispatch(root, user, { type: "RecordInputResult", taskId, attemptId, effectId, outcome: "not-sent" }).catch(() => {});
+        throw error;
+      }
       // Someone else moved the task first (another window, a click): not an error, just not ours.
       if (!prepared.ok) return prepared.error.code === "invalid_state" ? { ok: false, reason: "busy" } : Promise.reject(new Error(prepared.error.message));
       const state = prepared.value.state;
@@ -116,45 +123,62 @@ export function createDelivery(host: DeliveryHost) {
   }
 
   // ---- coordinator messages and answers ----
+  // The user is at that terminal, or agents may not use ctl yet: wait instead of typing into their draft
+  // or into an agent that could not answer anyway.
+  const mayType = (state: ProjectState, memberId: string) =>
+    controlMode === "full" && !isHeld(holds, state.bindings[memberId]?.instanceId ?? "");
+
+  // Marks each item `sending` in the journal, types once, then marks `sent`. If it fails before
+  // anything was typed the items go back to the queue; after that they are `uncertain`, never resent.
+  async function typeBatch(root: string, surface: Surf, prompt: string, ids: string[], mark: (id: string, delivery: "queued" | "sending" | "sent" | "uncertain") => ActionBody) {
+    let started = false;
+    const marked: string[] = [];
+    try {
+      const result = await host.sendPrompt(surface.id, prompt, async () => {
+        for (const id of ids) {
+          const done = await dispatch(root, user, mark(id, "sending"));
+          if (!done.ok) throw new Error(done.error.message);
+          marked.push(id);
+        }
+        started = true;
+      });
+      if (result === "sent") for (const id of ids) await dispatch(root, user, mark(id, "sent"));
+    } catch (error) {
+      for (const id of started ? ids : marked) await dispatch(root, user, mark(id, started ? "uncertain" : "queued")).catch(() => {});
+      throw error;
+    }
+  }
   async function messages(root: string) {
     const project = current(root);
     if (!project?.state.config || project.readonlyReason) return;
     const coordinator = coordinatorOf(project.state);
     const surface = coordinator && surfaceOf(project.state, coordinator.id);
     const batch = queuedBatch(project.state);
-    if (!surface || !batch.length) return;
-    try {
-      const result = await host.sendPrompt(surface.id, messagePrompt(project.state.config.id, batch), async () => {
-        for (const message of batch) {
-          const marked = await dispatch(root, user, { type: "SetMessageDelivery", messageId: message.id, delivery: "sending" });
-          if (!marked.ok) throw new Error(marked.error.message);
-        }
-      });
-      if (result === "sent") for (const message of batch) await dispatch(root, user, { type: "SetMessageDelivery", messageId: message.id, delivery: "sent" });
-    } catch (error) {
-      for (const message of batch) await dispatch(root, user, { type: "SetMessageDelivery", messageId: message.id, delivery: "uncertain" }).catch(() => {});
-      throw error;
-    }
+    if (!coordinator || !surface || !batch.length || !mayType(project.state, coordinator.id)) return;
+    await typeBatch(root, surface, messagePrompt(project.state.config.id, batch), batch.map((m) => m.id),
+      (messageId, delivery) => ({ type: "SetMessageDelivery", messageId, delivery }));
   }
   async function replies(root: string) {
     const project = current(root);
     if (!project?.state.config || project.readonlyReason) return;
     for (const { task, replies: group } of queuedReplies(project.state)) {
       const surface = surfaceOf(project.state, task.memberId);
-      if (!surface) continue;
-      try {
-        const result = await host.sendPrompt(surface.id, replyPrompt(project.state.config.id, task, group), async () => {
-          for (const reply of group) {
-            const marked = await dispatch(root, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "sending" });
-            if (!marked.ok) throw new Error(marked.error.message);
-          }
-        });
-        if (result === "sent") for (const reply of group) await dispatch(root, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "sent" });
-      } catch (error) {
-        for (const reply of group) await dispatch(root, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "uncertain" }).catch(() => {});
-        throw error;
-      }
+      if (!surface || !mayType(project.state, task.memberId)) continue;
+      await typeBatch(root, surface, replyPrompt(project.state.config.id, task, group), group.map((r) => r.id),
+        (replyId, delivery) => ({ type: "SetReplyDelivery", replyId, delivery }));
     }
+  }
+  // Asking a member to say hello. Not journaled (it changes nothing), but it queues behind other
+  // typing and respects the hold, so it cannot interleave with a task prompt or land in a draft.
+  function intro(root: string, memberId: string): Promise<SendResult | "held" | "offline"> {
+    return exclusive(async () => {
+      const project = current(root);
+      const member = project?.state.members.find((m) => m.id === memberId);
+      const surface = project && surfaceOf(project.state, memberId);
+      if (!project?.state.config || !member || !surface) return "offline";
+      if (isHeld(holds, project.state.bindings[memberId]?.instanceId ?? "")) return "held";
+      return host.sendPrompt(surface.id, introPrompt(project.state.config.id, project.state.config.name, member), async () => {});
+    });
   }
 
   // ---- the pump ----
@@ -217,8 +241,16 @@ export function createDelivery(host: DeliveryHost) {
     async recoverAll() {
       for (const { root, state } of allLoaded()) {
         if (state.tasks.some((t) => t.status === "dispatching")) await dispatch(root, user, { type: "RecoverTasks" });
+        // Typing may have been cut off mid-way; never resend, just say it is unclear.
+        for (const message of state.messages.filter((m) => m.author === "user" && m.delivery === "sending")) {
+          await dispatch(root, user, { type: "SetMessageDelivery", messageId: message.id, delivery: "uncertain" });
+        }
+        for (const reply of state.replies.filter((r) => r.delivery === "sending")) {
+          await dispatch(root, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "uncertain" });
+        }
       }
     },
+    intro,
     messages: (root: string) => exclusive(() => messages(root)),
     replies: (root: string) => exclusive(() => replies(root)),
     observedOf: (root: string, memberId: string): Observed | undefined => {

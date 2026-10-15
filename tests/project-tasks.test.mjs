@@ -496,3 +496,34 @@ test("recovery after a restart: unstarted hand-overs go back to the queue, start
   const sent = deliver(started(), "t1", "A1");
   assert.equal(run(sent, user, { type: "RecoverTasks" }), sent, "sent tasks are left alone");
 });
+
+// ---- from the independent review ----
+test("a worker that asks again after an answer gets a new question, and the old one closes", () => {
+  NOW = "2026-10-15T00:00:00.000Z";
+  let s = deliver(started(), "t1", "A1");
+  s = report(s, "t1", { reportId: "Q1", attemptId: "A1", kind: "needs-input", summary: "", question: "哪天？" });
+  s = run(s, user, { type: "ReplyIssue", issueId: s.issues[0].id, replyId: "rp", text: "昨天" });
+  s = report(s, "t1", { reportId: "Q2", attemptId: "A1", kind: "needs-input", summary: "", question: "寄件人是誰？" });
+  assert.equal(task(s, "t1").status, "needs-input");
+  assert.equal(s.reports.at(-1).stale, undefined, "it is a real report, not a stale one");
+  assert.deepEqual(s.issues.filter((i) => !i.resolvedAt).map((i) => i.text), ["寄件人是誰？"]);
+  assert.ok(s.issues[0].resolvedAt);
+});
+
+test("a pause or close between preparing and typing stops the typing", () => {
+  let s = started();
+  s = run(s, user, { type: "PrepareDispatch", taskId: "t1", attemptId: "A1", effectId: "e1" });
+  s = run(s, user, { type: "PauseRun", runId: "r1" });
+  assert.equal(fail(s, user, { type: "RecordInputStart", taskId: "t1", attemptId: "A1", effectId: "e1" }).code, "invalid_state");
+  const back = run(s, user, { type: "RecordInputResult", taskId: "t1", attemptId: "A1", effectId: "e1", outcome: "not-sent" });
+  assert.equal(task(back, "t1").status, "queued", "the hand-over is released cleanly");
+});
+
+test("rebinding a member resets how it is assumed to report", () => {
+  let s = world();
+  s = run(s, as("A"), { type: "Hello", protocolVersion: 1, purpose: "", reportMode: "protocol" });
+  assert.equal(s.members.find((m) => m.id === "A").reportMode, "protocol");
+  s = run(s, user, { type: "BindMember", memberId: "A", instanceId: "other", generation: 1 });
+  assert.equal(s.members.find((m) => m.id === "A").reportMode, "screen");
+  assert.equal(s.members.find((m) => m.id === "c").reportMode, "protocol", "the coordinator is left alone");
+});

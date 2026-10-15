@@ -169,8 +169,14 @@ impl Store {
         let tx = json!({ "schemaVersion": 1, "revision": revision, "actionId": action_id, "events": events });
         let line = encode(&tx)?;
         let mut file = OpenOptions::new().create(true).append(true).open(self.root.join(".highostty/journal/events.jsonl")).map_err(err)?;
-        file.write_all(format!("{line}\n").as_bytes()).map_err(err)?;
-        file.sync_data().map_err(err)?;
+        let before = file.metadata().map_err(err)?.len();
+        let written = file.write_all(format!("{line}\n").as_bytes()).and_then(|_| file.sync_data());
+        if let Err(error) = written {
+            // Cut a half-written line off again; left in place the next append would sit behind it and
+            // the journal would later look damaged in the middle.
+            let _ = file.set_len(before);
+            return Err(err(error));
+        }
         self.revision = revision;
         self.action_ids.insert(action_id.to_string(), revision);
         self.transactions.push(tx);
