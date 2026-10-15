@@ -176,5 +176,6 @@
   "project.banner.uncertain": "{project}・不確定「{title}」有沒有送到 {name}",
   "project.banner.terminal-blocked": "{project}・{name} 的終端機在等你",
   "project.banner.more": "另有 {n} 項",
-  "project.banner.handle": "處理"
+  "project.banner.handle": "處理",
+  "project.snooze": "稍後"
 }

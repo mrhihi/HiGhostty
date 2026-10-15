@@ -79,3 +79,11 @@ test("the banner shows the most pressing unseen item and counts the rest", async
   assert.equal(bannerOf(entries, marks, 100).first.item.id, "c", "a snooze ends");
   assert.deepEqual(bannerOf([], marks, 0), { first: undefined, more: 0 });
 });
+
+test("stored snooze times are read defensively and expired ones dropped", async () => {
+  const { parseSnoozed } = await import("../src/project-attention.ts");
+  assert.deepEqual([...parseSnoozed('{"a":200,"b":50,"c":"x","d":null}', 100)], [["a", 200]]);
+  assert.equal(parseSnoozed("nope", 0).size, 0);
+  assert.equal(parseSnoozed('["a"]', 0).size, 0);
+  assert.equal(parseSnoozed(null, 0).size, 0);
+});

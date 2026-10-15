@@ -17,6 +17,8 @@ export type ProjectCardActions = {
   goTerminal(item: ActionItem): void;
   // Quiet the badge only; the item stays until its source resolves.
   markSeen(item: ActionItem): void;
+  // Hide it for a while (badge and banner); the card stays in the list.
+  snooze(item: ActionItem): void;
   online(item: ActionItem): boolean;
 };
 
@@ -99,6 +101,7 @@ export function renderProjectCard(p: ProjectItem, actions: ProjectCardActions, d
       break;
   }
   if (item.memberId && actions.online(item)) button(t("project.goTerminal"), () => actions.goTerminal(item), item.kind === "terminal-blocked" ? "go" : undefined);
+  button(t("project.snooze"), () => actions.snooze(item));
   button(t("app.dismiss"), () => actions.markSeen(item), "dismiss");
   card.append(actionsRow);
   return card;

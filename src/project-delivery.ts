@@ -27,6 +27,8 @@ export type DeliveryHost = {
   // Starts a fresh agent for a work session and resolves once it is ready for a prompt. Throws when it cannot.
   startWorkSession(spec: LaunchSpec, model?: string): Promise<Surf>;
   closeSurface(surface: string): Promise<void>;
+  // True once the saved terminals are back after a start; before that a missing terminal proves nothing.
+  ready(): boolean;
 };
 export type DeliverOutcome = { ok: true } | { ok: false; reason: SkipReason };
 
@@ -225,11 +227,23 @@ export function createDelivery(host: DeliveryHost) {
   }
   // Work sessions whose task is over are closed; one that may still matter (a result to check, an open question,
   // an unsure delivery, a failure to read) stays until the person or the task settles it.
+  // A live session whose terminal is gone (its tmux session did not survive, or someone killed it) for this long is
+  // given up: its identity ends, so a later terminal with the same name cannot speak for the task. The task itself is
+  // left alone: the silence warning and the person's check decide whether it failed or can be handed over again.
+  const LOST_GRACE_MS = 120_000;
+  const missingSince = new Map<string, number>();
   async function endFinished(root: string) {
     const project = current(root);
     if (!project) return;
     for (const execution of project.state.executions.filter((x) => x.status === "live")) {
       const task = project.state.tasks.find((t) => t.id === execution.taskId);
+      if (!surfaceForInstance(execution.instanceId, host.surfaces())) {
+        if (host.ready()) {
+          const since = missingSince.get(execution.id) ?? Date.now();
+          missingSince.set(execution.id, since);
+          if (Date.now() - since > LOST_GRACE_MS) { missingSince.delete(execution.id); await dispatch(root, user, { type: "EndExecution", executionId: execution.id }); continue; }
+        }
+      } else missingSince.delete(execution.id);
       // A failed or declined task keeps its session (to read what happened) until it is retried or settled.
       const over = !task || task.attempt?.id !== execution.attemptId || ["completed", "cancelled", "queued"].includes(task.status);
       if (!over) continue;

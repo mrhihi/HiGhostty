@@ -79,6 +79,19 @@ export const parseSeen = (raw: string | null): string[] => {
   } catch { return []; }
 };
 
+// "Later": hidden from the badge and the banner until the time passes. Same defensive reading as parseSeen; times that
+// are not numbers or already passed are dropped, and the list is bounded.
+export const SNOOZE_MS = 30 * 60_000;
+export function parseSnoozed(raw: string | null, now: number): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    const value: unknown = JSON.parse(raw ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+    for (const [id, until] of Object.entries(value).slice(0, 500)) if (typeof until === "number" && Number.isFinite(until) && until > now) out.set(id, until);
+  } catch { /* an unreadable value means nothing is snoozed */ }
+  return out;
+}
+
 // Forget marks for items that no longer exist, so a later, different item with the same id starts unread.
 export function pruneMarks(marks: Marks, items: ActionItem[]): void {
   const live = new Set(items.map((i) => i.id));

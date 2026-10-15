@@ -176,5 +176,6 @@
   "project.banner.uncertain": "{project} · not sure “{title}” reached {name}",
   "project.banner.terminal-blocked": "{project} · {name}'s terminal is waiting for you",
   "project.banner.more": "+{n} more",
-  "project.banner.handle": "Handle"
+  "project.banner.handle": "Handle",
+  "project.snooze": "Later"
 }

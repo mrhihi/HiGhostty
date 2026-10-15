@@ -49,7 +49,7 @@ import { allLoaded, dispatch as projectDispatch, loadKnownProjects, memberOfInst
 import { validModel, type Member } from "./project-types";
 import { createDelivery } from "./project-delivery";
 import { launchSpecFromCommand } from "./project-launch";
-import { actionItems, bannerOf, emptyMarks, parseSeen, pruneMarks, unseen, type ActionItem } from "./project-attention";
+import { actionItems, bannerOf, emptyMarks, parseSeen, parseSnoozed, pruneMarks, SNOOZE_MS, unseen, type ActionItem } from "./project-attention";
 import { ownedTerminals } from "./project-cards";
 import { cardSignature, renderProjectCard, type ProjectCardActions, type ProjectItem } from "./project-attention-cards";
 import "./style.css";
@@ -265,6 +265,7 @@ const delivery = createDelivery({
   agentKind: (id) => { const tab = tabFor(id); return tab ? agentKindOf(tab.command, resolveProgram) : undefined; },
   startWorkSession: (spec, model) => startAgentSession(spec.kind, spec.cwd.path, spec.tmux, withModel(spec.args, model)),
   closeSurface: (id) => destroy(id, true),
+  ready: () => initialized && !restoring,
 });
 projectPanel = initProjectPanel({
   notify,
@@ -1116,8 +1117,12 @@ const SEEN_KEY = "project-attention-seen";
 const loadSeen = () => { try { projectMarks.seen = new Set(parseSeen(localStorage.getItem(SEEN_KEY))); } catch {} };
 const saveSeen = () => { try { localStorage.setItem(SEEN_KEY, JSON.stringify([...projectMarks.seen].slice(-500))); } catch {} };
 loadSeen();
+const SNOOZE_KEY = "project-attention-snoozed";
+const loadSnoozed = () => { try { projectMarks.snoozed = parseSnoozed(localStorage.getItem(SNOOZE_KEY), Date.now()); } catch {} };
+const saveSnoozed = () => { try { localStorage.setItem(SNOOZE_KEY, JSON.stringify(Object.fromEntries(projectMarks.snoozed))); } catch {} };
+loadSnoozed();
 // Another window marked something seen: follow it so the badge agrees everywhere.
-window.addEventListener("storage", (event) => { if (event.key === SEEN_KEY) { loadSeen(); renderAttention(); } });
+window.addEventListener("storage", (event) => { if (event.key === SEEN_KEY || event.key === SNOOZE_KEY) { loadSeen(); loadSnoozed(); renderAttention(); } });
 const projectDrafts = new Map<string, string>();
 const projectItems = (): ProjectItem[] => allLoaded().flatMap((p) => p.state.config ? actionItems(p.state).map((item) => ({ root: p.root, projectName: p.state.config!.name, state: p.state, item })) : []);
 const projectCardActions: ProjectCardActions = (() => {
@@ -1144,6 +1149,7 @@ const projectCardActions: ProjectCardActions = (() => {
       const tab = tabFor(surface.id);
       if (tab) { tab.focused = surface.id; activate(tab).catch(notify); }
     },
+    snooze: (item) => { projectMarks.snoozed.set(item.id, Date.now() + SNOOZE_MS); saveSnoozed(); renderAttention(); },
     markSeen: (item) => { projectMarks.seen.add(item.id); saveSeen(); renderAttention(); },
     online: (item) => {
       const project = allLoaded().find((p) => p.state.config?.id === item.projectId);
