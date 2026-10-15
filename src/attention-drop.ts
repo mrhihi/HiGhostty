@@ -42,10 +42,7 @@ export function initAttentionDrop(host: AttentionDropHost) {
   bar.append(title, spacer, clearAll, closeBtn);
   const list = document.createElement("div");
   list.id = "attention-list";
-  const foot = document.createElement("div");
-  foot.className = "palette-foot";
-  foot.innerHTML = `<span><kbd>↑</kbd><kbd>↓</kbd> <i data-i18n="attention.hintSelect">Select</i></span><span><kbd>↵</kbd> <i data-i18n="attention.hintGo">Go</i></span><span><kbd>⌫</kbd> <i data-i18n="attention.hintDismiss">Dismiss</i></span><span><kbd>Esc</kbd> <i data-i18n="attention.hintClose">Close</i></span>`;
-  drop.append(bar, list, foot);
+  drop.append(bar, list);
   const labelRoot = () => { applyI18n(drop); drop.setAttribute("aria-label", t("attention.title")); };
   labelRoot();
   // 語言切換：靜態文字重套，開著時重畫卡片（卡片內容由 host.render 產生）。
@@ -67,7 +64,6 @@ export function initAttentionDrop(host: AttentionDropHost) {
   // The clicked button is gone after a rebuild, so pull focus back or Esc/arrows go dead.
   const afterRender = () => {
     if (!isOpen()) return;
-    foot.hidden = cards().length === 0;
     select(Math.min(selected, cards().length - 1), false);
     if (!drop.contains(document.activeElement)) drop.focus();
   };

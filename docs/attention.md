@@ -18,6 +18,12 @@
 
 **agent 自己發的提示**：`highostty ctl alert raise`（`docs/agent-control.md`）產生來源 `agent` 的 alert，優先度最高（`signal` < `prompt` < `agent`）。畫面偵測不會覆蓋或清除它（`clearSource` 只清自己的來源）；「忽略」agent 提示不會寫入 `dismissed`（那是畫面偵測的去重記錄）。
 
+## 專案待辦（`src/project-attention.ts`、`src/project-attention-cards.ts`）
+鈴鐺與浮層也顯示專案需要使用者的事：計畫待開始、worker 提問、指定由使用者驗收的成果、派送結果不確定。
+- 清單由 `actionItems(state)` 從 journal 推導（DOM-free，`tests/project-attention.test.mjs`）；卡片在浮層最上方，可直接開始計畫、回答、通過／退回、核對。
+- 「忽略」只標已讀（`projectMarks`，存 localStorage `project-attention-seen` 並用 `storage` 事件跨視窗同步）、讓徽章不計；卡片留著，來源在 journal 解決後才消失。
+- 尚未做：「稍後」、背景新待辦的單行提示、原生選項原地回答（計畫 P4）。
+
 ## 辨識規則（資料，可維護）
 - 內建：`src/prompt-rules.json`（隨 App 打包）。
 - 使用者覆蓋：資料目錄下的 `prompt-rules.json`（`HIGHOSTTY_DATA_DIR` 可隔離）。設定頁「提示辨識規則」可「開啟規則檔」（不存在時寫入範本）與「重新載入」。

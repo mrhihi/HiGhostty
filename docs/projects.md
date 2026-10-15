@@ -16,6 +16,8 @@
 - **沒有 owner／epoch／heartbeat**：journal 的 revision CAS 與 `flock` 已足夠序列化；S3 才需要 owner。
 - **instance 身分**：沒有 `HIGHOSTTY_INSTANCE_ID`，改用 `instanceKey`：tmux 頁籤是 `tmux:<session>`（重開 App 後仍認得），其他是 `surface:<id>`（重開後顯示離線，需重新綁定或「重新啟動」）。generation 固定 1。
 - **成員候選**：只列「啟動指令是 claude／codex／copilot（含 `gh copilot`）／gemini、且在 tmux 執行」的頁籤的第一個窗格（`memberCandidates`、`agentKindOf`；只認單純形式，`cd x && claude` 之類不算；前置 `VAR=值` 可以）。建立專案時的 coordinator 種類也限這四種，讓身分（tmux session）在重開 App 後仍成立。手動在一般 shell 開的 agent 不能加入；窗格分割出來的 shell 也不列。
+- **從頁籤／收藏加入專案**：「編輯頁籤／編輯收藏」的「加入專案」選一個專案，填名稱與負責什麼，加入為 worker 成員（`joinProject`；同專案可有多個收藏）。身分是 tmux session：收藏會存一個固定的 session 名稱（`tab.tmuxSessions[0]`），所以**終端機沒開也能先加入**，成員顯示離線；專案畫面的成員卡有「開啟終端機」（`favoriteForInstance`）開對應收藏，開啟後同一個 session 自動上線。已是成員時名稱唯讀、負責內容可改。命令必須是 agent，tmux 強制開啟。舊收藏只有 `coordinatorRoot` 還沒加入的，下次開啟時自動加入（`autoJoin`）並把 session 記回收藏。勾選後啟動指令只能從清單選 agent（`tab.coordinator` 旗標仍存）。
+- **啟動指令判斷**：`agentKindOf` 先看字面，認不出再用 `resolve_program`（登入 shell 的 `where`，非 zsh 用 `command -v`）解析別名／symlink／路徑檔名，結果快取在 `main.ts` 的 `programNames`。
 - **成員鎖定**：成為成員（含 coordinator）的頁籤，在「編輯頁籤」與「編輯收藏」裡啟動指令只能用清單選 agent（參數仍可自由輸入，`parseAgentCommand`／`buildAgentCommand`），tmux 勾選鎖住；移除成員後解除。App 啟動時 `loadKnownProjects()` 會載入索引內所有專案，重開後的成員頁籤才認得出來。Coordinator 一律用 tmux（建立表單沒有勾選框）。
 - **專案內容切換**：不做 `ContentState`，比照檔案面板的全版模式：`updateLayout()` 把專案視為 `terminalHidden()`，送空 rects；`native()` 在專案開著時略過 `focus` op。S2 前要評估是否改成規格的 `ContentState`。
 - **沒有 `project.json` 快照、artifact、`prevHash`**。
@@ -123,3 +125,72 @@
 - Rust：journal 寫入失敗時截掉半行；移除清單項目不再關掉整個程序共用的 store。
 - 重新綁定既有成員會把 `reportMode` 重設為 `screen`，直到它再次 hello。
 - 已知未處理：原生 `focus` 事件在專案畫面開著時仍會更新 `active`（不會讓終端機取得鍵盤，`native()` 會擋 focus op）；待實機觀察。
+
+## 成員求助（`project help ask|get|answer`）
+
+worker 做到一半想知道「有沒有其他 agent 可以幫忙」時，問 coordinator，而不是問使用者（任務的 `needs-input` 是問使用者，兩者分開）。
+
+- **規則**：`src/projects.ts` 的 `AskHelp`（只有 worker）、`AnswerHelp`（只有 coordinator、每則只能回一次）、`SetHelpDelivery`；狀態是 `state.helps`。求助本身的投遞（到 coordinator）與回覆的投遞（回到提問的 worker）分開記在 `delivery` 與 `answer.delivery`；回覆後求助標為 `replied`，之後晚到的 `sent` 不會退回。
+- **指令**：`project help ask`（write、worker，stdin `{text, helpId?}`，`helpId` 兼作 actionId 去重）、`project help answer`（write、coordinator，stdin `{helpId, text}`）、`project help get <helpId>`（唯讀，只有提問者與 coordinator 能讀）。輸入解析在 `src/project-control.ts`，接線在 `src/project-ctl.ts`。
+- **結果回送**：coordinator 用 `helpId` 當同意開始的 run（`source:"help-request"`）全部完成或結案後，`helps()` 會再通知求助者一次（`Help.resultDelivery`，`SetHelpDelivery` 的 `part:"result"`，只投遞一次）；求助者用 `help get` 讀 `work` 裡每個任務的狀態與成果。這條不依賴 coordinator 記得轉達。
+- **投遞**：`src/project-delivery.ts` 的 `helps()` 與訊息、提問回覆同一條 `exclusive` 佇列，需要「完整」模式且使用者沒在看那個終端機。prompt 只放 helpId 與指令（`helpPrompt`、`helpAnswerPrompt`），內文用 `help get` 讀。重開後停在 `sending` 的標為 `uncertain`，不重送。
+- **畫面**：討論區在訊息後列出求助（誰問的、等待或已回覆）與 coordinator 的回覆。
+- **驗收**：
+  1. 兩個 worker 加入專案並完成 hello；在 worker A 執行 `help ask`，coordinator 終端機收到含 helpId 的通知，討論區出現「A 求助・等待 coordinator 回覆」。
+  2. coordinator 用 `help get` 讀到內文、`project get` 看成員清單，`help answer` 回覆；A 的終端機收到通知，`help get` 讀得到答覆，畫面變「已回覆」。
+  3b. coordinator 用 `run start {"helpId"}` 派給 B 並驗收完成後，A 的終端機收到「你求助的事已有結果」，`help get` 讀得到 B 的成果。
+  3. coordinator 執行 `help ask`、worker 執行 `help answer`、同一則回覆兩次、worker B 讀 A 的求助，都被拒絕。
+  4. 使用者正看著 coordinator 終端機時通知不輸入，離開後才送；全域模式不是「完整」時不輸入。
+
+## 自動就緒與模型
+
+- **Coordinator 總是啟用**：主視窗在已存檔頁籤還原完成後（`ready()`），對每個已載入專案、coordinator 終端機沒開時自動啟動並綁定（`ensureCoordinators`，每個專案每次執行只做一次；之後使用者自己關掉會被尊重到下次啟動）。
+- **自動打招呼**：delivery 的 pump 每秒對「在線、尚無 handshake」的成員送一次邀請（`greetAll`，agent idle 才送、完整模式才送、每個 instance 成功送出後本次執行不再送、失敗每 5 秒重試）。「請它自我介紹」按鈕仍在，供人工補送。
+- **模型**：`Member.model` 是使用者設的預設模型（成員卡的「模型」欄，`SetMemberModel`，只有使用者能改）；計畫步驟可帶 `model`（coordinator 依任務選，`validModel` 嚴格限制字元，因為會被打進終端機）。有效模型 = 步驟的 `model` ?? 成員的 `model`（`modelFor`）。交付前若是 claude 且與上次不同，先送 `/model <名稱>`（尚未寫 journal，agent 忙就稍後重試）；其他 agent 只在任務 prompt 加「建議模型」一行。`project get` 的 `members[].model` 讓 coordinator 看得到。
+- **先問再做**：worker 的 intro／任務 prompt／skill 都要求「不知道怎麼做或不確定就用 `project help ask` 問 coordinator，不要猜」。
+- **復誦**：worker 的 intro prompt 與 `project hello` 的回覆（`say`）都要求它打完招呼後在終端機唸一遍「遇到不知道怎麼處理的事會先問 HiGhostty Coordinator」（`pledgeInstruction`）。
+
+## 協調通知（notice）與求助 run
+- worker 回報 `result`（驗收者不是使用者、也不是自動驗收）、`failed`、`declined` 時，同一筆 journal transaction 會寫入 `NoticeQueued`（id 為 `notice:{taskId}:{attemptId}:{kind}`，重送不會重複）。
+- 投遞泵（`project-delivery.ts` 的 `notices`）把待處理通知的 taskId／attemptId 打進 coordinator 終端機，內文用 `project task result` 讀；`delivery` 沿用 queued→sending→sent／uncertain。任務離開通知當時的狀態（驗收、退回、重試…）即 `handled`；已處理或 attempt 已被取代的通知不會再送。
+- 求助來源的 `StartRun` 可與主計畫並行（最多 2 個，`MAX_HELP_RUNS`）；一般計畫仍一次一份。`activeRun` 優先回傳主計畫的 run。
+- 尚未做：`waiting-help` 狀態、協助 task 掛在原 run 下、notice 的 ack 指令；實機驗收未做。
+
+## 成員小卡
+專案頁的成員預設是小卡（名稱、角色、一行狀態與目前步驟），點選才展開用途、模型、連線與操作（`project-panel.ts` 的 `expanded`）。狀態由 `src/project-cards.ts` 的 `memberActivity` 從 journal 推導（等回答／送達不確定／待驗收／工作中，否則顯示連線狀態），測試在 `tests/project-cards.test.mjs`。計畫區改為標題、目標與「已完成 N／M」（`runProgress`），步驟與完成條件收在可展開區（展開狀態以計畫 id 記在 `project-run-view.ts`，重繪不會收回）。討論區預設收合，標題旁顯示新訊息數（含求助），展開後視為已讀（僅本視窗記憶體）。
+
+## 成員啟動設定（獨立工作 session 的前置）
+`src/project-launch.ts` 的 `launchSpecFromCommand` 從成員現有的啟動指令推出 `LaunchSpec`（agent 種類、成員原本的 cwd、參數、tmux），並**移除**指向個人主對話的旗標（claude `--resume/-r/--continue/--session-id/--from-pr`、copilot `--resume/--continue`、gemini `--resume`、codex `resume/fork` 子指令），回傳被丟掉的項目供畫面提示。`VAR=` 前綴、別名／wrapper、含 `$()` 等 shell 語法的指令一律回報原因，由使用者明確設定，不猜。目前只有純函式與測試，尚未接到派工流程。
+
+## 工作 session 的身分（execution）
+- journal 新增 `Execution`（`RegisterExecution`／`EndExecution`，只有使用者端控制器能下）：一次任務 attempt 對應一個獨立 session，以 instance（tmux session）辨識。登記時核對任務屬於該成員、attempt 是目前這次、這個 instance 沒被綁定或其他 session 占用、同一次 attempt 只有一個 live session。
+- `memberForInstance` 也認 live 的 execution，所以工作 session 內的 `ctl` 會對應到該成員；結束後不再有效。
+- `project task get`／`task report` 多一道 `executionGuard`：工作 session 只能讀、回報自己的 task 與 attempt，同一成員的其他工作或舊 attempt 會被拒（`forbidden`／`stale_attempt`）。個人終端機不是 execution，行為不變。
+- 尚未做：實際開啟工作 session 的派送流程、`HIGHOSTTY_*` 環境變數帶 execution、Rust registry、遷移舊綁定。目前只有資料模型、規則與測試。
+
+## 獨立工作 session（opt-in，**尚未實機驗收**）
+worker 成員卡展開後可勾「每個任務用獨立 session 執行」：複製該成員終端機的啟動設定（`launchSpecFromCommand`，失敗會說明原因）存成 `member.launch`（`SetMemberLaunch`）。有 `launch` 的 worker：
+- `project-delivery.ts` 的 `handOverIsolated`：每個任務先 `PrepareDispatch`，再用 `host.startWorkSession` 另開背景 tmux 終端機（等 agent ready）、`RegisterExecution`、最後才 `RecordInputStart` 並貼 prompt。輸入開始前失敗＝任務放回佇列並關掉 session；輸入開始後結果不明＝`uncertain`，session 保留。個人終端機不會被輸入，也不做 hello。
+- 排程（`verdict`）不看個人終端機的忙碌／觀察／接管，仍受全域 control mode 限制；任務模型以 `--model` 加進新 session 的參數（成員參數已指定模型則不加）。
+- 答覆（`replies`）與求助的答覆／結果只送到該任務（或該成員最近一個）live execution 的終端機；沒有就留在佇列。`observedOf` 也改看工作 session，所以卡住偵測對它有效。
+- `endFinished`：任務完成／取消／放回佇列或 attempt 被取代時 `EndExecution` 並關閉 session；失敗／拒絕只結束登記、保留終端機供查看；待驗收、等回答、不確定時 session 保留。
+- 審查後已修：啟動逾時會關掉已開的終端機；輸入開始後失敗不結束 execution（session 仍能回報）；失敗／拒絕的 session 保留到任務重試或結案才關（先關終端機、成功才 `EndExecution`）；重啟時 `sending` 的 notice 改 `uncertain`；有進行中任務時不能切換獨立 session 設定；浮層「開始」遇到計畫已更新會拒絕；`splitArgs` 遇到 shell 會展開的語法（`$`、反引號、`~`、`{}`、`#`）一律拒絕。
+- 仍存在：啟動等待（最長 60 秒）在投遞佇列內，會暫時擋住同專案其他投遞；求助的答覆／結果送到該成員「最近一個」live session，不一定是求助的那個；codex `resume` 只在第一個參數才會被剝除；派送前檢查與實際輸入之間，notice 可能已過期而多送一則（coordinator 照做會得到 invalid_state，無資料損害）。
+- 已知缺口：App 重啟後 live execution 若沒有對應終端機不會自動恢復；同 attempt 的修改意見是新 attempt＝新 session（沒有舊對話）；求助 run 與 `waiting-help` 尚未配合；沒有 Rust／環境變數變更（身分靠 tmux session 名稱對應）。
+
+驗收清單（debug 與 release 各一次，**未做**）：
+1. 勾選後對該成員派一個任務：另開背景 tmux 頁籤、個人終端機完全沒有輸入；session 內 `ctl project task get/report` 只能操作該任務。
+2. 個人終端機忙碌或關閉時仍能派工；成果驗收通過後該 session 的頁籤自動關閉。
+3. 任務問使用者問題 → 浮層回答 → 答覆只出現在該工作 session。
+4. 派送中途結束 App：重開後任務為 uncertain，不重送。
+5. 取消勾選後回到往個人終端機輸入的舊行為。
+
+## 專案自有的終端機（側欄）
+專案的 coordinator 與 live 工作 session 列在側欄該專案列底下，不再出現在「未分組」或收藏群組（`project-cards.ts` 的 `ownedTerminals`，以 member／execution id 判斷，不看 `tab.coordinator`）。
+- `main.ts` 的 `projectOwned`／`visibleTabs`：側欄、⌘1～⌘9、上一個／下一個頁籤、「關閉其他／右側」都只看可見頁籤，所以編號與畫面一致；專案的終端機從專案列點選（沒開的 coordinator 點選會重新啟動）。
+- coordinator 若來自收藏，該收藏列也不再單獨顯示（`member.favoriteId`）。
+- 專案載入完成、或擁有關係改變時會重畫側欄；列用簽章比對，只在內容變動時重畫。
+- 驗收：開專案後 coordinator 不在未分組、專案列底下有它且點選可切過去；關掉它後點選會重啟；⌘數字對應可見列；開獨立 session 時工作列出現、結束後消失。
+
+## 舊專案升級
+不需要遷移程式：coordinator 以成員綁定辨識，重開後若綁定的 tmux 終端機已恢復就直接沿用（`ensureCoordinators` 只在終端機不存在時才啟動），所以不會多開一份，也會自動出現在專案列底下。沒有 `launch` 的舊 worker 維持原本往個人終端機輸入的行為，要改用獨立 session 由成員卡勾選；已送出的舊 attempt 仍綁在原終端機。

@@ -9,9 +9,11 @@ import { introPrompt, memberStatus, type MemberStatus } from "./project-prompts"
 import type { createDelivery } from "./project-delivery";
 import { renderRun, type Attention, type RunActions } from "./project-run-view";
 import { activeRun, blockedMembers, stalledTasks } from "./project-tasks";
+import { memberActivity, ownedTerminals } from "./project-cards";
+import type { LaunchResult } from "./project-launch";
 import type { ActionBody } from "./project-types";
-import { coordinatorOf } from "./projects";
-import { current, dispatch, indexList, onProjectChanged, openProject, type IndexItem, type Loaded } from "./project-store";
+import { coordinatorOf, emptyState } from "./projects";
+import { allLoaded, current, dispatch, indexList, onProjectChanged, openProject, type IndexItem, type Loaded } from "./project-store";
 import type { AgentKind, Member, ProjectState } from "./project-types";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -23,7 +25,16 @@ export type ProjectHost = {
   surfaces(): { id: string; cwd: string; title: string; tmuxSession?: string }[];
   // The subset that can be added as members (see memberCandidates).
   candidates(): { id: string; cwd: string; title: string; tmuxSession?: string }[];
+  // Saved favorites that qualify (coordinator + agent command) but have no open tab; they can be started from the picker.
+  favoriteCandidates(): { id: string; name: string; cwd: string }[];
+  // A member that belongs to a favorite can be opened from the project even when its terminal is closed.
+  canOpenMember(instanceId: string): boolean;
+  openMemberTerminal(instanceId: string): Promise<void>;
+  openFavoriteInBackground(id: string): Promise<{ id: string; cwd: string; title: string; tmuxSession?: string }>;
   pickDirectory(): Promise<string | null>;
+  // The launch spec an open member terminal would give for an independent work session (see project-launch.ts).
+  launchFor(instanceId: string): LaunchResult;
+  isActiveSurface(surface: string): boolean;
   // Opens the agent in a background terminal and resolves once it is ready; returns the surface id.
   startAgent(kind: AgentKind, cwd: string, tmux: boolean): Promise<string>;
   // Types a prompt into the agent when it is idle. `beforeInput` runs after the checks and
@@ -34,6 +45,9 @@ export type ProjectHost = {
   delivery: ReturnType<typeof createDelivery>;
   layoutChanged(): void;
   openSettings(): void;
+  // Only the main window starts coordinators on its own, and only once the saved tabs are back.
+  isMain(): boolean;
+  ready(): boolean;
 };
 
 const user = { kind: "user" } as const;
@@ -57,7 +71,13 @@ export function initProjectPanel(host: ProjectHost) {
 
   let root: string | undefined;
   let mode: "project" | "create" = "project";
+  let renaming: string | undefined;
   let items: IndexItem[] = [];
+  // The member whose detail is open (a small card until clicked).
+  let expanded: string | undefined;
+  // The discussion is folded by default; opening it marks what is there as read.
+  let chatOpen = false;
+  let chatSeen = 0;
   let picking: { memberId?: string } | undefined;
   let busy = false;
   const introSent = new Set<string>();
@@ -87,7 +107,20 @@ export function initProjectPanel(host: ProjectHost) {
     items = await indexList().catch(() => []);
     renderList();
   }
+  // The list is redrawn only when what it shows changed: terminals open and close, the active one moves, states change.
+  let listShown = "";
+  function listSignature() {
+    return JSON.stringify([isOpen() && mode === "project" ? root : "", items, items.map((item) => ownedTerminals(current(item.root)?.state ?? emptyState()).map((o) => {
+      const surface = o.instanceId ? surfaceForInstance(o.instanceId, host.surfaces()) : undefined;
+      const state = current(item.root)?.state;
+      return [o.kind, o.label, o.instanceId, !!surface, !!surface && host.isActiveSurface(surface.id), o.kind === "work" ? o.title : "", state && memberActivity(state, o.memberId).activity];
+    }))]);
+  }
+  function renderListIfChanged() {
+    if (listSignature() !== listShown) renderList();
+  }
   function renderList() {
+    listShown = listSignature();
     listSection.replaceChildren();
     const heading = el("div", "caption");
     heading.append(el("span", undefined, t("project.title")));
@@ -118,7 +151,27 @@ export function initProjectPanel(host: ProjectHost) {
       row.onclick = go;
       row.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); go(); } };
       listSection.append(row);
+      listSection.append(...ownedRows(item.root));
     }
+  }
+  // The project's own terminals under its row: the coordinator, then work sessions that are running.
+  function ownedRows(projectRoot: string): HTMLElement[] {
+    const state = current(projectRoot)?.state;
+    if (!state?.config) return [];
+    return ownedTerminals(state).map((owned) => {
+      const surface = owned.instanceId ? surfaceForInstance(owned.instanceId, host.surfaces()) : undefined;
+      const row = el("div", "project-row project-owned" + (surface && host.isActiveSurface(surface.id) ? " selected" : ""));
+      row.setAttribute("role", "button");
+      row.tabIndex = 0;
+      const activity = owned.kind === "work" ? memberActivity(state, owned.memberId) : undefined;
+      row.append(el("span", "project-row-name", owned.kind === "coordinator" ? t("project.coordinator") : owned.label));
+      row.append(el("span", "project-row-state", owned.kind === "work" ? (owned.title ?? "") : surface ? "" : t("project.status.offline")));
+      if (activity && (activity.activity === "needs-input" || activity.activity === "uncertain")) row.append(el("span", "project-badge", "!"));
+      const go = () => guard(surface ? host.showTerminal(surface.id) : owned.kind === "coordinator" ? launchCoordinator(owned.memberId, projectRoot) : Promise.resolve());
+      row.onclick = go;
+      row.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); go(); } };
+      return row;
+    });
   }
   async function forget(item: IndexItem) {
     await invoke("project_index_remove", { root: item.root });
@@ -136,6 +189,7 @@ export function initProjectPanel(host: ProjectHost) {
     root = project.root;
     mode = "project";
     picking = undefined;
+    renaming = undefined;
     const config = project.state.config;
     if (config) {
       await invoke("project_index_touch", { root, name: config.name, projectId: config.id, openedAt: new Date().toISOString() });
@@ -169,17 +223,36 @@ export function initProjectPanel(host: ProjectHost) {
   }
 
   // ---- members ----
-  async function launchCoordinator(memberId: string) {
-    const loadedProject = loaded();
+  async function launchCoordinator(memberId: string, projectRoot = root) {
+    const loadedProject = projectRoot ? current(projectRoot) : undefined;
     const member = loadedProject?.state.members.find((m) => m.id === memberId);
-    if (!root || !member?.launch) return;
-    const cwd = member.launch.cwd.kind === "absolute" ? member.launch.cwd.path : root;
+    if (!projectRoot || !member?.launch) return;
+    const cwd = member.launch.cwd.kind === "absolute" ? member.launch.cwd.path : projectRoot;
     const surface = await host.startAgent(member.launch.kind, cwd, member.launch.tmux);
     const info = host.surfaces().find((s) => s.id === surface);
     if (!info) return;
-    const bound = await dispatch(root, user, { type: "BindMember", memberId, instanceId: instanceKey(info), generation: INSTANCE_GENERATION });
+    const bound = await dispatch(projectRoot, user, { type: "BindMember", memberId, instanceId: instanceKey(info), generation: INSTANCE_GENERATION });
     if (!bound.ok) throw new Error(bound.error.message);
-    await sendIntro(memberId);
+    // The delivery pump greets every member that has not said hello, so there is nothing to press.
+  }
+  // The coordinator is always on: a loaded project whose coordinator terminal is not open gets it started,
+  // once per run (closing it afterwards is respected until the next launch).
+  const autoStarted = new Set<string>();
+  let ensuring = false;
+  async function ensureCoordinators() {
+    if (ensuring || !host.isMain() || !host.ready()) return;
+    ensuring = true;
+    try {
+      for (const project of allLoaded()) {
+        const config = project.state.config;
+        if (!config || project.readonlyReason || autoStarted.has(project.root)) continue;
+        autoStarted.add(project.root);
+        const member = project.state.members.find((m) => m.id === config.coordinatorMemberId);
+        const binding = member && project.state.bindings[member.id];
+        if (!member?.launch || (binding && surfaceForInstance(binding.instanceId, host.surfaces()))) continue;
+        await launchCoordinator(member.id, project.root).catch(host.notify);
+      }
+    } finally { ensuring = false; }
   }
   async function sendIntro(memberId: string) {
     if (!root) return;
@@ -300,7 +373,7 @@ export function initProjectPanel(host: ProjectHost) {
   function signature() {
     const project = loaded();
     const live = host.surfaces().map((x) => instanceKey(x)).sort();
-    return JSON.stringify([mode, picking, project?.state, project?.readonlyReason, mode === "create" ? [] : live, introSent.size, controlMode, inFlight, JSON.stringify(attention())]);
+    return JSON.stringify([mode, picking, expanded, chatOpen, chatOpen ? 0 : chatSeen, project?.state, project?.readonlyReason, mode === "create" ? [] : live, mode === "create" ? [] : host.candidates().map((x) => instanceKey(x)).sort(), introSent.size, mode === "create" ? [] : host.favoriteCandidates().map((x) => `${x.id}|${x.name}|${x.cwd}`), controlMode, inFlight, JSON.stringify(attention())]);
   }
   function renderIfChanged() {
     if (isOpen() && signature() !== shown) render();
@@ -318,7 +391,7 @@ export function initProjectPanel(host: ProjectHost) {
     const state = project.state;
     const main = el("div", "project-main");
     const head = el("div", "project-head");
-    head.append(el("h2", undefined, state.config!.name), el("code", "project-path", project.root));
+    head.append(renderTitle(state.config!.name), el("code", "project-path", project.root));
     main.append(head);
     if (project.readonlyReason) main.append(el("div", "project-warning", t("project.readonly", { reason: project.readonlyReason })));
     if (controlMode && controlMode !== "full") {
@@ -332,6 +405,42 @@ export function initProjectPanel(host: ProjectHost) {
     main.append(renderMembers(state), renderRun(state, runActions, drafts, attention()));
     view.append(main, renderConversation(state));
     applyI18n(view);
+  }
+  // The name can be edited in place; Enter or the save button commits, Escape cancels.
+  function renderTitle(name: string) {
+    const row = el("div", "project-title-row");
+    if (renaming === undefined) {
+      const edit = el("button", "ghost-btn", t("project.rename"));
+      edit.onclick = () => { renaming = name; render(); };
+      row.append(el("h2", undefined, name), edit);
+      return row;
+    }
+    const input = el("input");
+    input.value = renaming;
+    input.setAttribute("aria-label", t("project.renameLabel"));
+    input.oninput = () => { renaming = input.value; };
+    const save = el("button", "primary-btn", t("project.renameSave"));
+    const commit = () => { const next = input.value.trim(); if (next && next !== name) guard(renameProject(next)); else { renaming = undefined; render(); } };
+    save.onclick = commit;
+    input.onkeydown = (event) => {
+      if (event.isComposing) return;
+      if (event.key === "Enter") { event.preventDefault(); commit(); }
+      if (event.key === "Escape") { renaming = undefined; render(); }
+    };
+    const cancel = el("button", "ghost-btn", t("project.renameCancel"));
+    cancel.onclick = () => { renaming = undefined; render(); };
+    row.append(input, save, cancel);
+    queueMicrotask(() => input.focus());
+    return row;
+  }
+  async function renameProject(name: string) {
+    if (!root) return;
+    await must({ type: "RenameProject", name });
+    renaming = undefined;
+    const config = stateNow()?.config;
+    if (config) await invoke("project_index_touch", { root, name: config.name, projectId: config.id, openedAt: new Date().toISOString() });
+    await refreshList();
+    render();
   }
   function renderMembers(state: ProjectState) {
     const section = el("section", "project-members");
@@ -347,13 +456,46 @@ export function initProjectPanel(host: ProjectHost) {
   }
   function renderCard(state: ProjectState, member: Member) {
     const status = memberStatus(state, member.id, online);
-    const card = el("article", `project-card status-${status}`);
-    const title = el("div", "project-card-title");
-    title.append(el("strong", undefined, member.name), el("span", "project-badge", t(member.role === "coordinator" ? "project.role.coordinator" : "project.role.worker")), el("span", "project-status", statusText(status)));
-    card.append(title);
+    const open = expanded === member.id;
+    const work = memberActivity(state, member.id);
+    const card = el("article", `project-card status-${status} activity-${work.activity}${open ? " open" : ""}`);
+    // The small card: name, role, one line of state. Clicking it opens the detail (purpose, model, connection, actions).
+    const summary = el("button", "project-card-summary");
+    summary.type = "button";
+    summary.setAttribute("aria-expanded", String(open));
+    const stateText = work.activity === "idle" ? statusText(status) : t(`project.activity.${work.activity}`);
+    summary.append(
+      el("strong", undefined, member.name),
+      el("span", "project-badge", t(member.role === "coordinator" ? "project.role.coordinator" : "project.role.worker")),
+      el("span", "project-status", `${work.activity === "needs-input" || work.activity === "uncertain" ? "! " : ""}${stateText}`),
+    );
+    if (work.title) summary.append(el("span", "project-card-line", work.title));
+    summary.onclick = () => { expanded = open ? undefined : member.id; if (open && picking?.memberId === member.id) picking = undefined; render(); };
+    card.append(summary);
+    if (!open) return card;
     card.append(el("p", "project-purpose", member.purpose || t("project.noPurpose")));
     const handshake = state.handshakes[member.id];
     if (handshake?.reportNeedsApproval) card.append(el("p", "project-warning", t("project.needsApproval")));
+    // The model this agent normally uses; the coordinator may pick another per task.
+    if (member.role === "worker") {
+      const model = el("input", "mono");
+      model.value = member.model ?? "";
+      model.placeholder = t("project.modelPlaceholder");
+      model.setAttribute("aria-label", t("project.model"));
+      model.onchange = () => guard(must({ type: "SetMemberModel", memberId: member.id, model: model.value }).then(() => undefined));
+      card.append(el("label", "help", t("project.model")), model);
+    }
+    // Run each task in its own fresh session instead of typing into this member's personal terminal.
+    if (member.role === "worker") {
+      const toggle = el("input");
+      toggle.type = "checkbox";
+      toggle.checked = !!member.launch;
+      toggle.disabled = inFlight > 0;
+      toggle.onchange = () => guard(setWorkSession(member.id, toggle.checked).finally(() => { toggle.checked = !!stateNow()?.members.find((m) => m.id === member.id)?.launch; }));
+      const label = el("label", "toggle");
+      label.append(toggle, el("span", undefined, t("project.work.label")));
+      card.append(label, el("div", "help", member.launch ? t("project.work.on", { cwd: member.launch.cwd.path }) : t("project.work.help")));
+    }
     const actions = el("div", "project-card-actions");
     const binding = state.bindings[member.id];
     const surface = binding && surfaceForInstance(binding.instanceId, host.surfaces());
@@ -365,17 +507,35 @@ export function initProjectPanel(host: ProjectHost) {
     if (surface) button(t("project.goTerminal"), () => host.showTerminal(surface.id));
     if (surface && status === "waiting-hello") button(t(introSent.has(member.id) ? "project.introAgain" : "project.intro"), () => sendIntro(member.id));
     if (!surface && member.launch) button(t("project.relaunch"), () => launchCoordinator(member.id));
+    else if (!surface && binding && host.canOpenMember(binding.instanceId)) button(t("project.openTerminal"), () => host.openMemberTerminal(binding.instanceId));
     button(t("project.rebind"), () => { picking = picking?.memberId === member.id ? undefined : { memberId: member.id }; render(); });
     if (member.role === "worker") button(t("project.removeMember"), () => removeMember(member.id));
     card.append(actions);
     if (picking?.memberId === member.id) card.append(renderPicker(state, member.id));
     return card;
   }
+  async function setWorkSession(memberId: string, on: boolean) {
+    if (!on) { await must({ type: "SetMemberLaunch", memberId, launch: null }); return; }
+    const binding = stateNow()?.bindings[memberId];
+    const result = binding ? host.launchFor(binding.instanceId) : ({ ok: false, reason: "offline" } as const);
+    if (!result.ok) { host.notify(t(`project.work.fail.${result.reason}`)); return; }
+    await must({ type: "SetMemberLaunch", memberId, launch: result.spec });
+    if (result.dropped.length) host.notify(t("project.work.dropped", { flags: result.dropped.join(" ") }));
+  }
   function renderPicker(state: ProjectState, memberId?: string) {
     const taken = new Set(Object.values(state.bindings).map((b) => b.instanceId));
     const box = el("div", "project-picker");
     const candidates = host.candidates().filter((s) => !taken.has(instanceKey(s)));
-    box.append(el("div", "help", t(candidates.length ? "project.pickHint" : "project.pickNone")), el("div", "help", t("project.pickRule")));
+    const favorites = host.favoriteCandidates();
+    box.append(el("div", "help", t(candidates.length || favorites.length ? "project.pickHint" : "project.pickNone")), el("div", "help", t("project.pickRule")));
+    for (const favorite of favorites) {
+      const row = el("div", "project-pick-row");
+      row.append(el("span", undefined, `${favorite.name} — ${favorite.cwd} ${t("project.favoriteNotOpen")}`));
+      const choose = el("button", "ghost-btn", t("project.startAndChoose"));
+      choose.onclick = () => guard(host.openFavoriteInBackground(favorite.id).then((surface) => memberId ? rebind(memberId, surface) : addMember(surface, favorite.name, "")));
+      row.append(choose);
+      box.append(row);
+    }
     for (const surface of candidates) {
       const row = el("div", "project-pick-row");
       row.append(el("span", undefined, `${surface.title || nameOf(surface.cwd)} — ${surface.cwd}${surface.tmuxSession ? " (tmux)" : ""}`));
@@ -413,15 +573,33 @@ export function initProjectPanel(host: ProjectHost) {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.isComposing) { event.preventDefault(); sendButton.click(); }
   };
   function renderConversation(state: ProjectState) {
-    const aside = el("aside", "project-chat");
-    aside.append(el("h3", undefined, t("project.discussion")));
+    const aside = el("aside", "project-chat" + (chatOpen ? "" : " folded"));
+    // Messages from the coordinator and help traffic that arrived since the discussion was last open.
+    const total = state.messages.length + state.helps.length;
+    const unread = chatOpen ? 0 : Math.max(0, total - chatSeen);
+    const toggle = el("button", "project-chat-toggle");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", String(chatOpen));
+    toggle.append(el("h3", undefined, t("project.discussion")));
+    if (unread) toggle.append(el("span", "project-badge", t("project.unread", { n: unread })));
+    toggle.onclick = () => { chatOpen = !chatOpen; if (chatOpen) chatSeen = total; render(); };
+    aside.append(toggle);
+    if (!chatOpen) return aside;
+    chatSeen = total;
     const log = el("div", "project-log");
     for (const message of state.messages) {
       const row = el("div", `project-msg from-${message.author}`);
       row.append(el("div", "project-msg-meta", `${t(message.author === "user" ? "project.you" : "project.coordinator")}${message.author === "user" ? ` · ${t(`project.delivery.${message.delivery}`)}` : ""}`), el("div", "project-msg-text", message.text));
       log.append(row);
     }
-    if (!state.messages.length) log.append(el("div", "help", t("project.noMessages")));
+    for (const help of state.helps) {
+      const asker = state.members.find((m) => m.id === help.memberId)?.name ?? "";
+      const row = el("div", "project-msg from-member");
+      row.append(el("div", "project-msg-meta", `${t("project.helpFrom", { name: asker })} · ${t(help.answer ? "project.helpAnswered" : "project.helpWaiting")}`), el("div", "project-msg-text", help.text));
+      if (help.answer) row.append(el("div", "project-msg-meta", t("project.helpAnswer")), el("div", "project-msg-text", help.answer.text));
+      log.append(row);
+    }
+    if (!state.messages.length && !state.helps.length) log.append(el("div", "help", t("project.noMessages")));
     aside.append(log, draft, el("div", "help", t("project.sendHint")), sendButton);
     queueMicrotask(() => { log.scrollTop = log.scrollHeight; });
     return aside;
@@ -481,12 +659,13 @@ export function initProjectPanel(host: ProjectHost) {
   }
 
   onProjectChanged((changed) => {
+    renderListIfChanged();
     if (changed !== root) return;
     renderIfChanged();
   });
   onLocaleChange(() => { renderList(); if (isOpen()) render(); });
   // Messages wait for an idle coordinator; check now and then.
-  setInterval(() => { pollMode().catch(() => {}); renderIfChanged(); }, 3000);
+  setInterval(() => { pollMode().catch(() => {}); renderIfChanged(); renderListIfChanged(); ensureCoordinators().catch(() => {}); }, 3000);
   pollMode().catch(() => {});
   refreshList().catch(host.notify);
   listen("project-index-changed", () => { refreshList().catch(() => {}); }).catch(() => {});
@@ -496,5 +675,7 @@ export function initProjectPanel(host: ProjectHost) {
     close() { setOpen(false); renderList(); },
     // Re-render the member cards (their terminals may have opened or closed).
     refresh: renderIfChanged,
+    // The sidebar rows of each project's own terminals (call when terminals open, close or the active one changes).
+    refreshList: renderListIfChanged,
   };
 }

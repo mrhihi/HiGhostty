@@ -156,6 +156,7 @@
   "app.duplicateTab": "同目錄再開一個",
   "app.tabActions": "頁籤動作",
   "app.terminalNotOpen": "終端機尚未開啟",
+  "app.tmuxExitedEarly": "tmux 頁籤啟動後立刻結束，啟動命令「{command}」可能找不到；請改用絕對路徑或檢查 PATH。",
   "app.tmuxMissing": "找不到 tmux，請先安裝（brew install tmux）。",
   "app.splitWorkspaceMissing": "找不到分割工作區",
   "app.tmuxMissingRestore": "找不到 tmux，無法恢復背景執行的頁籤。請安裝 tmux（brew install tmux）。",
@@ -180,5 +181,14 @@
   "app.chooseFolderEllipsis": "選擇目錄…",
   "app.favoriteCurrentTab": "收藏目前頁籤「{name}」…",
   "app.skipFolder": "略過無法開啟的目錄：{path} ({error})",
-  "app.noTabForPreview": "沒有可放回預覽的頁籤"
+  "app.noTabForPreview": "沒有可放回預覽的頁籤",
+  "app.coordinator": "加入專案",
+  "app.coordinatorHelp": "選一個專案，填這個終端機負責什麼，再按按鈕加入成為成員。頁籤必須在 tmux 內執行 claude、codex、copilot 或 gemini；退出請在專案畫面操作。",
+  "app.coordinatorNeedsAgent": "這個頁籤必須在 tmux 內執行 claude、codex、copilot 或 gemini。請用開啟 tmux 的收藏重新開啟。",
+  "app.alreadyMember": "這個終端機已是專案「{project}」的成員。",
+  "app.updateMember": "更新說明",
+  "app.joinProject": "加入專案",
+  "app.coordinatorFavoriteHelp": "選一個專案並填這個收藏負責什麼：存檔後立刻加入成為成員，終端機沒開也可以。啟動命令必須是 agent（claude、codex、copilot 或 gemini），tmux 一律開啟。要用時可從專案畫面或這裡開啟。",
+  "app.joinCoordinator": "加入 Coordinator",
+  "app.joinCoordinatorHelp": "把這個頁籤標為專案的 coordinator：tmux 一律開啟且不能取消，啟動指令只能從清單選 agent（參數仍可自由輸入）。於下次開啟頁籤生效。"
 }

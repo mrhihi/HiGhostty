@@ -5,12 +5,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { holdInstance, isHeld, giveBack as releaseHold, leaveInstance, tickHold, type Holds } from "./project-hold";
 import { instanceKey, surfaceForInstance } from "./project-control";
-import { introPrompt, messagePrompt, queuedBatch, queuedReplies, replyPrompt, taskPrompt } from "./project-prompts";
-import { blockedBy, busyElsewhere, nextDeliverable, verdict, type ScheduleContext, type SkipReason } from "./project-schedule";
+import { helpAnswerPrompt, helpPrompt, helpResultPrompt, introPrompt, messagePrompt, modelFor, queuedBatch, queuedHelpAnswers, queuedHelpResults, queuedHelps, queuedNotices, noticePrompt, queuedReplies, replyPrompt, taskPrompt } from "./project-prompts";
+import { blockedBy, busyElsewhere, executionOfTask, isolated, nextDeliverable, verdict, type ScheduleContext, type SkipReason } from "./project-schedule";
 import { coordinatorOf } from "./projects";
 import { allLoaded, current, dispatch } from "./project-store";
 import type { Observed } from "./project-tasks";
-import type { ActionBody, ProjectState } from "./project-types";
+import type { ActionBody, LaunchSpec, ProjectState, Task } from "./project-types";
 
 export type SendResult = "sent" | "busy" | "blocked" | "gone";
 type Surf = { id: string; tmuxSession?: string };
@@ -22,6 +22,11 @@ export type DeliveryHost = {
   // key is sent (if it throws nothing is typed). `force` skips the idle checks but never types into
   // a question or a screen with no agent.
   sendPrompt(surface: string, text: string, beforeInput: () => Promise<void>, options?: { force?: boolean }): Promise<SendResult>;
+  // Which agent runs in the terminal (claude, codex…), from its start command; undefined when unknown.
+  agentKind(surface: string): string | undefined;
+  // Starts a fresh agent for a work session and resolves once it is ready for a prompt. Throws when it cannot.
+  startWorkSession(spec: LaunchSpec, model?: string): Promise<Surf>;
+  closeSurface(surface: string): Promise<void>;
 };
 export type DeliverOutcome = { ok: true } | { ok: false; reason: SkipReason };
 
@@ -33,6 +38,11 @@ export function createDelivery(host: DeliveryHost) {
   const seen = new Map<string, { state: Observed; at: number }>();
   let controlMode = "";
   let ticking = false;
+  // The model last set in each agent by us (instance -> model), so a task only switches when it must.
+  const models = new Map<string, string>();
+  // Members already greeted this run (so an agent that stays silent is not nagged) and when we last tried.
+  const introduced = new Set<string>();
+  const introTried = new Map<string, number>();
   let chain: Promise<unknown> = Promise.resolve();
   const exclusive = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = chain.then(fn, fn);
@@ -52,8 +62,20 @@ export function createDelivery(host: DeliveryHost) {
     const binding = state.bindings[memberId];
     return binding ? surfaceForInstance(binding.instanceId, host.surfaces()) : undefined;
   };
+  // Where a protocol prompt for this member goes. A member that works in its own sessions is never typed into at its
+  // personal terminal: it is reached only through a live work session (its most recent one).
+  const promptSurfaceOf = (state: ProjectState, memberId: string) => {
+    if (!isolated(state, memberId)) return surfaceOf(state, memberId);
+    const live = state.executions.filter((x) => x.status === "live" && x.memberId === memberId).at(-1);
+    return live && surfaceForInstance(live.instanceId, host.surfaces());
+  };
+  const taskSurface = (state: ProjectState, task: Task) => {
+    if (!isolated(state, task.memberId)) return surfaceOf(state, task.memberId);
+    const execution = executionOfTask(state, task);
+    return execution && surfaceForInstance(execution.instanceId, host.surfaces());
+  };
   const observedOf = (state: ProjectState, memberId: string) => {
-    const surface = surfaceOf(state, memberId);
+    const surface = promptSurfaceOf(state, memberId);
     return surface ? seen.get(surface.id) : undefined;
   };
   const contextFor = (root: string, state: ProjectState, extra: Partial<ScheduleContext> = {}): ScheduleContext => ({
@@ -80,9 +102,21 @@ export function createDelivery(host: DeliveryHost) {
     return exclusive(async () => {
       const base = current(root);
       const task = base?.state.tasks.find((t) => t.id === taskId);
+      const iso = !!base && !!task && isolated(base.state, task.memberId);
       const surface = base && task && surfaceOf(base.state, task.memberId);
-      if (!base?.state.config || !task || !surface) return { ok: false, reason: "offline" };
+      if (!base?.state.config || !task || (!surface && !iso)) return { ok: false, reason: "offline" };
+      if (iso) return handOverIsolated(root, task.id, how);
+      if (!surface) return { ok: false, reason: "offline" };
       if (!how.auto) await refreshObserved([surface.id]);
+      const model = modelFor(base.state, task);
+      const instance = base.state.bindings[task.memberId]?.instanceId ?? "";
+      // Claude takes `/model <name>` as a command; other agents only get the suggestion in the prompt.
+      // Nothing is journaled yet, so a busy agent just means "try again later".
+      if (model && instance && host.agentKind(surface.id) === "claude" && models.get(instance) !== model && !isHeld(holds, instance)) {
+        const switched = await host.sendPrompt(surface.id, `/model ${model}`, async () => {}, { force: how.force });
+        if (switched !== "sent") return { ok: false, reason: switched === "blocked" ? "agent-blocked" : switched === "busy" ? "agent-busy" : "offline" };
+        models.set(instance, model);
+      }
       const before = verdict(base.state, task, contextFor(root, base.state, { force: how.force, ...(how.auto ? {} : { controlMode: "full" }) }));
       if (!before.ok) return before;
 
@@ -122,11 +156,83 @@ export function createDelivery(host: DeliveryHost) {
     });
   }
 
+  // One task in its own work session: a fresh agent started from the member's launch spec, registered as the
+  // attempt's execution before anything is typed, so its ctl calls resolve to this task and nothing else.
+  // Before InputWillStart a failure just releases the task; after it the outcome is unknown and the session is kept.
+  async function handOverIsolated(root: string, taskId: string, how: { auto?: boolean; force?: boolean }): Promise<DeliverOutcome> {
+    const base = current(root);
+    const task = base?.state.tasks.find((t) => t.id === taskId);
+    const spec = task && base?.state.members.find((m) => m.id === task.memberId)?.launch;
+    if (!base?.state.config || !task || !spec) return { ok: false, reason: "offline" };
+    const before = verdict(base.state, task, contextFor(root, base.state, { force: how.force, ...(how.auto ? {} : { controlMode: "full" }) }));
+    if (!before.ok) return before;
+    const attemptId = crypto.randomUUID(), effectId = crypto.randomUUID(), executionId = crypto.randomUUID();
+    let prepared;
+    try {
+      prepared = await dispatch(root, user, { type: "PrepareDispatch", taskId, attemptId, effectId });
+    } catch (error) {
+      await dispatch(root, user, { type: "RecordInputResult", taskId, attemptId, effectId, outcome: "not-sent" }).catch(() => {});
+      throw error;
+    }
+    if (!prepared.ok) return prepared.error.code === "invalid_state" ? { ok: false, reason: "busy" } : Promise.reject(new Error(prepared.error.message));
+    const state = prepared.value.state;
+    const prompt = taskPrompt(state.config!.id, state.tasks.find((t) => t.id === taskId)!, state);
+    let session: Surf | undefined;
+    let registered = false;
+    let started = false;
+    const release = async () => {
+      // Once input started the session may be working and must keep its identity to report; only a clean failure lets go of it.
+      if (started) return;
+      if (registered) await dispatch(root, user, { type: "EndExecution", executionId }).catch(() => {});
+      if (session) await host.closeSurface(session.id).catch(() => {});
+    };
+    try {
+      if (!prompt) throw new Error("task prompt could not be built");
+      session = await host.startWorkSession(spec, modelFor(state, state.tasks.find((t) => t.id === taskId)!));
+      const reg = await dispatch(root, user, { type: "RegisterExecution", executionId, memberId: task.memberId, taskId, attemptId, instanceId: instanceKey(session), generation: 1 });
+      if (!reg.ok) throw new Error(reg.error.message);
+      registered = true;
+      const result = await host.sendPrompt(session.id, prompt, async () => {
+        const mark = await dispatch(root, user, { type: "RecordInputStart", taskId, attemptId, effectId });
+        if (!mark.ok) throw new Error(mark.error.message);
+        started = true;
+      }, { force: how.force });
+      if (result === "sent") {
+        const done = await dispatch(root, user, { type: "RecordInputResult", taskId, attemptId, effectId, outcome: "sent" });
+        if (!done.ok) throw new Error(done.error.message);
+        return { ok: true };
+      }
+      await dispatch(root, user, { type: "RecordInputResult", taskId, attemptId, effectId, outcome: "not-sent" });
+      await release();
+      return { ok: false, reason: result === "blocked" ? "agent-blocked" : result === "busy" ? "agent-busy" : "offline" };
+    } catch (error) {
+      await dispatch(root, user, { type: "RecordInputResult", taskId, attemptId, effectId, outcome: started ? "unknown" : "not-sent" }).catch(() => {});
+      await release();
+      throw error;
+    }
+  }
+  // Work sessions whose task is over are closed; one that may still matter (a result to check, an open question,
+  // an unsure delivery, a failure to read) stays until the person or the task settles it.
+  async function endFinished(root: string) {
+    const project = current(root);
+    if (!project) return;
+    for (const execution of project.state.executions.filter((x) => x.status === "live")) {
+      const task = project.state.tasks.find((t) => t.id === execution.taskId);
+      // A failed or declined task keeps its session (to read what happened) until it is retried or settled.
+      const over = !task || task.attempt?.id !== execution.attemptId || ["completed", "cancelled", "queued"].includes(task.status);
+      if (!over) continue;
+      // Close first: if that fails the execution stays live and the next round tries again, instead of leaking a terminal nobody owns.
+      const surface = surfaceForInstance(execution.instanceId, host.surfaces());
+      if (surface) await host.closeSurface(surface.id);
+      await dispatch(root, user, { type: "EndExecution", executionId: execution.id });
+    }
+  }
+
   // ---- coordinator messages and answers ----
   // The user is at that terminal, or agents may not use ctl yet: wait instead of typing into their draft
   // or into an agent that could not answer anyway.
   const mayType = (state: ProjectState, memberId: string) =>
-    controlMode === "full" && !isHeld(holds, state.bindings[memberId]?.instanceId ?? "");
+    controlMode === "full" && (isolated(state, memberId) || !isHeld(holds, state.bindings[memberId]?.instanceId ?? ""));
 
   // Marks each item `sending` in the journal, types once, then marks `sent`. If it fails before
   // anything was typed the items go back to the queue; after that they are `uncertain`, never resent.
@@ -158,27 +264,77 @@ export function createDelivery(host: DeliveryHost) {
     await typeBatch(root, surface, messagePrompt(project.state.config.id, batch), batch.map((m) => m.id),
       (messageId, delivery) => ({ type: "SetMessageDelivery", messageId, delivery }));
   }
+  // Results and failures wake the coordinator, which then checks and accepts them; the user is not the relay.
+  async function notices(root: string) {
+    const project = current(root);
+    if (!project?.state.config || project.readonlyReason) return;
+    const coordinator = coordinatorOf(project.state);
+    const surface = coordinator && surfaceOf(project.state, coordinator.id);
+    const batch = queuedNotices(project.state);
+    if (!coordinator || !surface || !batch.length || !mayType(project.state, coordinator.id)) return;
+    await typeBatch(root, surface, noticePrompt(project.state.config.id, batch), batch.map((n) => n.id),
+      (noticeId, delivery) => ({ type: "SetNoticeDelivery", noticeId, delivery }));
+  }
   async function replies(root: string) {
     const project = current(root);
     if (!project?.state.config || project.readonlyReason) return;
     for (const { task, replies: group } of queuedReplies(project.state)) {
-      const surface = surfaceOf(project.state, task.memberId);
+      const surface = taskSurface(project.state, task);
       if (!surface || !mayType(project.state, task.memberId)) continue;
       await typeBatch(root, surface, replyPrompt(project.state.config.id, task, group), group.map((r) => r.id),
         (replyId, delivery) => ({ type: "SetReplyDelivery", replyId, delivery }));
     }
   }
+  // A worker's request for help reaches the coordinator; the coordinator's answer reaches the asker.
+  async function helps(root: string) {
+    const project = current(root);
+    if (!project?.state.config || project.readonlyReason) return;
+    const coordinator = coordinatorOf(project.state);
+    const surface = coordinator && surfaceOf(project.state, coordinator.id);
+    const batch = queuedHelps(project.state);
+    if (coordinator && surface && batch.length && mayType(project.state, coordinator.id)) {
+      await typeBatch(root, surface, helpPrompt(project.state.config.id, batch), batch.map((h) => h.id),
+        (helpId, delivery) => ({ type: "SetHelpDelivery", helpId, part: "ask", delivery }));
+    }
+    for (const { memberId, helps: group } of queuedHelpAnswers(project.state)) {
+      const asker = promptSurfaceOf(project.state, memberId);
+      if (!asker || !mayType(project.state, memberId)) continue;
+      await typeBatch(root, asker, helpAnswerPrompt(project.state.config.id, group), group.map((h) => h.id),
+        (helpId, delivery) => ({ type: "SetHelpDelivery", helpId, part: "answer", delivery }));
+    }
+    // The finished work goes back to whoever asked, not only to the coordinator and the user.
+    for (const { memberId, helps: group } of queuedHelpResults(project.state)) {
+      const asker = promptSurfaceOf(project.state, memberId);
+      if (!asker || !mayType(project.state, memberId)) continue;
+      await typeBatch(root, asker, helpResultPrompt(project.state.config.id, group), group.map((h) => h.id),
+        (helpId, delivery) => ({ type: "SetHelpDelivery", helpId, part: "result", delivery }));
+    }
+  }
   // Asking a member to say hello. Not journaled (it changes nothing), but it queues behind other
   // typing and respects the hold, so it cannot interleave with a task prompt or land in a draft.
-  function intro(root: string, memberId: string): Promise<SendResult | "held" | "offline"> {
-    return exclusive(async () => {
-      const project = current(root);
-      const member = project?.state.members.find((m) => m.id === memberId);
-      const surface = project && surfaceOf(project.state, memberId);
-      if (!project?.state.config || !member || !surface) return "offline";
-      if (isHeld(holds, project.state.bindings[memberId]?.instanceId ?? "")) return "held";
-      return host.sendPrompt(surface.id, introPrompt(project.state.config.id, project.state.config.name, member), async () => {});
-    });
+  async function introNow(root: string, memberId: string): Promise<SendResult | "held" | "offline"> {
+    const project = current(root);
+    const member = project?.state.members.find((m) => m.id === memberId);
+    const surface = project && surfaceOf(project.state, memberId);
+    if (!project?.state.config || !member || !surface) return "offline";
+    if (isHeld(holds, project.state.bindings[memberId]?.instanceId ?? "")) return "held";
+    return host.sendPrompt(surface.id, introPrompt(project.state.config.id, project.state.config.name, member), async () => {});
+  }
+  const intro = (root: string, memberId: string) => exclusive(() => introNow(root, memberId));
+  // Every online member that has not said hello gets the invitation once, as soon as its agent is idle;
+  // the user does not have to press anything. Hello needs the full control mode, so wait for that too.
+  async function greetAll(root: string) {
+    const project = current(root);
+    if (!project?.state.config || controlMode !== "full") return;
+    for (const member of project.state.members) {
+      const instance = project.state.bindings[member.id]?.instanceId;
+      // A member that works in its own sessions is not asked to introduce itself in its personal terminal.
+      if (!instance || isolated(project.state, member.id) || project.state.handshakes[member.id] || !surfaceOf(project.state, member.id)) continue;
+      const key = `${root}|${member.id}|${instance}`;
+      if (introduced.has(key) || Date.now() - (introTried.get(key) ?? 0) < 5000) continue;
+      introTried.set(key, Date.now());
+      if (await introNow(root, member.id) === "sent") introduced.add(key);
+    }
   }
 
   // ---- the pump ----
@@ -196,8 +352,9 @@ export function createDelivery(host: DeliveryHost) {
           for (const task of state.tasks.filter((t) => t.runId === run.id && t.status !== "completed")) interesting.add(task.memberId);
         }
         const coordinator = coordinatorOf(state);
-        if (coordinator && (queuedBatch(state).length || state.replies.length)) interesting.add(coordinator.id);
-        for (const id of interesting) { const surface = surfaceOf(state, id); if (surface) wanted.add(surface.id); }
+        if (coordinator && (queuedBatch(state).length || queuedHelps(state).length || queuedNotices(state).length || state.replies.length)) interesting.add(coordinator.id);
+        for (const help of state.helps) if (help.answer?.delivery === "queued") interesting.add(help.memberId);
+        for (const id of interesting) { const surface = promptSurfaceOf(state, id); if (surface) wanted.add(surface.id); }
       }
       for (const instance of holds.keys()) { const surface = surfaceForInstance(instance, host.surfaces()); if (surface) wanted.add(surface.id); else holds.delete(instance); }
       await refreshObserved([...wanted]);
@@ -207,7 +364,7 @@ export function createDelivery(host: DeliveryHost) {
         tickHold(holds, instance, surface && seen.get(surface.id)?.state, now);
       }
       for (const { root } of projects) {
-        await exclusive(async () => { await messages(root); await replies(root); });
+        await exclusive(async () => { await messages(root); await replies(root); await helps(root); await notices(root); await greetAll(root); await endFinished(root); });
         // Re-read after every hand-over: it changes who is busy.
         for (let guard = 0; guard < 20; guard++) {
           const now2 = current(root);
@@ -245,6 +402,14 @@ export function createDelivery(host: DeliveryHost) {
         for (const message of state.messages.filter((m) => m.author === "user" && m.delivery === "sending")) {
           await dispatch(root, user, { type: "SetMessageDelivery", messageId: message.id, delivery: "uncertain" });
         }
+        for (const help of state.helps) {
+          if (help.delivery === "sending") await dispatch(root, user, { type: "SetHelpDelivery", helpId: help.id, part: "ask", delivery: "uncertain" });
+          if (help.answer?.delivery === "sending") await dispatch(root, user, { type: "SetHelpDelivery", helpId: help.id, part: "answer", delivery: "uncertain" });
+          if (help.resultDelivery === "sending") await dispatch(root, user, { type: "SetHelpDelivery", helpId: help.id, part: "result", delivery: "uncertain" });
+        }
+        for (const notice of state.notices.filter((n) => n.delivery === "sending")) {
+          await dispatch(root, user, { type: "SetNoticeDelivery", noticeId: notice.id, delivery: "uncertain" });
+        }
         for (const reply of state.replies.filter((r) => r.delivery === "sending")) {
           await dispatch(root, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "uncertain" });
         }
@@ -253,6 +418,7 @@ export function createDelivery(host: DeliveryHost) {
     intro,
     messages: (root: string) => exclusive(() => messages(root)),
     replies: (root: string) => exclusive(() => replies(root)),
+    helps: (root: string) => exclusive(() => helps(root)),
     observedOf: (root: string, memberId: string): Observed | undefined => {
       const project = current(root);
       return project ? observedOf(project.state, memberId)?.state : undefined;

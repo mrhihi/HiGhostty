@@ -2,6 +2,7 @@
 // every button just calls back into the panel, which dispatches the action. Drafts (rework
 // feedback, answers) live in a map owned by the panel so a re-render does not lose them.
 import { t } from "./i18n";
+import { runProgress } from "./project-cards";
 import { activeRun, DEFAULT_STALL_MS, queueReasonOf, startBlockers, stepOf } from "./project-tasks";
 import type { SkipReason } from "./project-schedule";
 import type { Artifact, ProjectState, Task } from "./project-types";
@@ -30,6 +31,8 @@ export type RunActions = {
   pending(): boolean;
 };
 
+// Which plans the user opened; the view is rebuilt on every change and must not fold them back.
+const expandedPlans = new Set<string>();
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -92,6 +95,9 @@ export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<
 
   const summary = el("div", "project-plan");
   summary.append(el("strong", undefined, `${plan.title} · v${plan.version}`), el("p", "project-purpose", plan.objective));
+  // Progress of the latest run at a glance; the steps and their conditions open on demand.
+  const progress = runProgress(state);
+  if (progress && progress.total) summary.append(el("p", "project-status", t("project.plan.progress", { done: progress.done, total: progress.total })));
   const steps = el("ol", "project-steps");
   for (const step of plan.steps) {
     const item = el("li");
@@ -100,7 +106,11 @@ export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<
     item.append(el("div", "help", t("project.plan.completion", { items: step.completion.join("；") })));
     steps.append(item);
   }
-  summary.append(steps);
+  const detail = el("details", "project-plan-steps");
+  detail.open = expandedPlans.has(plan.id);
+  detail.addEventListener("toggle", () => { if (detail.open) expandedPlans.add(plan.id); else expandedPlans.delete(plan.id); });
+  detail.append(el("summary", undefined, t("project.plan.steps", { n: plan.steps.length })), steps);
+  summary.append(detail);
   section.append(summary);
 
   const controls = el("div", "project-card-actions");

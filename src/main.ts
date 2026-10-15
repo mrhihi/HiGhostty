@@ -40,17 +40,22 @@ import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDeta
 import { agentState, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, promptKey, prune, raise, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
 import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./prompt-rules";
 import builtinRules from "./prompt-rules.json?raw";
-import { newSessionName, restorable, tmuxCommand, validSession } from "./tmux";
+import { newSessionName, restorable, tmuxCommand, validSession, withProgramPath } from "./tmux";
 import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, previewSide, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
 import { runProjectControl } from "./project-ctl";
-import { buildAgentCommand, instanceKey, memberCandidates, parseAgentCommand, PROJECT_AGENT_KINDS, type ProjectAgentKind } from "./project-control";
+import { agentKindOf, buildAgentCommand, INSTANCE_GENERATION, instanceKey, memberCandidates, parseAgentCommand, PROJECT_AGENT_KINDS, surfaceForInstance, type ProjectAgentKind } from "./project-control";
 import { initProjectPanel } from "./project-panel";
-import { loadKnownProjects, memberOfInstance, startProjectEvents } from "./project-store";
+import { allLoaded, dispatch as projectDispatch, loadKnownProjects, memberOfInstance, onProjectChanged, openProject, startProjectEvents } from "./project-store";
+import { validModel, type Member } from "./project-types";
 import { createDelivery } from "./project-delivery";
+import { launchSpecFromCommand } from "./project-launch";
+import { actionItems, emptyMarks, parseSeen, pruneMarks, unseen, type ActionItem } from "./project-attention";
+import { ownedTerminals } from "./project-cards";
+import { cardSignature, renderProjectCard, type ProjectCardActions, type ProjectItem } from "./project-attention-cards";
 import "./style.css";
 
 type MenuEntry = { text: string; action: () => unknown } | { item: "Separator" };
-type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSessions?: (string | undefined)[]; favoriteId?: string; parent?: number; files?: SavedFiles };
+type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; coordinator?: boolean; coordinatorRoot?: string; tmuxSessions?: (string | undefined)[]; favoriteId?: string; parent?: number; files?: SavedFiles };
 // Groups organize favorites; an open tab shows the group of the favorite it came from.
 type WorkspaceFavorite = TabFavoriteItem<SavedTab>;
 type FavoritesDocument = { revision: number; items: StoredFavorite<SavedTab>[] };
@@ -60,7 +65,7 @@ type Info = {
   exited: boolean;
   needsConfirm: boolean;
 };
-type Surface = { id: string; cwd: string; title: string; exited: boolean; tmuxSession?: string };
+type Surface = { id: string; cwd: string; title: string; exited: boolean; tmuxSession?: string; openedAt?: number; command?: string };
 type Tab = {
   id: string;
   tree: Node;
@@ -71,6 +76,8 @@ type Tab = {
   commandInShell?: boolean;
   tmux?: boolean;
   tmuxHideStatus?: boolean;
+  // Joins a project as coordinator: tmux stays on and the launch command is an agent chosen from a list.
+  coordinator?: boolean;
   favoriteId?: string;
   parentId?: string;
   files?: FilesState;
@@ -220,6 +227,33 @@ async function sendPromptToAgent(id: string, text: string, beforeInput: () => Pr
   await native({ op: "key", id, key: "enter" });
   return "sent";
 }
+// Starts an agent in a background terminal and waits until it can take a prompt; used for a project's coordinator
+// and for per-task work sessions. Returns the surface so the caller can identify it by instance.
+async function startAgentSession(kind: string, cwd: string, tmux: boolean, args: string[]): Promise<Surface> {
+  const made = agentCommand(kind, args);
+  if (!made.ok) throw new Error(made.reply.ok ? "" : made.reply.error.message);
+  const opened = await newSurface(cwd, undefined, undefined, { command: made.line, commandInShell: true, tmux, background: true });
+  let previousText: string | undefined;
+  // An agent that never gets ready (a login or trust prompt, say) must not leave its terminal behind: the caller
+  // only learns about a surface this function returns.
+  try {
+    const ready = await poll(60_000, async () => {
+      const seen = await pickAgent(opened.surface);
+      const done = !!seen && startReady(previousText, seen.screen.text, seen.state);
+      previousText = seen?.screen.text;
+      return done ? seen : undefined;
+    });
+    const surface = surfaces.get(opened.surface);
+    if (!ready || !surface) throw new Error(t("project.agentNotReady"));
+    return surface;
+  } catch (error) {
+    await destroy(opened.surface, true).catch(() => {});
+    throw error;
+  }
+}
+// The model this task asks for, unless the member's own launch arguments already choose one.
+const withModel = (args: string[], model: string | undefined) =>
+  model && validModel(model) && !args.some((a) => a === "--model" || a === "-m" || a.startsWith("--model=")) ? [...args, "--model", model] : args;
 const delivery = createDelivery({
   notify,
   surfaces: () => [...surfaces.values()].filter((surface) => !surface.exited),
@@ -228,26 +262,46 @@ const delivery = createDelivery({
     return Object.fromEntries(ids.map((id) => [id, screens[id]?.agent ? agentState(screens[id].text, surfaces.get(id)?.title ?? "", promptRules) : "unknown"]));
   },
   sendPrompt: sendPromptToAgent,
+  agentKind: (id) => { const tab = tabFor(id); return tab ? agentKindOf(tab.command, resolveProgram) : undefined; },
+  startWorkSession: (spec, model) => startAgentSession(spec.kind, spec.cwd.path, spec.tmux, withModel(spec.args, model)),
+  closeSurface: (id) => destroy(id, true),
 });
 projectPanel = initProjectPanel({
   notify,
   surfaces: () => [...surfaces.values()].filter((surface) => !surface.exited),
-  candidates: () => memberCandidates(tabs.map((tab) => ({ command: tab.command, tmux: tab.tmux, leaves: leaves(tab.tree) })), surfaces),
-  pickDirectory: () => invoke<string | null>("pick_directory", { path: defaultPath() || homePath || "~" }),
-  startAgent: async (kind, cwd, tmux) => {
-    const made = agentCommand(kind, []);
-    if (!made.ok) throw new Error(made.reply.ok ? "" : made.reply.error.message);
-    const opened = await newSurface(cwd, undefined, undefined, { command: made.line, commandInShell: true, tmux, background: true });
-    let previousText: string | undefined;
-    const ready = await poll(60_000, async () => {
-      const seen = await pickAgent(opened.surface);
-      const done = !!seen && startReady(previousText, seen.screen.text, seen.state);
-      previousText = seen?.screen.text;
-      return done ? seen : undefined;
-    });
-    if (!ready) throw new Error(t("project.agentNotReady"));
-    return opened.surface;
+  candidates: () => {
+    // Aliases and wrappers count only once looked up; look up what is unknown and redraw when learned.
+    for (const tab of tabs) warmProgram(tab.command).then((learned) => { if (learned) projectPanel?.refresh(); });
+    return memberCandidates(tabs.map((tab) => ({ command: tab.command, tmux: tab.tmux, leaves: leaves(tab.tree) })), surfaces, resolveProgram);
   },
+  favoriteCandidates: () => {
+    for (const item of favorites) if (item.kind === "tab") warmProgram(item.tab.command).then((learned) => { if (learned) projectPanel?.refresh(); });
+    return favorites.filter((item) => item.kind === "tab" && item.tab.coordinator && agentKindOf(item.tab.command, resolveProgram) && !tabs.some((tab) => tab.favoriteId === item.id) && !favoriteProjectLock(item.id))
+      .map((item) => ({ id: item.id, name: item.name, cwd: item.tab.paths[0] || "" }));
+  },
+  openFavoriteInBackground: async (id) => {
+    const item = favorites.find((value) => value.id === id);
+    if (!item || item.kind !== "tab") throw new Error("favorite not found");
+    const saved = item.tab;
+    const opened = await newSurface(saved.paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, tmux: true, tmuxHideStatus: saved.tmuxHideStatus, coordinator: true, favoriteId: item.id, background: true });
+    recentFavoriteInstances.set(item.id, opened.tab!);
+    return surfaces.get(opened.surface)!;
+  },
+  canOpenMember: (instanceId) => !!favoriteForInstance(instanceId),
+  openMemberTerminal: async (instanceId) => {
+    const item = favoriteForInstance(instanceId);
+    if (!item) return;
+    projectPanel?.close();
+    await openFavorite(item);
+  },
+  isActiveSurface: (id) => !!active && leaves(active.tree).includes(id) && active.focused === id,
+  launchFor: (instanceId) => {
+    const surface = surfaceForInstance(instanceId, surfaces.values());
+    const tab = surface && tabFor(surface.id);
+    return tab && surface ? launchSpecFromCommand(tab.command, surface.cwd, resolveProgram) : { ok: false, reason: "offline" as const };
+  },
+  pickDirectory: () => invoke<string | null>("pick_directory", { path: defaultPath() || homePath || "~" }),
+  startAgent: (kind, cwd, tmux) => startAgentSession(kind, cwd, tmux, []).then((surface) => surface.id),
   sendPrompt: sendPromptToAgent,
   delivery,
   showTerminal: async (id) => {
@@ -256,6 +310,8 @@ projectPanel = initProjectPanel({
     if (tab) await activate(tab);
   },
   openSettings: () => setPanel("settings"),
+  isMain: () => win.label === "main",
+  ready: () => initialized && !restoring,
   layoutChanged: () => {
     if (projectPanel?.isOpen()) invoke("native", { request: { op: "focus-web" } }).catch(() => {});
     scheduleLayout();
@@ -398,6 +454,18 @@ function tabFolder(tab: Tab) {
   return id ? folders.find((folder) => folder.id === id) : undefined;
 }
 // Screen order: ungrouped tabs first, then tabs grouped by their favorite's group.
+// Terminals a project owns (its coordinator, live work sessions) live under the project, not in the workspace.
+function projectOwned() {
+  const keys = new Set<string>(), favorites = new Set<string>();
+  for (const project of allLoaded()) for (const owned of ownedTerminals(project.state)) {
+    if (owned.instanceId) keys.add(owned.instanceId);
+    if (owned.kind === "coordinator" && owned.favoriteId) favorites.add(owned.favoriteId);
+  }
+  const tab = (item: Tab) => leaves(item.tree).some((id) => { const surface = surfaces.get(id); return !!surface && keys.has(instanceKey(surface)); });
+  return { tab, favorites, signature: [...keys].sort().join("|") + "#" + [...favorites].sort().join("|") };
+}
+// What the sidebar shows and ⌘1～⌘9 / next-previous follow: the same list.
+const visibleTabs = () => { const owned = projectOwned(); return orderedTabs().filter((tab) => !owned.tab(tab)); };
 function orderedTabs(): Tab[] {
   const roots = orderTabsByFavorites(tabs.filter((tab) => rootOf(tab) === tab), favorites, folders.map((folder) => folder.id));
   return orderWithChildren([...roots, ...tabs.filter((tab) => rootOf(tab) !== tab)]);
@@ -410,6 +478,33 @@ function dialogsOpen() {
 }
 // A terminal that is a project member keeps its identity only if it is an agent started from a list
 // choice inside tmux, so those two settings cannot be edited freely while it is a member.
+// A terminal that runs an agent in tmux can join a project as a member. Its identity is the tmux session, so a
+// favorite that is not open yet can already be a member: it keeps its session name and is online once it opens.
+async function requireAgent(command: string | undefined) {
+  await warmProgram(command);
+  if (!agentKindOf(command, resolveProgram)) throw new Error(t("app.coordinatorNeedsAgent"));
+}
+async function joinProject(root: string, session: string, name: string, purpose: string) {
+  await openProject(root).catch(() => {});
+  const key = instanceKey({ id: "", tmuxSession: session });
+  const known = memberOfInstance(key);
+  if (known) {
+    if (known.root !== root) throw new Error(t("app.alreadyMember", { project: known.projectName }));
+    if (purpose !== known.member.purpose) {
+      const done = await projectDispatch(root, { kind: "user" }, { type: "UpdatePurpose", memberId: known.member.id, purpose, source: "user" });
+      if (!done.ok) throw new Error(done.error.message);
+    }
+  } else {
+    const member: Member = { id: crypto.randomUUID(), role: "worker", name: name || session, purpose, purposeSource: "user", reportMode: "screen" };
+    const done = await projectDispatch(root, { kind: "user" }, { type: "AddMember", member, binding: { instanceId: key, generation: INSTANCE_GENERATION } });
+    if (!done.ok) throw new Error(done.error.message);
+  }
+  projectPanel?.refresh();
+}
+// The favorite whose saved tmux session is this member's identity (lets the project open it).
+function favoriteForInstance(instanceId: string) {
+  return favorites.find((item) => item.kind === "tab" && item.tab.tmuxSessions?.some((session) => !!session && instanceKey({ id: "", tmuxSession: session }) === instanceId));
+}
 function projectLock(tab: Tab) {
   for (const id of leaves(tab.tree)) {
     const surface = surfaces.get(id);
@@ -424,11 +519,34 @@ function favoriteProjectLock(favoriteId: string) {
     const hit = projectLock(tab);
     if (hit) return hit;
   }
+  for (const session of favorites.find((item) => item.id === favoriteId)?.tab.tmuxSessions ?? []) {
+    const hit = session && memberOfInstance(instanceKey({ id: "", tmuxSession: session }));
+    if (hit) return hit;
+  }
   return undefined;
+}
+// What `where` says each start program is (see resolve_program); an empty list means it was looked up and unknown.
+const programNames = new Map<string, string[]>();
+const resolveProgram = (program: string) => programNames.get(program);
+function startProgram(command: string | undefined) {
+  const words = (command ?? "").trim().split(/\s+/).filter(Boolean);
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+  return words[0];
+}
+// Looks the command's program up once; true when something new was learned.
+async function warmProgram(command: string | undefined): Promise<boolean> {
+  const program = startProgram(command);
+  if (!program || programNames.has(program)) return false;
+  programNames.set(program, await invoke<string[]>("resolve_program", { name: program }).catch(() => []));
+  return true;
+}
+// After a lookup finishes the editor is drawn again so an alias shows up as the agent it launches.
+function warmAndRedraw(command: string | undefined, shown: Detail) {
+  warmProgram(command).then((learned) => { if (learned && detail() === shown) renderDetail(); });
 }
 // The agent as a list plus free-text arguments; writes the rebuilt command back into `command`.
 function lockedCommandField(command: HTMLInputElement): HTMLElement | undefined {
-  const parsed = parseAgentCommand(command.value);
+  const parsed = parseAgentCommand(command.value, resolveProgram);
   if (!parsed) return undefined;
   const kind = document.createElement("select");
   for (const option of PROJECT_AGENT_KINDS) kind.append(Object.assign(document.createElement("option"), { value: option, textContent: option }));
@@ -439,6 +557,18 @@ function lockedCommandField(command: HTMLInputElement): HTMLElement | undefined 
   kind.onchange = update; args.oninput = update;
   const row = document.createElement("div"); row.className = "inline-actions"; row.append(kind, args);
   return row;
+}
+// Launch command field that follows the coordinator checkbox: free text normally, an agent list when checked
+// (a command that is not an agent becomes `claude`). Call `sync` after the checkbox or a lookup changes.
+function coordinatorCommandField(command: HTMLInputElement, checkbox: { checked: boolean }, forced: () => boolean) {
+  const slot = document.createElement("div");
+  const sync = () => {
+    const locked = checkbox.checked || forced();
+    if (locked && !parseAgentCommand(command.value, resolveProgram)) { command.value = "claude"; command.dispatchEvent(new Event("input")); }
+    slot.replaceChildren((locked && lockedCommandField(command)) || command);
+  };
+  sync();
+  return { slot, sync };
 }
 function detail(): Detail | undefined { return drawerState.detailStack.at(-1); }
 function renderDrawer() {
@@ -545,12 +675,37 @@ function renderDetail() {
     host.append(formCaption(t("app.cap.launch")));
     const command = document.createElement("input"); command.id = "tab-command-value"; command.className = "mono"; command.value = tab.command || ""; command.placeholder = t("app.shellPlaceholder"); command.setAttribute("aria-label", t("app.launchCommand"));
     const lock = projectLock(tab);
-    host.append(labeled(t("app.launchCommand"), (lock && lockedCommandField(command)) || command), help(lock ? t("project.lockedHelp", { project: lock.projectName }) : t("app.tabCommandHelp")));
+    warmAndRedraw(command.value, current);
+    const coordinatorBox = { checked: !!tab.coordinator || !!lock, disabled: !!lock };
+    const commandField = coordinatorCommandField(command, coordinatorBox, () => !!lock);
+    host.append(labeled(t("app.launchCommand"), commandField.slot), help(lock ? t("project.lockedHelp", { project: lock.projectName }) : t("app.tabCommandHelp")));
+    // Join a project as a member: pick it, say what this terminal handles, press the button. There is no leaving from here.
+    const coordinatorSelect = document.createElement("select"); coordinatorSelect.setAttribute("aria-label", t("app.coordinator"));
+    coordinatorSelect.append(Object.assign(document.createElement("option"), { value: "", textContent: "" }));
+    for (const project of allLoaded()) if (project.state.config) coordinatorSelect.append(Object.assign(document.createElement("option"), { value: project.root, textContent: project.state.config.name }));
+    coordinatorSelect.value = lock?.root ?? "";
+    coordinatorSelect.disabled = !!lock;
+    const joinName = document.createElement("input"); joinName.value = lock?.member.name ?? (tab.title || name(cwd)); joinName.disabled = !!lock; joinName.setAttribute("aria-label", t("project.memberName"));
+    const joinPurpose = document.createElement("input"); joinPurpose.value = lock?.member.purpose ?? ""; joinPurpose.placeholder = t("project.purposePlaceholder"); joinPurpose.setAttribute("aria-label", t("project.purposePlaceholder"));
+    const joinButton = button(t(lock ? "app.updateMember" : "app.joinProject"), async () => {
+      await requireAgent(command.value);
+      const session = surfaces.get(leaves(tab.tree)[0])?.tmuxSession;
+      if (!session) throw new Error(t("app.coordinatorNeedsAgent"));
+      await joinProject(lock?.root ?? coordinatorSelect.value, session, joinName.value.trim(), joinPurpose.value.trim());
+      tab.coordinator = true; tab.tmux = true;
+      renderTabs();
+      if (detail() === current) renderDetail();
+    });
+    joinButton.className = "ghost-btn";
+    const joinFields = document.createElement("div"); joinFields.hidden = coordinatorSelect.value === "";
+    joinFields.append(labeled(t("project.memberName"), joinName), labeled(t("project.purposePlaceholder"), joinPurpose), joinButton);
+    coordinatorSelect.addEventListener("change", () => { joinFields.hidden = coordinatorSelect.value === ""; });
+    host.append(labeled(t("app.coordinator"), coordinatorSelect), help(t("app.coordinatorHelp")), joinFields);
     const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = !!tab.commandInShell; commandInShell.disabled = !command.value.trim();
     const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode(t("app.loadShell")));
     host.append(commandInShellLabel, help(t("app.loadShellHelp")));
     host.append(formCaption(t("app.cap.background")));
-    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!tab.tmux || !!lock; tmuxBox.disabled = !!lock;
+    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!tab.tmux || !!lock || coordinatorBox.checked; tmuxBox.disabled = !!lock || coordinatorBox.checked;
     const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode(t("app.useTmux")));
     host.append(tmuxLabel, help(t("app.tmuxHelpTab")));
     const tmuxStatus = document.createElement("input"); tmuxStatus.type = "checkbox"; tmuxStatus.checked = !!tab.tmuxHideStatus; tmuxStatus.disabled = !tmuxBox.checked;
@@ -558,16 +713,16 @@ function renderDetail() {
     host.append(tmuxStatusLabel, help(t("app.hideTmuxStatusHelpTab")));
     host.append(formCaption(t("app.cap.content")));
     for (const [index, id] of leaves(tab.tree).entries()) host.append(summaryItem(t(index === 0 ? "app.splitPrimary" : "app.splitLabel", { index: index + 1 }), surfaces.get(id)?.cwd || ""));
-    const apply = () => { tab.title = title.value.trim() || undefined; tab.command = command.value.trim() || undefined; tab.commandInShell = tab.command ? commandInShell.checked : undefined; tab.tmux = tmuxBox.checked || undefined; tab.tmuxHideStatus = tab.tmux && tmuxStatus.checked || undefined; for (const id of leaves(tab.tree)) { const session = surfaces.get(id)?.tmuxSession; if (session && original.tmuxHideStatus !== !!tab.tmuxHideStatus) invoke("tmux_set_status", { name: session, visible: !tab.tmuxHideStatus }).catch(() => {}); } original.tmuxHideStatus = !!tab.tmuxHideStatus; };
+    const apply = () => { tab.title = title.value.trim() || undefined; tab.command = command.value.trim() || undefined; tab.commandInShell = tab.command ? commandInShell.checked : undefined; tab.coordinator = coordinatorBox.checked && !lock || undefined; tab.tmux = tmuxBox.checked || undefined; tab.tmuxHideStatus = tab.tmux && tmuxStatus.checked || undefined; for (const id of leaves(tab.tree)) { const session = surfaces.get(id)?.tmuxSession; if (session && original.tmuxHideStatus !== !!tab.tmuxHideStatus) invoke("tmux_set_status", { name: session, visible: !tab.tmuxHideStatus }).catch(() => {}); } original.tmuxHideStatus = !!tab.tmuxHideStatus; };
     host.append(formCaption(t("app.favorites")));
     host.append(help(t("app.favoriteTabHelp")));
     const saveFav = button(t("app.favoriteThisTab"), () => { apply(); newFavorite({ tabId: tab.id }); }); saveFav.className = "primary-btn wide-button"; host.append(saveFav);
     host.append(formCaption(t("app.cap.danger")));
     const close = button(t("app.closeTab"), () => requestClose(leaves(tab.tree), (force) => closeTab(tab, force))); close.className = "danger-btn wide-button"; host.append(close);
-    const original = { title: tab.title || "", command: tab.command || "", commandInShell: !!tab.commandInShell, tmux: !!tab.tmux, tmuxHideStatus: !!tab.tmuxHideStatus };
+    const original = { title: tab.title || "", command: tab.command || "", commandInShell: !!tab.commandInShell, tmux: !!tab.tmux, tmuxHideStatus: !!tab.tmuxHideStatus, coordinator: !!tab.coordinator };
     const save = button(t("app.save"), () => { apply(); renderTabs(); backDetail(); });
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = title.value === original.title && command.value === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && tmuxStatus.checked === original.tmuxHideStatus; };
+    const updateDirty = () => { save.disabled = title.value === original.title && command.value === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && tmuxStatus.checked === original.tmuxHideStatus && coordinatorBox.checked === original.coordinator; };
     title.oninput = () => { objectName.textContent = title.value.trim() || name(cwd); updateDirty(); };
     command.oninput = () => { commandInShell.disabled = !command.value.trim(); if (commandInShell.disabled) commandInShell.checked = false; updateDirty(); };
     commandInShell.onchange = updateDirty;
@@ -628,12 +783,28 @@ function renderDetail() {
     const savedCommand = item?.tab.command ?? sourceTab?.command ?? "";
     const command = document.createElement("input"); command.id = "favorite-command"; command.className = "mono"; command.value = draft.command ?? savedCommand; command.placeholder = t("app.shellPlaceholder"); command.setAttribute("aria-label", t("app.launchCommand"));
     const lock = item ? favoriteProjectLock(item.id) : undefined;
-    host.append(formCaption(t("app.cap.launch")), labeled(t("app.launchCommand"), (lock && lockedCommandField(command)) || command), help(lock ? t("project.lockedHelp", { project: lock.projectName }) : t("app.favoriteCommandHelp")));
+    warmAndRedraw(command.value, current);
+    // The project this favorite joins as a member (empty: none), with a name and what it handles. Joining happens on save,
+    // even if the terminal is not open: the favorite keeps a tmux session name that identifies the member.
+    const coordinatorSelect = document.createElement("select"); coordinatorSelect.setAttribute("aria-label", t("app.coordinator"));
+    coordinatorSelect.append(Object.assign(document.createElement("option"), { value: "", textContent: "" }));
+    for (const project of allLoaded()) if (project.state.config) coordinatorSelect.append(Object.assign(document.createElement("option"), { value: project.root, textContent: project.state.config.name }));
+    coordinatorSelect.value = lock?.root ?? (draft.coordinatorRoot ?? item?.tab.coordinatorRoot ?? "");
+    coordinatorSelect.disabled = !!lock;
+    const joinName = document.createElement("input"); joinName.value = lock?.member.name ?? draft.memberName ?? alias.value; joinName.disabled = !!lock; joinName.setAttribute("aria-label", t("project.memberName"));
+    const joinPurpose = document.createElement("input"); joinPurpose.value = draft.memberPurpose ?? lock?.member.purpose ?? ""; joinPurpose.placeholder = t("project.purposePlaceholder"); joinPurpose.setAttribute("aria-label", t("project.purposePlaceholder"));
+    const joinFields = document.createElement("div"); joinFields.hidden = coordinatorSelect.value === "";
+    joinFields.append(labeled(t("project.memberName"), joinName), labeled(t("project.purposePlaceholder"), joinPurpose));
+    coordinatorSelect.addEventListener("change", () => { joinFields.hidden = coordinatorSelect.value === ""; });
+    const coordinatorBox = { get checked() { return coordinatorSelect.value !== "" || !!lock; }, disabled: !!lock, addEventListener: (type: string, fn: () => void) => coordinatorSelect.addEventListener(type, fn) };
+    const commandField = coordinatorCommandField(command, coordinatorBox, () => !!lock);
+    host.append(formCaption(t("app.cap.launch")), labeled(t("app.launchCommand"), commandField.slot), help(lock ? t("project.lockedHelp", { project: lock.projectName }) : t("app.favoriteCommandHelp")));
+    host.append(labeled(t("app.coordinator"), coordinatorSelect), help(t("app.coordinatorFavoriteHelp")), joinFields);
     const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = draft.commandInShell ?? (item?.tab.commandInShell ?? sourceTab?.commandInShell ?? false); commandInShell.disabled = !command.value.trim();
     const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode(t("app.loadShell")));
     host.append(commandInShellLabel, help(t("app.loadShellHelpNext")));
     host.append(formCaption(t("app.cap.background")));
-    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!lock || (draft.tmux ?? !!(item?.tab.tmux ?? sourceTab?.tmux)); tmuxBox.disabled = !!lock;
+    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!lock || coordinatorBox.checked || (draft.tmux ?? !!(item?.tab.tmux ?? sourceTab?.tmux)); tmuxBox.disabled = !!lock || coordinatorBox.checked;
     const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode(t("app.useTmux")));
     host.append(tmuxLabel, help(t("app.tmuxHelpFavorite")));
     const tmuxStatus = document.createElement("input"); tmuxStatus.type = "checkbox"; tmuxStatus.checked = draft.tmuxHideStatus ?? !!(item?.tab.tmuxHideStatus ?? sourceTab?.tmuxHideStatus); tmuxStatus.disabled = !tmuxBox.checked;
@@ -676,21 +847,32 @@ function renderDetail() {
       host.append(formCaption(t("app.cap.danger")), help(t("app.removeFavoriteHelp")));
       const remove = button(t("app.removeFavorite"), () => { if (confirmTwice(remove)) return removeFavorite(item); }); remove.className = "danger-btn wide-button"; host.append(remove);
     }
-    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell, tmux: !!item?.tab.tmux, tmuxHideStatus: !!item?.tab.tmuxHideStatus };
-    const save = button(item ? t("app.save") : t("app.favorites"), () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, { command: command.value.trim(), commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxBox.checked && tmuxStatus.checked }));
+    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell, tmux: !!item?.tab.tmux, tmuxHideStatus: !!item?.tab.tmuxHideStatus, coordinator: !!item?.tab.coordinator };
+    const save = button(item ? t("app.save") : t("app.favorites"), () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, { command: command.value.trim(), commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxBox.checked && tmuxStatus.checked, coordinator: coordinatorSelect.value !== "" && !lock, coordinatorRoot: lock ? "" : coordinatorSelect.value, join: coordinatorSelect.value ? { root: lock?.root ?? coordinatorSelect.value, name: joinName.value.trim(), purpose: joinPurpose.value.trim() } : undefined }));
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && (tmuxBox.checked && tmuxStatus.checked) === original.tmuxHideStatus); };
+    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && (tmuxBox.checked && tmuxStatus.checked) === original.tmuxHideStatus && coordinatorSelect.value === (item?.tab.coordinatorRoot ?? "") && (!coordinatorSelect.value || (joinPurpose.value.trim() === (lock?.member.purpose ?? "") && (!!lock || joinName.value.trim() === original.name)))); };
     alias.oninput = () => { objectName.textContent = alias.value.trim() || defaultName; updateDirty(); };
     path?.addEventListener("input", updateDirty);
     command.addEventListener("input", () => { commandInShell.disabled = !command.value.trim(); if (commandInShell.disabled) commandInShell.checked = false; updateSummaryForFavorite(); updateDirty(); });
     commandInShell.addEventListener("change", () => { updateSummaryForFavorite(); updateDirty(); });
     tmuxBox.addEventListener("change", () => { tmuxStatus.disabled = !tmuxBox.checked; updateDirty(); });
+    coordinatorBox.addEventListener("change", () => {
+      warmProgram(command.value).then(() => {
+        commandField.sync();
+        if (coordinatorBox.checked) tmuxBox.checked = true;
+        tmuxBox.disabled = !!lock || coordinatorBox.checked;
+        tmuxStatus.disabled = !tmuxBox.checked;
+        commandInShell.disabled = !command.value.trim();
+        updateSummaryForFavorite();
+        updateDirty();
+      });
+    });
     tmuxStatus.addEventListener("change", updateDirty);
     groupSelect.onchange = () => {
       updateDirty();
       if (groupSelect.value !== "__new__") return;
       // Keep what was typed while the new-group editor is on top.
-      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxStatus.checked });
+      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxStatus.checked, coordinator: coordinatorBox.checked, coordinatorRoot: coordinatorSelect.value, memberName: joinName.value, memberPurpose: joinPurpose.value });
       createFolder();
     };
     enterSaves(save, alias, path, command);
@@ -717,7 +899,7 @@ function renderDetail() {
     renderLocaleEditor(host, current.code, { back: backDetail, notify });
   }
 }
-const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean }>();
+const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; coordinator?: boolean; coordinatorRoot?: string; memberName?: string; memberPurpose?: string }>();
 const swatchColors = ["#77dfc0", "#7cc4ff", "#b59cff", "#ff9ecf", "#ff8f7a", "#f5c46b", "#a6d86e", "#9aa6b8"];
 function editorIntro(host: HTMLElement, heading: HTMLElement, pageTitle: string, objectName: string, subtitle: string) {
   heading.append(Object.assign(document.createElement("strong"), { textContent: pageTitle, className: "page-title" }));
@@ -782,6 +964,7 @@ function applyFavoritesDocument(document: FavoritesDocument) {
       !((item.kind === "group" || item.kind === "edit-group") && item.groupId && !folderIds.has(item.groupId)) &&
       !(item.kind === "edit-favorite" && item.favoriteId && !ids.has(item.favoriteId))),
   };
+  projectPanel?.refresh();
   return result.migrated;
 }
 async function persistFavorites(nextFavorites: WorkspaceFavorite[], nextFolders: FavoriteFolder[] = folders) {
@@ -817,7 +1000,7 @@ function flushFilesState() {
 }
 function savedTab(tab: Tab, sessions = false): SavedTab {
   const ids = leaves(tab.tree);
-  return { tmux: tab.tmux, tmuxHideStatus: tab.tmuxHideStatus, tmuxSessions: sessions && tab.tmux ? ids.map((id) => surfaces.get(id)?.tmuxSession) : undefined, paths: ids.map((id) => surfaces.get(id)?.cwd || ""), tree: savedTree(tab.tree, ids), focused: Math.max(0, ids.indexOf(tab.focused)), title: tab.favoriteId ? undefined : tab.title, command: tab.command, commandInShell: tab.commandInShell, favoriteId: tab.favoriteId, files: saveFiles(tab.files) };
+  return { tmux: tab.tmux, tmuxHideStatus: tab.tmuxHideStatus, coordinator: tab.coordinator, tmuxSessions: sessions && tab.tmux ? ids.map((id) => surfaces.get(id)?.tmuxSession) : undefined, paths: ids.map((id) => surfaces.get(id)?.cwd || ""), tree: savedTree(tab.tree, ids), focused: Math.max(0, ids.indexOf(tab.focused)), title: tab.favoriteId ? undefined : tab.title, command: tab.command, commandInShell: tab.commandInShell, favoriteId: tab.favoriteId, files: saveFiles(tab.files) };
 }
 // ── Attention: bell / notification / agent waiting ──────────────────────────
 let attention: AttentionState = emptyAttention;
@@ -875,10 +1058,62 @@ async function loadPromptRules() {
 const signalHint = (title: string) => title === t("app.alertBell") ? t("app.alertBellHint") : title === t("app.alertStopped") ? t("app.alertStoppedHint") : "";
 const promptLine = (prompt: Prompt, index: number) => `${prompt.selected === index ? "▶" : "  "} ${prompt.options[index]}`;
 let lastAttentionSig: string | undefined;
+let lastOwnedSignature = "";
 // 各卡片「畫面內容」方塊是否展開（預設收合）；重繪會重建 DOM，所以記在這裡。
 const expandedBodies = new Set<string>();
+// Project items (a plan to start, a worker's question, a result to review…) share the bell and the drop with terminal alerts.
+// Seen only quiets the badge; an item leaves when its source resolves in the journal.
+const projectMarks = emptyMarks();
+const SEEN_KEY = "project-attention-seen";
+const loadSeen = () => { try { projectMarks.seen = new Set(parseSeen(localStorage.getItem(SEEN_KEY))); } catch {} };
+const saveSeen = () => { try { localStorage.setItem(SEEN_KEY, JSON.stringify([...projectMarks.seen].slice(-500))); } catch {} };
+loadSeen();
+// Another window marked something seen: follow it so the badge agrees everywhere.
+window.addEventListener("storage", (event) => { if (event.key === SEEN_KEY) { loadSeen(); renderAttention(); } });
+const projectDrafts = new Map<string, string>();
+const projectItems = (): ProjectItem[] => allLoaded().flatMap((p) => p.state.config ? actionItems(p.state).map((item) => ({ root: p.root, projectName: p.state.config!.name, state: p.state, item })) : []);
+const projectCardActions: ProjectCardActions = (() => {
+  const run = (root: string, body: Parameters<typeof projectDispatch>[2], after?: () => unknown) => void projectDispatch(root, { kind: "user" }, body)
+    .then((done) => { if (!done.ok) throw new Error(done.error.message); return after?.(); }).catch(notify);
+  const attempt = (item: ActionItem) => item.attemptId ?? "";
+  return {
+    startPlan: (root, item) => {
+      const plan = allLoaded().find((p) => p.root === root)?.state.plans.at(-1);
+      // The plan changed since the card was drawn: do not start one the user has not seen.
+      if (plan && `${plan.id}:${plan.version}` !== item.sourceId) { notify(t("project.drop.planChanged")); renderAttention(); return; }
+      if (plan) run(root, { type: "StartRun", runId: crypto.randomUUID(), planId: plan.id, version: plan.version, taskIds: plan.steps.map(() => crypto.randomUUID()), auto: true, consent: { id: crypto.randomUUID(), source: "start-button" } });
+    },
+    reply: (root, issueId, text) => run(root, { type: "ReplyIssue", issueId, replyId: crypto.randomUUID(), text }, () => delivery.replies(root)),
+    accept: (root, item) => item.taskId && run(root, { type: "AcceptResult", taskId: item.taskId, attemptId: attempt(item) }),
+    rework: (root, item, feedback) => item.taskId && run(root, { type: "RequestRework", taskId: item.taskId, attemptId: attempt(item), feedback }),
+    reconcile: (root, item, decision) => item.taskId && run(root, { type: "ReconcileTask", taskId: item.taskId, attemptId: attempt(item), decision }),
+    goTerminal: (item) => {
+      const project = allLoaded().find((p) => p.state.config?.id === item.projectId);
+      const binding = item.memberId && project?.state.bindings[item.memberId];
+      const surface = binding && surfaceForInstance(binding.instanceId, surfaces.values());
+      if (!surface) return;
+      attentionDrop.close(false);
+      const tab = tabFor(surface.id);
+      if (tab) { tab.focused = surface.id; activate(tab).catch(notify); }
+    },
+    markSeen: (item) => { projectMarks.seen.add(item.id); saveSeen(); renderAttention(); },
+    online: (item) => {
+      const project = allLoaded().find((p) => p.state.config?.id === item.projectId);
+      const binding = item.memberId && project?.state.bindings[item.memberId];
+      return !!binding && !!surfaceForInstance(binding.instanceId, surfaces.values());
+    },
+  };
+})();
+onProjectChanged(() => {
+  renderAttention();
+  // A terminal just became (or stopped being) a project's: move it between the workspace and the project list.
+  if (projectOwned().signature !== lastOwnedSignature) renderTabs();
+});
 function renderAttention() {
-  const count = unreadCount(attention);
+  const projects = projectItems();
+  // Seen ids are never pruned here: projects load one by one, so an item missing now may belong to one not loaded yet.
+  // Ids carry uuids, so a stale one is harmless; the list is capped on save.
+  const count = unreadCount(attention) + unseen(projects.map((p) => p.item), projectMarks, Date.now()).length;
   for (const id of ["bell-count", "rail-alert"]) {
     const el = $(id); el.hidden = count === 0; if (id === "bell-count") el.textContent = badgeText(count);
   }
@@ -901,7 +1136,7 @@ function renderAttention() {
     }
   }
   const metaOf = (alert: (typeof alerts)[number]) => [alert.title, alert.prompt?.low ? t("app.uncertain") : "", alert.count > 1 ? `×${alert.count}` : "", screens.get(alert.surfaceId)?.agent, ago(alert.since)].filter(Boolean).join(" · ");
-  const sig = JSON.stringify(alerts.map((alert) => [alert.surfaceId, alert.source, alertLabel(alert.surfaceId), alert.title, alert.count, screens.get(alert.surfaceId)?.agent, bodies.get(alert.surfaceId), asks.get(alert.surfaceId)]));
+  const sig = JSON.stringify([projects.map(cardSignature), alerts.map((alert) => [alert.surfaceId, alert.source, alertLabel(alert.surfaceId), alert.title, alert.count, screens.get(alert.surfaceId)?.agent, bodies.get(alert.surfaceId), asks.get(alert.surfaceId)])]);
   const hadCards = lastAttentionSig !== undefined && lastAttentionSig !== "[]";
   // Same content: only refresh the relative times, so scroll positions and focus survive the 1.5s scan.
   if (sig === lastAttentionSig) {
@@ -916,7 +1151,9 @@ function renderAttention() {
   for (const card of list.querySelectorAll<HTMLElement>(".alert-card")) bodyTops.set(card.dataset.surface || "", card.querySelector(".alert-body")?.scrollTop ?? 0);
   for (const id of expandedBodies) if (!attention.has(id)) expandedBodies.delete(id);
   list.replaceChildren();
-  if (!count) { list.append(help(t("app.noAttention"))); attentionDrop.afterRender(); return; }
+  // Project cards come first: they are what the user can finish right here.
+  for (const p of projects) list.append(renderProjectCard(p, projectCardActions, projectDrafts));
+  if (!count && !projects.length) { list.append(help(t("app.noAttention"))); attentionDrop.afterRender(); return; }
   for (const alert of alerts) {
     const card = document.createElement("div"); card.className = "alert-card"; card.dataset.source = alert.source; card.dataset.surface = alert.surfaceId; if (alert.prompt?.low) card.dataset.low = "1";
     const head = document.createElement("div"); head.className = "alert-head";
@@ -1020,7 +1257,9 @@ function appendTabGroup(parent: HTMLElement, root: Tab, folder: FavoriteFolder |
 }
 function renderTabs() {
   scheduleSessionSave();
-  const arranged = orderedTabs();
+  const owned = projectOwned();
+  lastOwnedSignature = owned.signature;
+  const arranged = orderedTabs().filter((tab) => !owned.tab(tab));
   const list = $("tabs");
   list.replaceChildren();
   const caption = (text: string) => { const el = document.createElement("div"); el.className = "caption"; el.textContent = text; return el; };
@@ -1031,14 +1270,14 @@ function renderTabs() {
   const hotkey = (tab: Tab) => { const index = arranged.indexOf(tab); return index >= 0 && index < 9 ? index + 1 : undefined; };
   for (const tab of loose.filter((item) => !item.parentId)) appendTabGroup(ungrouped, tab, undefined, hotkey);
   // Ungrouped favorites without an open terminal still show here, like grouped ones do.
-  const closedLoose = folderFavorites(undefined).filter((item) => !loose.some((tab) => !tab.parentId && tab.favoriteId === item.id));
+  const closedLoose = folderFavorites(undefined).filter((item) => !owned.favorites.has(item.id) && !loose.some((tab) => !tab.parentId && tab.favoriteId === item.id));
   for (const favorite of closedLoose) appendWorkspaceFavoriteRow(ungrouped, favorite);
   if (!loose.length && !closedLoose.length) ungrouped.append(help(t("app.noUngroupedTabs")));
   list.append(ungrouped);
   if (folders.length) {
     list.append(Object.assign(document.createElement("div"), { className: "section-divider" }));
     for (const folder of folders) {
-      const items = folderFavorites(folder.id);
+      const items = folderFavorites(folder.id).filter((item) => !owned.favorites.has(item.id));
       const openTabs = arranged.filter((tab) => tabFolder(tab)?.id === folder.id);
       const block = document.createElement("section"); block.className = "tab-block grouped"; block.style.setProperty("--group-color", folder.color);
       block.dataset.groupId = folder.id;
@@ -1075,6 +1314,7 @@ function renderTabs() {
   const top = detail();
   if (top?.kind === "edit-tab" && !tabs.some((tab) => tab.id === top.tabId)) renderDetail();
   renderFavorites();
+  projectPanel?.refreshList();
 }
 // Reorder only within the same block: a tab's block comes from its favorite's
 // group, so dragging cannot change it.
@@ -1328,18 +1568,21 @@ function renderConfigText() {
   $("config-diagnostics").textContent =
     config.diagnostics.join("\n") || t("settings.configLoaded");
 }
-async function newSurface(path: string, source?: string, direction?: number, options: { command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSession?: string; parentId?: string; background?: boolean } = {}) {
+async function newSurface(path: string, source?: string, direction?: number, options: { command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; coordinator?: boolean; tmuxSession?: string; parentId?: string; favoriteId?: string; background?: boolean } = {}) {
   const parent = source && direction !== undefined ? tabFor(source) : undefined;
   const sibling = options.parentId ? tabs.find((tab) => tab.id === options.parentId) : undefined;
   // ⌘⇧T 的子頁籤沿用來源頁籤的啟動命令、tmux 設定與收藏。
   const command = options.command ?? sibling?.command;
   const commandInShell = options.commandInShell ?? sibling?.commandInShell;
-  const useTmux = !!(options.tmux ?? parent?.tmux ?? sibling?.tmux);
+  const coordinator = !!(options.coordinator ?? parent?.coordinator ?? sibling?.coordinator);
+  const useTmux = coordinator || !!(options.tmux ?? parent?.tmux ?? sibling?.tmux);
   const hideStatus = !!(options.tmuxHideStatus ?? parent?.tmuxHideStatus ?? sibling?.tmuxHideStatus);
   const tmuxSession = useTmux ? (validSession(options.tmuxSession) ? options.tmuxSession : newSessionName()) : undefined;
   const tmuxBin = tmuxSession ? await invoke<string | null>("tmux_path").catch(() => null) : null;
   if (tmuxSession && !tmuxBin) throw new Error(t("app.tmuxMissing"));
   // HIGHOSTTY_* 給 session 內的程式（tmux 3.2 以下為空表）；失敗不影響開頁籤。
+  const program = startProgram(command);
+  const tmuxProgramPath = tmuxSession && program && !program.includes("/") ? await invoke<string | null>("program_path", { name: program }).catch(() => null) : null;
   const tmuxEnv = tmuxSession ? await invoke<Record<string, string>>("control_env", { session: tmuxSession }).catch(() => ({})) : undefined;
   const normalized = await invoke<string>("resolve_path", {
     path,
@@ -1353,7 +1596,7 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       path: normalized,
       source,
       split: direction !== undefined,
-      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, command, hideStatus, tmuxBin, tmuxEnv) : command,
+      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramPath(command, tmuxProgramPath), hideStatus, tmuxBin, tmuxEnv) : command,
       commandInShell: tmuxSession ? false : commandInShell,
       tmux: !!tmuxSession,
     });
@@ -1366,6 +1609,8 @@ async function newSurface(path: string, source?: string, direction?: number, opt
     title: "",
     exited: false,
     tmuxSession,
+    openedAt: Date.now(),
+    command,
   });
   let foreground = true;
   if (source && direction !== undefined) {
@@ -1381,9 +1626,10 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       focused: result.id,
       command,
       commandInShell,
-      favoriteId: sibling?.favoriteId,
+      favoriteId: options.favoriteId ?? sibling?.favoriteId,
       tmux: useTmux || undefined,
       tmuxHideStatus: useTmux && hideStatus || undefined,
+      coordinator: coordinator || undefined,
       parentId: options.parentId,
     };
     // background：新頁籤不切過去、不搶焦點（agent 控制指令）；空工作區仍照常顯示。
@@ -1409,6 +1655,19 @@ function restoreTree(node: Node, ids: string[]): Node {
   if (node.kind === "leaf") return { kind: "leaf", id: ids[Number(node.id)] || ids[0] };
   return { ...node, first: restoreTree(node.first, ids), second: restoreTree(node.second, ids) };
 }
+// A favorite that names a project but never joined it (saved before members were per-session): join now and
+// remember the session on the favorite so the next open is the same member.
+function autoJoin(tab: Tab, root: string, favoriteId?: string) {
+  const session = surfaces.get(tab.focused)?.tmuxSession;
+  const favorite = favorites.find((item) => item.id === favoriteId);
+  if (!session) return;
+  joinProject(root, session, favorite?.name || tab.title || "", memberOfInstance(instanceKey({ id: "", tmuxSession: session }))?.member.purpose ?? "")
+    .then(async () => {
+      if (favorite && favorite.tab.tmuxSessions?.[0] !== session) await persistFavorites(favorites.map((item) => item.id === favorite.id ? { ...item, tab: { ...item.tab, tmuxSessions: [session, ...(item.tab.tmuxSessions ?? []).slice(1)] } } : item));
+      renderTabs();
+    })
+    .catch(notify);
+}
 // Older snapshots may still carry workspace groups; they are ignored now that
 // a tab's group comes from its favorite.
 async function restoreSnapshot(value: { tabs?: SavedTab[] }) {
@@ -1418,8 +1677,9 @@ async function restoreSnapshot(value: { tabs?: SavedTab[] }) {
     for (const [position, saved] of (value.tabs || []).entries()) {
       const paths = saved.paths.filter(Boolean);
       if (!paths.length) continue;
-      await newSurface(paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, tmux: saved.tmux, tmuxHideStatus: saved.tmuxHideStatus, tmuxSession: saved.tmuxSessions?.[0] });
+      await newSurface(paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, tmux: saved.tmux, tmuxHideStatus: saved.tmuxHideStatus, coordinator: saved.coordinator, tmuxSession: saved.tmuxSessions?.[0] });
       const tab = active!;
+      if (saved.coordinatorRoot) autoJoin(tab, saved.coordinatorRoot, saved.favoriteId);
       const ids = [tab.focused];
       for (const path of paths.slice(1)) {
         await newSurface(path, ids[0], 0, { tmuxSession: saved.tmuxSessions?.[ids.length] });
@@ -1851,11 +2111,23 @@ async function resolveFavoritePath() {
     return undefined;
   }
 }
-async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, launch: { command: string; commandInShell: boolean; tmux: boolean; tmuxHideStatus: boolean }) {
+async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, launch: { command: string; commandInShell: boolean; tmux: boolean; tmuxHideStatus: boolean; coordinator: boolean; coordinatorRoot: string; join?: { root: string; name: string; purpose: string } }) {
   if (!alias) { $("alias").focus(); return; }
   const group = groupId || undefined;
-  const options = { command: launch.command || undefined, commandInShell: launch.command ? launch.commandInShell || undefined : undefined, tmux: launch.tmux || undefined, tmuxHideStatus: launch.tmux && launch.tmuxHideStatus || undefined };
+  const options: Partial<SavedTab> = { command: launch.command || undefined, commandInShell: launch.command ? launch.commandInShell || undefined : undefined, tmux: launch.tmux || launch.coordinator || undefined, tmuxHideStatus: launch.tmux && launch.tmuxHideStatus || undefined, coordinator: launch.coordinator || undefined, coordinatorRoot: launch.coordinatorRoot || undefined };
   let createdId: string | undefined;
+  // Joining a project needs an agent command and a fixed tmux session; the favorite keeps the session name.
+  let joinSession: string | undefined;
+  if (launch.join) {
+    await requireAgent(launch.command);
+    const live = (tab: Tab | undefined) => tab ? leaves(tab.tree).map((id) => surfaces.get(id)?.tmuxSession) : [];
+    const known = item?.tab.tmuxSessions ?? (item ? live(tabs.find((tab) => tab.favoriteId === item.id && !tab.parentId)) : live(sourceTab));
+    const sessions = [...known];
+    sessions[0] = validSession(sessions[0]) ? sessions[0] : newSessionName();
+    joinSession = sessions[0];
+    options.tmuxSessions = sessions;
+    options.tmux = true;
+  }
   if (item) {
     let tab = item.tab;
     if (pathInput) {
@@ -1880,6 +2152,7 @@ async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | und
     if (sourceTab) { sourceTab.favoriteId = id; recentFavoriteInstances.set(id, sourceTab.id); }
     createdId = id;
   }
+  if (launch.join && joinSession) await joinProject(launch.join.root, joinSession, launch.join.name || alias, launch.join.purpose);
   editorDrafts.delete(current);
   renderTabs();
   backDetail();
@@ -2023,7 +2296,11 @@ async function handleEvent(event: NativeEvent) {
       if (s) {
         s.exited = true;
         // tmux 頁籤以命令啟動，Ghostty 會強制 wait-after-command；session 結束就直接關閉，不等按鍵。
-        if (s.tmuxSession) { await destroy(s.id, true); break; }
+        if (s.tmuxSession) {
+          if (s.openedAt && Date.now() - s.openedAt < 5000) notify(t("app.tmuxExitedEarly", { command: s.command || "" }));
+          await destroy(s.id, true);
+          break;
+        }
         renderTabs();
       }
       break;
@@ -2083,7 +2360,8 @@ async function handleEvent(event: NativeEvent) {
     case "close-tab": {
       const tab = event.id ? tabFor(event.id) : active;
       if (!tab) break;
-      const arranged = orderedTabs();
+      // "Close others / to the right" only touches what the sidebar shows; a project's terminals are closed from the project.
+      const arranged = visibleTabs();
       const index = arranged.indexOf(tab),
         targets =
           event.mode === 1
@@ -2100,7 +2378,7 @@ async function handleEvent(event: NativeEvent) {
       break;
     }
     case "goto-tab": {
-      const arranged = orderedTabs();
+      const arranged = visibleTabs();
       if (!arranged.length) break;
       const index = active ? arranged.indexOf(active) : 0,
         v = event.value!;
@@ -2437,7 +2715,7 @@ async function start() {
   });
   await startProjectEvents();
   // Only the main window settles tasks left mid-hand-over by the previous run; windows opened later must not.
-  loadKnownProjects().then(() => (win.label === "main" ? delivery.recoverAll() : undefined)).catch(notify).finally(() => delivery.start());
+  loadKnownProjects().then(() => { renderTabs(); renderAttention(); }).then(() => (win.label === "main" ? delivery.recoverAll() : undefined)).catch(notify).finally(() => delivery.start());
   await listen<ControlRequest>("control-request", ({ payload }) => { handleControl(payload).catch(notify); });
   applyConfig(await native<NativeConfig>({ op: "init" }));
   initialized = true;
