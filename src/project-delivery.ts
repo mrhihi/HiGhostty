@@ -10,7 +10,7 @@ import { blockedBy, busyElsewhere, executionOfTask, isolated, nextDeliverable, v
 import { coordinatorOf } from "./projects";
 import { allLoaded, current, dispatch } from "./project-store";
 import type { Observed } from "./project-tasks";
-import type { ActionBody, LaunchSpec, ProjectState, Task } from "./project-types";
+import type { ActionBody, Help, LaunchSpec, ProjectState, Task } from "./project-types";
 
 export type SendResult = "sent" | "busy" | "blocked" | "gone";
 type Surf = { id: string; tmuxSession?: string };
@@ -68,6 +68,18 @@ export function createDelivery(host: DeliveryHost) {
     if (!isolated(state, memberId)) return surfaceOf(state, memberId);
     const live = state.executions.filter((x) => x.status === "live" && x.memberId === memberId).at(-1);
     return live && surfaceForInstance(live.instanceId, host.surfaces());
+  };
+  // Where each help's answer goes: back to the work session that asked (and only there; if it is gone the answer waits),
+  // or, for a request from the member's own terminal, the usual place.
+  const helpTargets = (state: ProjectState, memberId: string, helps: Help[]) => {
+    const out = new Map<Surf, Help[]>();
+    const add = (surface: Surf | undefined, help: Help) => { if (surface) out.set(surface, [...(out.get(surface) ?? []), help]); };
+    for (const help of helps) {
+      const execution = help.executionId ? state.executions.find((x) => x.id === help.executionId && x.status === "live") : undefined;
+      if (help.executionId) add(execution && surfaceForInstance(execution.instanceId, host.surfaces()), help);
+      else add(promptSurfaceOf(state, memberId), help);
+    }
+    return out;
   };
   const taskSurface = (state: ProjectState, task: Task) => {
     if (!isolated(state, task.memberId)) return surfaceOf(state, task.memberId);
@@ -296,18 +308,20 @@ export function createDelivery(host: DeliveryHost) {
       await typeBatch(root, surface, helpPrompt(project.state.config.id, batch), batch.map((h) => h.id),
         (helpId, delivery) => ({ type: "SetHelpDelivery", helpId, part: "ask", delivery }));
     }
-    for (const { memberId, helps: group } of queuedHelpAnswers(project.state)) {
-      const asker = promptSurfaceOf(project.state, memberId);
-      if (!asker || !mayType(project.state, memberId)) continue;
-      await typeBatch(root, asker, helpAnswerPrompt(project.state.config.id, group), group.map((h) => h.id),
-        (helpId, delivery) => ({ type: "SetHelpDelivery", helpId, part: "answer", delivery }));
+    for (const { memberId, helps: all } of queuedHelpAnswers(project.state)) {
+      for (const [asker, group] of helpTargets(project.state, memberId, all)) {
+        if (!mayType(project.state, memberId)) continue;
+        await typeBatch(root, asker, helpAnswerPrompt(project.state.config.id, group), group.map((h) => h.id),
+          (helpId, delivery) => ({ type: "SetHelpDelivery", helpId, part: "answer", delivery }));
+      }
     }
     // The finished work goes back to whoever asked, not only to the coordinator and the user.
-    for (const { memberId, helps: group } of queuedHelpResults(project.state)) {
-      const asker = promptSurfaceOf(project.state, memberId);
-      if (!asker || !mayType(project.state, memberId)) continue;
-      await typeBatch(root, asker, helpResultPrompt(project.state.config.id, group), group.map((h) => h.id),
-        (helpId, delivery) => ({ type: "SetHelpDelivery", helpId, part: "result", delivery }));
+    for (const { memberId, helps: all } of queuedHelpResults(project.state)) {
+      for (const [asker, group] of helpTargets(project.state, memberId, all)) {
+        if (!mayType(project.state, memberId)) continue;
+        await typeBatch(root, asker, helpResultPrompt(project.state.config.id, group), group.map((h) => h.id),
+          (helpId, delivery) => ({ type: "SetHelpDelivery", helpId, part: "result", delivery }));
+      }
     }
   }
   // Asking a member to say hello. Not journaled (it changes nothing), but it queues behind other

@@ -122,7 +122,7 @@ export type IssueReply = { id: string; issueId: string; taskId: string; attemptI
 
 // A worker asking the coordinator whether another agent can help. `delivery` is the request reaching the
 // coordinator (`replied` once answered); the answer is then delivered to the asker like a reply.
-export type Help = { id: string; memberId: string; text: string; delivery: MessageDelivery; answer?: { text: string; delivery: MessageDelivery }; resultDelivery?: MessageDelivery };
+export type Help = { id: string; memberId: string; executionId?: string; text: string; delivery: MessageDelivery; answer?: { text: string; delivery: MessageDelivery }; resultDelivery?: MessageDelivery };
 
 // A fact the coordinator should act on (a result to check, a task that failed or was declined). Kept in the
 // journal so it survives a restart; `delivery` is the wake-up reaching the coordinator, `handled` says the
@@ -185,7 +185,8 @@ export type ActionBody =
   | { type: "SendMessage"; messageId: string; conversationId: string; text: string }
   | { type: "CoordinatorMessage"; messageId: string; inReplyTo?: string; text: string }
   | { type: "SetMessageDelivery"; messageId: string; delivery: MessageDelivery }
-  | { type: "AskHelp"; helpId: string; text: string }
+  // executionId: the work session the request came from (set from the caller's terminal, never typed by an agent).
+  | { type: "AskHelp"; helpId: string; text: string; executionId?: string }
   | { type: "AnswerHelp"; helpId: string; text: string }
   | { type: "SetHelpDelivery"; helpId: string; part: "ask" | "answer" | "result"; delivery: MessageDelivery }
   | TaskActionBody;

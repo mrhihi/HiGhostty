@@ -649,3 +649,17 @@ test("the launch setting cannot change while the member has a task in progress",
   s = deliver(s, "t1", "A1");
   assert.equal(fail(s, user, { type: "SetMemberLaunch", memberId: "A", launch: spec }).code, "invalid_state");
 });
+
+test("a help asked from a work session remembers that session", () => {
+  let s = world();
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  s = run(s, user, { type: "PrepareDispatch", taskId: "t1", attemptId: "A1", effectId: "e1" });
+  s = run(s, user, { type: "RegisterExecution", executionId: "x1", memberId: "A", taskId: "t1", attemptId: "A1", instanceId: "tmux:w1", generation: 1 });
+  assert.equal(fail(s, as("A"), { type: "AskHelp", helpId: "h0", text: "?", executionId: "nope" }).code, "invalid_state");
+  assert.equal(fail(s, as("B"), { type: "AskHelp", helpId: "h0", text: "?", executionId: "x1" }).code, "invalid_state", "not another member's session");
+  s = run(s, as("A"), { type: "AskHelp", helpId: "h1", text: "?", executionId: "x1" });
+  assert.equal(s.helps[0].executionId, "x1");
+  s = run(s, as("A"), { type: "AskHelp", helpId: "h2", text: "?" });
+  assert.equal(s.helps[1].executionId, undefined, "from the member's own terminal: no session recorded");
+});

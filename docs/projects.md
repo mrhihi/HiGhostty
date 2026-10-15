@@ -175,7 +175,7 @@ worker 成員卡展開後可勾「每個任務用獨立 session 執行」：複�
 - 答覆（`replies`）與求助的答覆／結果只送到該任務（或該成員最近一個）live execution 的終端機；沒有就留在佇列。`observedOf` 也改看工作 session，所以卡住偵測對它有效。
 - `endFinished`：任務完成／取消／放回佇列或 attempt 被取代時 `EndExecution` 並關閉 session；失敗／拒絕只結束登記、保留終端機供查看；待驗收、等回答、不確定時 session 保留。
 - 審查後已修：啟動逾時會關掉已開的終端機；輸入開始後失敗不結束 execution（session 仍能回報）；失敗／拒絕的 session 保留到任務重試或結案才關（先關終端機、成功才 `EndExecution`）；重啟時 `sending` 的 notice 改 `uncertain`；有進行中任務時不能切換獨立 session 設定；浮層「開始」遇到計畫已更新會拒絕；`splitArgs` 遇到 shell 會展開的語法（`$`、反引號、`~`、`{}`、`#`）一律拒絕。
-- 仍存在：啟動等待（最長 60 秒）在投遞佇列內，會暫時擋住同專案其他投遞；求助的答覆／結果送到該成員「最近一個」live session，不一定是求助的那個；codex `resume` 只在第一個參數才會被剝除；派送前檢查與實際輸入之間，notice 可能已過期而多送一則（coordinator 照做會得到 invalid_state，無資料損害）。
+- 仍存在：啟動等待（最長 60 秒）在投遞佇列內，會暫時擋住同專案其他投遞；codex `resume` 只在第一個參數才會被剝除；派送前檢查與實際輸入之間，notice 可能已過期而多送一則（coordinator 照做會得到 invalid_state，無資料損害）。
 - 已知缺口：App 重啟後 live execution 若沒有對應終端機不會自動恢復；同 attempt 的修改意見是新 attempt＝新 session（沒有舊對話）；求助 run 與 `waiting-help` 尚未配合；沒有 Rust／環境變數變更（身分靠 tmux session 名稱對應）。
 
 驗收清單（debug 與 release 各一次，**未做**）：
@@ -194,3 +194,6 @@ worker 成員卡展開後可勾「每個任務用獨立 session 執行」：複�
 
 ## 舊專案升級
 不需要遷移程式：coordinator 以成員綁定辨識，重開後若綁定的 tmux 終端機已恢復就直接沿用（`ensureCoordinators` 只在終端機不存在時才啟動），所以不會多開一份，也會自動出現在專案列底下。沒有 `launch` 的舊 worker 維持原本往個人終端機輸入的行為，要改用獨立 session 由成員卡勾選；已送出的舊 attempt 仍綁在原終端機。
+
+## 求助與工作 session
+從工作 session 發出的 `help ask`，journal 會記下該 execution（由呼叫的終端機推得，agent 不能自填）；答覆與結果只送回那個 session，它已結束就留在佇列。從成員個人終端機發出的求助照舊送到成員的終端機。

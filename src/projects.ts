@@ -179,7 +179,8 @@ export function decide(state: ProjectState, action: ProjectAction, now: string):
       if (!text) return err("bad_args", "求助內容不可空白");
       if (text.length > MAX_MESSAGE_CHARS) return err("bad_args", "求助內容過長");
       if (state.helps.some((x) => x.id === body.helpId)) return err("already_exists", "helpId 重複");
-      return ok([ev("HelpAsked", { helpId: body.helpId, memberId: asker.id, text })]);
+      if (body.executionId && !state.executions.some((x) => x.id === body.executionId && x.memberId === asker.id && x.status === "live")) return err("invalid_state", "提問的工作 session 已不存在");
+      return ok([ev("HelpAsked", { helpId: body.helpId, memberId: asker.id, text, ...(body.executionId ? { executionId: body.executionId } : {}) })]);
     }
     case "AnswerHelp": {
       const coord = coordinatorOf(state);
@@ -280,7 +281,7 @@ export function reduce(state: ProjectState, event: ProjectEvent): ProjectState {
           m.id === d.messageId && m.delivery !== "replied" ? { ...m, delivery: d.delivery as Message["delivery"] } : m),
       };
     case "HelpAsked":
-      return { ...state, helps: [...state.helps, { id: str(d.helpId), memberId: str(d.memberId), text: str(d.text), delivery: "queued" }] };
+      return { ...state, helps: [...state.helps, { id: str(d.helpId), memberId: str(d.memberId), ...(typeof d.executionId === "string" ? { executionId: d.executionId } : {}), text: str(d.text), delivery: "queued" }] };
     case "HelpAnswered":
       // Answering settles the request itself; the answer then waits to reach the asker.
       return { ...state, helps: state.helps.map((h) => (h.id === d.helpId ? { ...h, delivery: "replied", answer: { text: str(d.text), delivery: "queued" } } : h)) };

@@ -7,6 +7,7 @@ import {
   planSubmitBody, projectErrorReply, reworkBody, runStartBody, taskGetResult, taskReportBody, taskResultResult,
 } from "./project-control";
 import { activeRun } from "./project-tasks";
+import { executionForInstance } from "./projects";
 import { dispatch, openProject, rootFor, type StoreError } from "./project-store";
 import type { Actor } from "./project-types";
 
@@ -64,6 +65,8 @@ export async function runProjectControl({ op, args, flags, input, surface }: Cal
       if (!input2.ok) return input2.reply;
       const built = asking ? helpAskBody(input2.value, () => crypto.randomUUID()) : helpAnswerBody(input2.value);
       if (!built.ok) return built.reply;
+      // A request from a work session remembers that session, so the answer comes back to it and not to another one.
+      if (built.body.type === "AskHelp") built.body.executionId = executionForInstance(project.state, surface ? instanceKey(surface) : "")?.id;
       const done = await dispatch(root, actor, built.body, built.actionId);
       return done.ok ? okReply({ helpId: (built.body as { helpId: string }).helpId, revision: done.value.revision }) : storeReply(done.error);
     }
