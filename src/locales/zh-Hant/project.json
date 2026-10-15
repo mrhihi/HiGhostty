@@ -53,5 +53,8 @@
   "project.useTmux": "在 tmux 中執行（關閉 App 後仍持續）",
   "project.gitExclude": "不把 .highostty 放進 Git（本機排除）",
   "project.create": "建立專案",
-  "project.needFolder": "請選擇資料夾並輸入名稱"
+  "project.needFolder": "請選擇資料夾並輸入名稱",
+  "project.needFull": "在「agent 控制指令」改為「完整」之前，agent 只能讀取這個專案，不能自我介紹或回覆。",
+  "project.needFullOff": "agent 控制指令已關閉，agent 完全無法連到這個專案。",
+  "project.openSettings": "開啟設定"
 }

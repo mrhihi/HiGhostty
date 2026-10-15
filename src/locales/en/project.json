@@ -53,5 +53,8 @@
   "project.useTmux": "Run in tmux so it keeps running",
   "project.gitExclude": "Keep .highostty out of Git (local exclude)",
   "project.create": "Create project",
-  "project.needFolder": "Choose a folder and enter a name"
+  "project.needFolder": "Choose a folder and enter a name",
+  "project.needFull": "Agents can only read this project until agent control is set to Full; they cannot introduce themselves or reply.",
+  "project.needFullOff": "Agent control is off, so agents cannot reach this project at all.",
+  "project.openSettings": "Open settings"
 }

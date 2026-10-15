@@ -231,6 +231,7 @@ projectPanel = initProjectPanel({
     projectPanel?.close();
     if (tab) await activate(tab);
   },
+  openSettings: () => setPanel("settings"),
   layoutChanged: () => {
     if (projectPanel?.isOpen()) invoke("native", { request: { op: "focus-web" } }).catch(() => {});
     scheduleLayout();

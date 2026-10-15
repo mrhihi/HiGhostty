@@ -26,6 +26,7 @@ export type ProjectHost = {
   sendPrompt(surface: string, text: string, beforeInput: () => Promise<void>): Promise<SendResult>;
   showTerminal(surface: string): Promise<void>;
   layoutChanged(): void;
+  openSettings(): void;
 };
 
 const user = { kind: "user" } as const;
@@ -53,6 +54,12 @@ export function initProjectPanel(host: ProjectHost) {
   let picking: { memberId?: string } | undefined;
   let busy = false;
   const introSent = new Set<string>();
+  // hello/message need the global "full" control mode; the view says so instead of letting agents hit `forbidden`.
+  let controlMode = "";
+  async function pollMode() {
+    const mode = await invoke<string>("control_mode").catch(() => controlMode);
+    if (mode !== controlMode) { controlMode = mode; renderIfChanged(); }
+  }
 
   const isOpen = () => !view.hidden;
   function setOpen(open: boolean) {
@@ -248,7 +255,7 @@ export function initProjectPanel(host: ProjectHost) {
   function signature() {
     const project = loaded();
     const live = host.surfaces().map((x) => instanceKey(x)).sort();
-    return JSON.stringify([mode, picking, project?.state, project?.readonlyReason, mode === "create" ? [] : live, introSent.size]);
+    return JSON.stringify([mode, picking, project?.state, project?.readonlyReason, mode === "create" ? [] : live, introSent.size, controlMode]);
   }
   function renderIfChanged() {
     if (isOpen() && signature() !== shown) render();
@@ -269,6 +276,14 @@ export function initProjectPanel(host: ProjectHost) {
     head.append(el("h2", undefined, state.config!.name), el("code", "project-path", project.root));
     main.append(head);
     if (project.readonlyReason) main.append(el("div", "project-warning", t("project.readonly", { reason: project.readonlyReason })));
+    if (controlMode && controlMode !== "full") {
+      const notice = el("div", "project-warning");
+      notice.append(el("span", undefined, t(controlMode === "off" ? "project.needFullOff" : "project.needFull")));
+      const open = el("button", "ghost-btn", t("project.openSettings"));
+      open.onclick = () => host.openSettings();
+      notice.append(" ", open);
+      main.append(notice);
+    }
     main.append(renderMembers(state));
     view.append(main, renderConversation(state));
     applyI18n(view);
@@ -433,7 +448,8 @@ export function initProjectPanel(host: ProjectHost) {
   onLocaleChange(() => { renderList(); if (isOpen()) render(); });
   // Messages wait for an idle coordinator; check now and then.
   setInterval(() => { if (isOpen() && mode === "project") guard(deliver()); }, 2000);
-  setInterval(renderIfChanged, 3000);
+  setInterval(() => { pollMode().catch(() => {}); renderIfChanged(); }, 3000);
+  pollMode().catch(() => {});
   refreshList().catch(host.notify);
   listen("project-index-changed", () => { refreshList().catch(() => {}); }).catch(() => {});
 
