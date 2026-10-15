@@ -69,8 +69,11 @@ export const OPS: OpSpec[] = [
   { name: "project inbox", write: false, args: ["projectId"], flags: { after: "number" }, summary: "讀自己（coordinator）的收件匣：使用者在專案討論區送的訊息，每則有固定 seq 與 messageId；--after N 只取 seq 大於 N 的。重讀不代表處理完成" },
   { name: "project hello", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '向專案自我介紹並確認握手：stdin 傳 {"protocolVersion":1,"purpose":"一句話用途","reportMode":"protocol"|"screen","reportNeedsApproval"?:true}；reportNeedsApproval 表示執行 highostty ctl 時需要使用者核准' },
   { name: "project message", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）在專案討論區回覆：stdin 傳 {"text":"…","inReplyTo"?:"messageId","messageId"?:"自訂唯一字串，重送去重用"}' },
-  { name: "project plan submit", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）提交計畫草稿：stdin 傳 {"actionId"?,"basePlanVersion"?:N,"plan":{"title"?,"objective","scope"?,"steps":[{"key","memberId","title"?,"instruction","dependsOn"?:[key],"completion":["明確的完成條件"],"inputFrom"?:[{"stepKey","artifactNames":[]}]}]}}；一次回報全部錯誤，成功回 planId、version。basePlanVersion 過期回 revision_conflict' },
-  { name: "project run start", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）開始執行計畫：stdin 傳 {"actionId"?,"planId"?,"version"?,"instructionMessageId":"使用者要求執行的那則訊息 messageId"}；沒有對應的使用者訊息時回 needs_user_decision，請使用者在專案畫面按「開始」' },
+  { name: "project help ask", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（worker）不知道怎麼做、缺資訊或不確定時，先向 coordinator 求助，不要自己猜；也可問有沒有其他 agent 可以幫忙：stdin 傳 {"text":"需要什麼幫忙","helpId"?:"自訂唯一字串，重送去重用"}；coordinator 回覆後會通知你，用 project help get 讀答覆' },
+  { name: "project help get", write: false, args: ["projectId", "helpId"], summary: "（提問的 worker 或 coordinator）讀一則求助的內容與 coordinator 的回覆" },
+  { name: "project help answer", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）回覆成員的求助：stdin 傳 {"helpId":"…","text":"哪位成員（id／name）可以幫忙、怎麼請它幫，或沒有人可以"}；成員清單用 project get 查' },
+  { name: "project plan submit", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）提交計畫草稿：stdin 傳 {"actionId"?,"basePlanVersion"?:N,"plan":{"title"?,"objective","scope"?,"steps":[{"key","memberId","title"?,"instruction","dependsOn"?:[key],"completion":["明確的完成條件"],"model"?:"這一步適合的模型，如 opus／sonnet／haiku；小而單純的工作用小模型，設計與推理用大模型；省略則用成員預設","inputFrom"?:[{"stepKey","artifactNames":[]}]}]}}；一次回報全部錯誤，成功回 planId、version。basePlanVersion 過期回 revision_conflict' },
+  { name: "project run start", write: true, args: ["projectId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）開始執行計畫：stdin 傳 {"actionId"?,"planId"?,"version"?,"instructionMessageId":"使用者要求執行的那則訊息 messageId"} 或 {"helpId":"成員求助的 helpId"}（二選一；成員求助自己做不到的事時，coordinator 可直接派工，不必問使用者）；兩者都沒有對應時回 needs_user_decision，請使用者在專案畫面按「開始」' },
   { name: "project run pause", write: true, args: ["projectId"], summary: "（coordinator）暫停目前的 run：停止後續交付，不取消已在進行的工作" },
   { name: "project task get", write: false, args: ["projectId", "taskId"], summary: "（被指派的成員）讀這個任務的目標、完成條件、輸入成果與退回意見；只有該任務的成員能讀" },
   { name: "project task result", write: false, args: ["projectId", "taskId"], summary: "（coordinator）讀任務的成果（摘要與附件內容），驗收前核對用" },
@@ -186,14 +189,15 @@ export function authorize(mode: unknown, op: OpSpec): Reply | null {
   return null;
 }
 
-// The surface a request came from: its own id, or (inside tmux, where the pane
-// does not inherit the surface id) the surface that hosts the tmux session.
+// The surface a request came from. Inside tmux the session name wins: it is set per session with
+// `new-session -e`, while HIGHOSTTY_SURFACE_ID leaks in from the tmux server's global environment
+// (whichever terminal started the server), so every tmux pane would otherwise look like that terminal.
 export function resolveCaller(caller: unknown, surfaces: Iterable<{ id: string; tmuxSession?: string }>): string | undefined {
   if (!caller || typeof caller !== "object") return undefined;
   const { surface, tmuxSession } = caller as Caller;
   const list = [...surfaces];
-  if (typeof surface === "string" && list.some((item) => item.id === surface)) return surface;
   if (typeof tmuxSession === "string" && tmuxSession) return list.find((item) => item.tmuxSession === tmuxSession)?.id;
+  if (typeof surface === "string" && list.some((item) => item.id === surface)) return surface;
   return undefined;
 }
 

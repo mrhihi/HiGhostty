@@ -562,6 +562,57 @@ fn control_env(app: tauri::AppHandle, session: String) -> Result<std::collection
     }
     control::tmux_env(&app, &session)
 }
+/// 用登入 shell 查程式的絕對路徑（tmux 內不經互動式 shell，PATH 可能找不到）；查不到回 None。
+#[tauri::command]
+async fn program_path(name: String) -> Option<String> {
+    let valid = !name.is_empty() && !name.starts_with('-') && !name.contains('/') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c));
+    if !valid {
+        return None;
+    }
+    let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
+    let lookup = if shell.ends_with("/zsh") { format!("whence -p {name}") } else { format!("command -v {name}") };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&shell).args(["-lic", &lookup]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+        let _ = tx.send(out);
+    });
+    let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(5)) else { return None };
+    String::from_utf8_lossy(&out.stdout).lines().map(str::trim).find(|l| l.starts_with('/') && !l.contains(char::is_whitespace)).map(String::from)
+}
+/// 用登入 shell 的 `where`（非 zsh 用 `command -v`）解析啟動命令的第一個字，回傳可能的程式名（路徑的檔名、
+/// symlink 實際檔名、別名指向的程式），供前端判斷是哪一種 agent。名稱不合法或查不到回空陣列。
+#[tauri::command]
+async fn resolve_program(name: String) -> Vec<String> {
+    let valid = !name.is_empty() && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._+-/~".contains(c));
+    if !valid {
+        return vec![];
+    }
+    let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
+    let lookup = if shell.ends_with("/zsh") { format!("where {name}") } else { format!("command -v {name}") };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&shell).args(["-lic", &lookup]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+        let _ = tx.send(out);
+    });
+    let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(5)) else { return vec![] };
+    let base = |p: &str| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned());
+    let mut names: Vec<String> = vec![];
+    let mut push = |n: Option<String>| if let Some(n) = n { if !names.contains(&n) { names.push(n) } };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let line = line.trim();
+        let target = match line.split_once(": aliased to ") {
+            Some((_, rest)) => rest.split_whitespace().next().unwrap_or(""),
+            None => line,
+        };
+        if target.starts_with('/') && !target.contains(char::is_whitespace) {
+            push(base(target));
+            push(std::fs::canonicalize(target).ok().and_then(|p| base(&p.to_string_lossy())));
+        } else if line.contains(": aliased to ") && !target.is_empty() {
+            push(base(target));
+        }
+    }
+    names
+}
 #[tauri::command]
 fn tmux_available() -> bool {
     find_tmux().is_some() || std::process::Command::new("sh").args(["-lc", "command -v tmux"]).output().map(|o| o.status.success()).unwrap_or(false)
@@ -735,6 +786,8 @@ fn main() {
             tmux_set_status,
             tmux_available,
             tmux_path,
+            resolve_program,
+            program_path,
             control_env,
             control::control_reply,
             control::control_mode,

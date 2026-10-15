@@ -23,3 +23,7 @@
 5. 勾選「隱藏 tmux 狀態列」儲存，底部綠條立即消失；取消勾選恢復；重啟 app 後維持。
 6. 只有 tmux 頁籤時 ⌘Q 不出現強制退出確認。
 7. 解除安裝或改名 tmux：啟動顯示提示、不崩潰。
+
+## 啟動命令的路徑解析
+
+tmux 以非互動 shell 執行啟動命令，`~/.zshrc` 加的 PATH（如 `~/.local/bin`）不生效，裸命令（`claude`）會找不到而讓 session 立刻結束。`newSurface` 開 tmux 頁籤前用 `program_path`（登入 shell 查詢）把第一個字換成絕對路徑（`withProgramPath`，`tab.command` 本身不改）；查不到就原樣執行。tmux 頁籤 5 秒內結束會顯示 `app.tmuxExitedEarly` 提示再關閉。

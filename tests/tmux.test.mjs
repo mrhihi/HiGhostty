@@ -1,7 +1,7 @@
 import { useLocale } from "./i18n-helper.mjs"; useLocale();
 import test from "node:test";
 import assert from "node:assert/strict";
-import { newSessionName, restorable, tmuxCommand, validSession } from "../src/tmux.ts";
+import { newSessionName, restorable, tmuxCommand, validSession, withProgramPath } from "../src/tmux.ts";
 
 test("session names are valid and distinct", () => {
   const a = newSessionName();
@@ -41,4 +41,13 @@ test("tmuxCommand passes environment with -e, quoted, and drops unsafe keys", ()
   const command = tmuxCommand("hg-abcd1234", "/tmp", undefined, false, "tmux", { HIGHOSTTY_ENV: "1", HIGHOSTTY_CLI: "/Applications/Hi Ghostty/it's", "bad key": "x", lower: "x" });
   assert.match(command, /new-session -A -s hg-abcd1234 -e 'HIGHOSTTY_ENV=1' -e 'HIGHOSTTY_CLI=\/Applications\/Hi Ghostty\/it'\\''s' -c '\/tmp'/);
   assert.ok(!command.includes("bad key") && !command.includes("lower="));
+});
+
+test("withProgramPath replaces only a bare program name", () => {
+  assert.equal(withProgramPath("claude --resume", "/u/.local/bin/claude"), "'/u/.local/bin/claude' --resume");
+  assert.equal(withProgramPath("A=1 claude", "/u/bin/claude"), "A=1 '/u/bin/claude'");
+  assert.equal(withProgramPath("/x/claude", "/u/bin/claude"), "/x/claude");
+  assert.equal(withProgramPath("claude", null), "claude");
+  assert.equal(withProgramPath("claude", "/u/it's/claude"), "'/u/it'\\''s/claude'");
+  assert.equal(withProgramPath(undefined, "/a"), undefined);
 });

@@ -68,11 +68,13 @@ test("authorize: off blocks all, readonly blocks writes, full allows", () => {
   assert.equal(authorize("full", write), null);
 });
 
-test("resolveCaller prefers the surface id, then the tmux session", () => {
+test("resolveCaller prefers the tmux session; a stale inherited surface id must not win", () => {
   const surfaces = [{ id: "a" }, { id: "b", tmuxSession: "hg-abcd1234" }];
   assert.equal(resolveCaller({ surface: "a" }, surfaces), "a");
   assert.equal(resolveCaller({ tmuxSession: "hg-abcd1234" }, surfaces), "b");
   assert.equal(resolveCaller({ surface: "gone", tmuxSession: "hg-abcd1234" }, surfaces), "b");
+  assert.equal(resolveCaller({ surface: "a", tmuxSession: "hg-abcd1234" }, surfaces), "b");
+  assert.equal(resolveCaller({ surface: "a", tmuxSession: "hg-other" }, surfaces), undefined);
   assert.equal(resolveCaller({ surface: "gone" }, surfaces), undefined);
   assert.equal(resolveCaller({ tmuxSession: "" }, surfaces), undefined);
   assert.equal(resolveCaller(null, surfaces), undefined);

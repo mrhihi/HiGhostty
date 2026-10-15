@@ -30,6 +30,14 @@ export function tmuxCommand(session: string, cwd: string, command?: string, hide
   return parts.join(" ");
 }
 
+// tmux 不經互動式 shell，PATH 可能找不到 ~/.local/bin 之類的程式：把命令第一個字換成絕對路徑（已含 / 或沒有路徑就原樣）。
+export function withProgramPath(command: string | undefined, path: string | null | undefined): string | undefined {
+  if (!command?.trim() || !path || !path.startsWith("/")) return command;
+  const match = command.trim().match(/^((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*)(\S+)(.*)$/s);
+  if (!match || match[2].includes("/")) return command;
+  return `${match[1]}${quote(path)}${match[3]}`;
+}
+
 export type TmuxSaved = { tmux?: boolean; tmuxSessions?: (string | undefined)[] };
 
 // 啟動時只恢復啟用 tmux 的頁籤；無效的 session 名稱改成 undefined（還原時會重新建立）。
