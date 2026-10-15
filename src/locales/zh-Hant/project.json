@@ -167,5 +167,7 @@
   "project.drop.planChanged": "計畫在這張卡畫出後已更新，請先看過新版本再開始。",
   "project.plan.progress": "已完成 {done}／{total}",
   "project.plan.steps": "步驟與完成條件（{n}）",
-  "project.unread": "{n} 則新"
+  "project.unread": "{n} 則新",
+  "project.task.status.waiting-help": "等待協助",
+  "project.activity.waiting-help": "等待協助"
 }

@@ -215,6 +215,7 @@ function renderTask(state: ProjectState, task: Task, actions: RunActions, drafts
     case "sent":
     case "accepted":
     case "running":
+    case "waiting-help":
       if (lastReport?.summary) card.append(el("p", "project-purpose", lastReport.summary));
       card.append(el("p", "project-purpose", t("project.task.inProgress")));
       if (task.observed) {

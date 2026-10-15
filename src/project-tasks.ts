@@ -116,7 +116,8 @@ export function validatePlan(plan: unknown, members: Member[]): Result<Omit<Plan
 }
 
 // ---- state helpers ----
-const ACTIVE: TaskStatus[] = ["dispatching", "sent", "accepted", "running", "needs-input", "uncertain"];
+// waiting-help: the worker asked for help and is waiting for the result; it keeps its task and session but is not computing.
+const ACTIVE: TaskStatus[] = ["dispatching", "sent", "accepted", "running", "waiting-help", "needs-input", "uncertain"];
 const TERMINAL: TaskStatus[] = ["completed", "failed", "cancelled"];
 export const planOf = (state: ProjectState, run: { planId: string; planVersion: number }) =>
   state.plans.find((p) => p.id === run.planId && p.version === run.planVersion);
@@ -495,10 +496,10 @@ function receiveReport(state: ProjectState, task: Task, actor: Actor, input: Rep
   const closeQuestions = () => openQuestions.map((i) => ev("IssueResolved", { issueId: i.id }));
   const allowed: Record<ReportInput["kind"], TaskStatus[]> = {
     accepted: ["sent", "uncertain", "dispatching"],
-    progress: ["sent", "accepted", "running", "uncertain", "dispatching", "needs-input"],
-    "needs-input": ["sent", "accepted", "running", "uncertain", "dispatching", "needs-input"],
-    declined: ["sent", "accepted", "needs-input", "uncertain", "dispatching"],
-    result: ["sent", "accepted", "running", "needs-input", "uncertain", "dispatching"],
+    progress: ["sent", "accepted", "running", "waiting-help", "uncertain", "dispatching", "needs-input"],
+    "needs-input": ["sent", "accepted", "running", "waiting-help", "uncertain", "dispatching", "needs-input"],
+    declined: ["sent", "accepted", "needs-input", "waiting-help", "uncertain", "dispatching"],
+    result: ["sent", "accepted", "running", "waiting-help", "needs-input", "uncertain", "dispatching"],
     failed: ACTIVE,
     cancelled: ACTIVE,
   };

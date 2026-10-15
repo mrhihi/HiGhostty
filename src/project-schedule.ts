@@ -78,7 +78,7 @@ export const blockedBy = (state: ProjectState, task: Task, ctx: ScheduleContext)
 
 // Instances that hold a task in progress in some project other than `exceptRoot`.
 export function busyElsewhere(projects: { root: string; state: ProjectState }[], exceptRoot: string, instanceId: string): boolean {
-  const active = ["dispatching", "sent", "accepted", "running", "needs-input", "uncertain"];
+  const active = ["dispatching", "sent", "accepted", "running", "waiting-help", "needs-input", "uncertain"];
   return projects.some(({ root, state }) =>
     root !== exceptRoot && state.tasks.some((t) => active.includes(t.status) && state.bindings[t.memberId]?.instanceId === instanceId));
 }

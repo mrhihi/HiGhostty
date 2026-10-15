@@ -197,3 +197,10 @@ worker 成員卡展開後可勾「每個任務用獨立 session 執行」：複�
 
 ## 求助與工作 session
 從工作 session 發出的 `help ask`，journal 會記下該 execution（由呼叫的終端機推得，agent 不能自填）；答覆與結果只送回那個 session，它已結束就留在佇列。從成員個人終端機發出的求助照舊送到成員的終端機。
+
+## waiting-help
+工作 session 發出 `help ask` 時，該 session 當前 attempt 的任務（sent／accepted／running）轉為 `waiting-help`：保留任務與成員占用（`memberBusy`、跨專案忙碌都算進行中）、不算沉默（不觸發「長時間沒回報」）、不算運算中。結束等待的條件：
+- 求助的成果已投遞給提問的 session（`SetHelpDelivery` result＝sent）；
+- coordinator 的答覆已投遞，且這個求助沒有開出任何協助 run（純答覆）；
+- 或該 worker 自己回報 progress／needs-input／result／declined／failed。
+從成員個人終端機發出的求助不記 session，也不改任務狀態。協助工作目前仍是並行的另一個 run（上限 2），而不是掛在原 run 下；原 run 的規格快照與依賴循環檢查尚未做。

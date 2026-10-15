@@ -167,5 +167,7 @@
   "project.drop.planChanged": "The plan changed after this card was drawn. Look at the new one before starting.",
   "project.plan.progress": "{done} of {total} done",
   "project.plan.steps": "Steps and completion conditions ({n})",
-  "project.unread": "{n} new"
+  "project.unread": "{n} new",
+  "project.task.status.waiting-help": "Waiting for help",
+  "project.activity.waiting-help": "Waiting for help"
 }

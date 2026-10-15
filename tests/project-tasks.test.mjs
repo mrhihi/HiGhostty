@@ -5,7 +5,7 @@ import { queuedHelpResults, helpResultPrompt, queuedNotices, noticePrompt } from
 import { helpGetResult, executionGuard } from "../src/project-control.ts";
 import { verdict } from "../src/project-schedule.ts";
 import { isolated } from "../src/project-schedule.ts";
-import { activeRun, validatePlan, eligibleTasks, queueReasonOf, buildTaskPayload, stalledTasks, blockedMembers, DEFAULT_STALL_MS } from "../src/project-tasks.ts";
+import { activeRun, memberBusy, validatePlan, eligibleTasks, queueReasonOf, buildTaskPayload, stalledTasks, blockedMembers, DEFAULT_STALL_MS } from "../src/project-tasks.ts";
 
 let NOW = "2026-10-15T00:00:00.000Z";
 const user = { kind: "user" };
@@ -662,4 +662,49 @@ test("a help asked from a work session remembers that session", () => {
   assert.equal(s.helps[0].executionId, "x1");
   s = run(s, as("A"), { type: "AskHelp", helpId: "h2", text: "?" });
   assert.equal(s.helps[1].executionId, undefined, "from the member's own terminal: no session recorded");
+});
+
+test("a worker that asks for help from its work session waits, and works again once helped", () => {
+  const start = () => {
+    let s = world();
+    s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+    s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+    s = deliver(s, "t1", "A1");
+    s = run(s, user, { type: "RegisterExecution", executionId: "x1", memberId: "A", taskId: "t1", attemptId: "A1", instanceId: "tmux:w1", generation: 1 });
+    return s;
+  };
+  let s = start();
+  s = run(s, as("A"), { type: "AskHelp", helpId: "h1", text: "查 Jira", executionId: "x1" });
+  assert.equal(s.tasks[0].status, "waiting-help");
+  assert.equal(memberBusy(s, "A"), true, "it keeps its place");
+  assert.equal(stalledTasks(s, Date.parse(NOW) + 10 * DEFAULT_STALL_MS).length, 0, "waiting is not silence");
+  // The coordinator routes the work (a help run) and answers; the answer alone does not end the wait.
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", basePlanVersion: 1, plan: { objective: "幫忙", steps: [{ key: "h", memberId: "B", instruction: "查", completion: ["列出"] }] } });
+  s = run(s, as("c"), { type: "StartRun", runId: "r2", planId: "pl", version: 2, taskIds: ["t2"], consent: { id: "k2", source: "help-request", sourceHelpId: "h1" } });
+  s = run(s, as("c"), { type: "AnswerHelp", helpId: "h1", text: "交給 B" });
+  s = run(s, user, { type: "SetHelpDelivery", helpId: "h1", part: "answer", delivery: "sent" });
+  assert.equal(s.tasks[0].status, "waiting-help");
+  // The worker may still report from waiting-help.
+  assert.equal(report(s, "t1", { reportId: "P1", attemptId: "A1", kind: "progress", summary: "先做別的" }).tasks[0].status, "running");
+  // Finish the help work; delivering its result ends the wait.
+  s = deliver(s, "t2", "A2");
+  s = report(s, "t2", result("R2", "A2", "issues", '["GSS-1"]'));
+  s = run(s, user, { type: "AcceptResult", taskId: "t2", attemptId: "A2", checks: [] });
+  s = run(s, user, { type: "SetHelpDelivery", helpId: "h1", part: "result", delivery: "sent" });
+  assert.equal(s.tasks[0].status, "running");
+});
+
+test("an answer that starts no work also ends the wait; a help from the member's own terminal does not change the task", () => {
+  let s = world();
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  s = deliver(s, "t1", "A1");
+  s = run(s, as("A"), { type: "AskHelp", helpId: "h0", text: "?" });
+  assert.equal(s.tasks[0].status, "sent", "no session recorded: nothing to wait on");
+  s = run(s, user, { type: "RegisterExecution", executionId: "x1", memberId: "A", taskId: "t1", attemptId: "A1", instanceId: "tmux:w1", generation: 1 });
+  s = run(s, as("A"), { type: "AskHelp", helpId: "h1", text: "?", executionId: "x1" });
+  assert.equal(s.tasks[0].status, "waiting-help");
+  s = run(s, as("c"), { type: "AnswerHelp", helpId: "h1", text: "沒有人能幫忙" });
+  s = run(s, user, { type: "SetHelpDelivery", helpId: "h1", part: "answer", delivery: "sent" });
+  assert.equal(s.tasks[0].status, "running");
 });

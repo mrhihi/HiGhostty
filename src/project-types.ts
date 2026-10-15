@@ -75,7 +75,7 @@ export type Step = {
 };
 export type PlanVersion = { id: string; version: number; title: string; objective: string; scope: string; steps: Step[] };
 
-export type TaskStatus = "queued" | "dispatching" | "sent" | "accepted" | "running" | "needs-input"
+export type TaskStatus = "queued" | "dispatching" | "sent" | "accepted" | "running" | "waiting-help" | "needs-input"
   | "declined" | "result-ready" | "completed" | "failed" | "cancelled" | "uncertain";
 export type Attempt = {
   id: string;

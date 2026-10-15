@@ -1,6 +1,6 @@
 // Pure rules for a project: decide(state, action) validates and produces events,
 // reduce(state, event) replays them. No IDs are made, no files read, no DOM here.
-import { decideTasks, helpResultReady, memberBusy, reduceTasks } from "./project-tasks.ts";
+import { decideTasks, helpResultReady, helpRuns, memberBusy, reduceTasks } from "./project-tasks.ts";
 import type {
   Actor, ActionBody, Binding, Decision, Help, Member, Message, ProjectAction, ProjectError, ProjectErrorCode,
   ProjectEvent, ProjectState, Result,
@@ -180,7 +180,12 @@ export function decide(state: ProjectState, action: ProjectAction, now: string):
       if (text.length > MAX_MESSAGE_CHARS) return err("bad_args", "求助內容過長");
       if (state.helps.some((x) => x.id === body.helpId)) return err("already_exists", "helpId 重複");
       if (body.executionId && !state.executions.some((x) => x.id === body.executionId && x.memberId === asker.id && x.status === "live")) return err("invalid_state", "提問的工作 session 已不存在");
-      return ok([ev("HelpAsked", { helpId: body.helpId, memberId: asker.id, text, ...(body.executionId ? { executionId: body.executionId } : {}) })]);
+      const events = [ev("HelpAsked", { helpId: body.helpId, memberId: asker.id, text, ...(body.executionId ? { executionId: body.executionId } : {}) })];
+      // Asking from a work session: that task now waits for the answer instead of looking busy.
+      const asking = body.executionId ? state.executions.find((x) => x.id === body.executionId) : undefined;
+      const task = asking && state.tasks.find((t) => t.id === asking.taskId && t.attempt?.id === asking.attemptId);
+      if (task && ["sent", "accepted", "running"].includes(task.status)) events.push(ev("TaskStatusChanged", { taskId: task.id, status: "waiting-help", helpId: body.helpId }));
+      return ok(events);
     }
     case "AnswerHelp": {
       const coord = coordinatorOf(state);
@@ -196,7 +201,13 @@ export function decide(state: ProjectState, action: ProjectAction, now: string):
     case "SetHelpDelivery": {
       const help = state.helps.find((x) => x.id === body.helpId);
       if (!help || (body.part === "answer" && !help.answer) || (body.part === "result" && !helpResultReady(state, help.id))) return err("not_found", "沒有這個求助");
-      return ok([ev("HelpDeliveryChanged", { helpId: help.id, part: body.part, delivery: body.delivery })]);
+      const events = [ev("HelpDeliveryChanged", { helpId: help.id, part: body.part, delivery: body.delivery })];
+      // The asker has what it waited for (the finished work, or an answer that started none): its task is working again.
+      const done = body.delivery === "sent" && (body.part === "result" || (body.part === "answer" && helpRuns(state, help.id).length === 0));
+      const asking = done && help.executionId ? state.executions.find((x) => x.id === help.executionId) : undefined;
+      const task = asking && state.tasks.find((t) => t.id === asking.taskId && t.attempt?.id === asking.attemptId);
+      if (task?.status === "waiting-help") events.push(ev("TaskStatusChanged", { taskId: task.id, status: "running" }));
+      return ok(events);
     }
     default:
       return decideTasks(state, actor, body, ev);

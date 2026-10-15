@@ -3,11 +3,11 @@
 import { stepOf } from "./project-tasks.ts";
 import type { ProjectState } from "./project-types.ts";
 
-export type Activity = "needs-input" | "uncertain" | "review" | "working" | "idle";
+export type Activity = "needs-input" | "uncertain" | "review" | "waiting-help" | "working" | "idle";
 export type MemberActivity = { activity: Activity; title?: string; taskId?: string };
 
 // The most pressing thing first: a question blocks the worker, an unsure delivery risks a duplicate.
-const RANK: Record<string, number> = { "needs-input": 0, uncertain: 1, "result-ready": 2, running: 3, accepted: 3, sent: 3, dispatching: 3 };
+const RANK: Record<string, number> = { "needs-input": 0, uncertain: 1, "result-ready": 2, "waiting-help": 3, running: 4, accepted: 4, sent: 4, dispatching: 4 };
 
 export function memberActivity(state: ProjectState, memberId: string): MemberActivity {
   const tasks = state.tasks.filter((t) => t.memberId === memberId && t.status in RANK)
@@ -15,7 +15,7 @@ export function memberActivity(state: ProjectState, memberId: string): MemberAct
   const task = tasks[0];
   if (!task) return { activity: "idle" };
   const title = stepOf(state, task)?.title ?? task.stepKey;
-  const activity: Activity = task.status === "needs-input" ? "needs-input" : task.status === "uncertain" ? "uncertain" : task.status === "result-ready" ? "review" : "working";
+  const activity: Activity = task.status === "needs-input" ? "needs-input" : task.status === "uncertain" ? "uncertain" : task.status === "result-ready" ? "review" : task.status === "waiting-help" ? "waiting-help" : "working";
   return { activity, title, taskId: task.id };
 }
 
