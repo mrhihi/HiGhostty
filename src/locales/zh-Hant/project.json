@@ -114,5 +114,21 @@
   "project.attention.blocked": "「{name}」的終端機正在等你回答（權限或選單）。任務不會前進；請到終端機處理，專案不會代你按鍵。",
   "project.attention.stalled": "「{name}」在「{task}」交付後超過 {minutes} 分鐘沒有回報。沒有回報不代表失敗。",
   "project.run.closed": "已結案（有未完成的任務）",
-  "project.task.wait.closed": "這個 run 已結案。"
+  "project.task.wait.closed": "這個 run 已結案。",
+  "project.run.auto": "agent 就緒時自動交付",
+  "project.run.autoHelp": "勾選後，每個任務在所有檢查都通過時（控制模式為完整、agent 閒置、你不在它的終端機）就會自動送給成員；不勾則由你自己按「交付」。",
+  "project.run.close": "結案",
+  "project.attention.held": "你正在使用「{name}」的終端機，所以有 {n} 個任務暫停。",
+  "project.attention.giveBack": "交回專案",
+  "project.task.deliverNow": "現在交付",
+  "project.task.fromScreen": "由畫面整理",
+  "project.task.observed": "Coordinator 從畫面整理的內容（不是成員的回報）：{summary}",
+  "project.task.confirmObserved": "確認為成果",
+  "project.task.wait.control-mode": "agent 控制指令不是「完整」，自動交付已停用。",
+  "project.task.wait.other-project": "這個 agent 正在做另一個專案的工作。",
+  "project.task.wait.held": "你正在使用這個終端機，交付已暫停。",
+  "project.task.wait.stale-observation": "正在確認 agent 的畫面…",
+  "project.task.wait.agent-busy": "agent 忙碌中。",
+  "project.task.wait.agent-blocked": "agent 正在終端機等你回答。",
+  "project.task.wait.agent-unknown": "那個終端機裡沒有偵測到 agent。"
 }

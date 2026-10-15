@@ -54,6 +54,9 @@ export async function loadKnownProjects(): Promise<void> {
   }
 }
 
+// Every project this window has loaded (for rules that look across projects).
+export const allLoaded = (): Loaded[] => [...loaded.values()];
+
 export const current = (root: string) => loaded.get(root);
 
 export async function indexList(): Promise<IndexItem[]> {

@@ -3,13 +3,21 @@
 // feedback, answers) live in a map owned by the panel so a re-render does not lose them.
 import { t } from "./i18n";
 import { activeRun, DEFAULT_STALL_MS, queueReasonOf, startBlockers, stepOf } from "./project-tasks";
+import type { SkipReason } from "./project-schedule";
 import type { Artifact, ProjectState, Task } from "./project-types";
 
 export type RunActions = {
-  start(): void;
+  start(auto: boolean): void;
   pause(): void;
   resume(): void;
   deliver(taskId: string): void;
+  // Hand over even though the agent looks busy or is being held (never into a question or a screen with no agent).
+  deliverNow(taskId: string): void;
+  giveBack(memberId: string): void;
+  why(taskId: string): SkipReason | undefined;
+  setAuto(auto: boolean): void;
+  closeRun(): void;
+  confirmObserved(taskId: string): void;
   accept(taskId: string): void;
   rework(taskId: string, feedback: string): void;
   cancel(taskId: string): void;
@@ -30,7 +38,7 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 };
 
 // Things that need a person right now; derived from live observation and time, not stored.
-export type Attention = { blocked: { memberId: string; taskIds: string[] }[]; stalled: Task[] };
+export type Attention = { blocked: { memberId: string; taskIds: string[] }[]; stalled: Task[]; held: { memberId: string; waiting: number }[] };
 
 export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<string, string>, attention: Attention): HTMLElement {
   const section = el("section", "project-run");
@@ -46,7 +54,7 @@ export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<
   const memberName = (id: string) => state.members.find((m) => m.id === id)?.name ?? id;
   const stepTitle = (task: Task) => stepOf(state, task)?.title ?? task.stepKey;
 
-  if (attention.blocked.length || attention.stalled.length) {
+  if (attention.blocked.length || attention.stalled.length || attention.held.length) {
     const box = el("div", "project-warning project-attention");
     box.append(el("strong", undefined, t("project.attention.title")));
     for (const item of attention.blocked) {
@@ -55,6 +63,14 @@ export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<
       const go = el("button", "ghost-btn", t("project.goTerminal"));
       go.onclick = () => actions.goTerminal(item.memberId);
       row.append(go);
+      box.append(row);
+    }
+    for (const item of attention.held) {
+      const row = el("div", "project-attention-row");
+      row.append(el("span", undefined, t("project.attention.held", { name: memberName(item.memberId), n: item.waiting })));
+      const back = el("button", "ghost-btn", t("project.attention.giveBack"));
+      back.onclick = () => actions.giveBack(item.memberId);
+      row.append(back);
       box.append(row);
     }
     for (const task of attention.stalled) {
@@ -101,11 +117,25 @@ export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<
       for (const blocker of blockers) list.append(el("li", undefined, blocker.kind === "coordinator-hello" ? t("project.plan.blockHello") : t("project.plan.blockUnbound", { name: blocker.memberName })));
       section.append(list);
     }
-    controls.append(button(t("project.plan.start"), actions.start, true, blockers.length > 0));
-  } else if (run.status === "running") {
-    controls.append(button(t("project.run.pause"), actions.pause));
-  } else if (run.status === "paused") {
-    controls.append(el("span", "project-badge", t("project.run.paused")), button(t("project.run.resume"), actions.resume, true));
+    const auto = el("input");
+    auto.type = "checkbox";
+    auto.checked = true;
+    const autoLabel = el("label", "toggle");
+    autoLabel.append(auto, el("span", undefined, t("project.run.auto")));
+    controls.append(autoLabel, button(t("project.plan.start"), () => actions.start(auto.checked), true, blockers.length > 0));
+    section.append(el("div", "help", t("project.run.autoHelp")));
+  } else if (run.status === "running" || run.status === "paused") {
+    const auto = el("input");
+    auto.type = "checkbox";
+    auto.checked = run.auto;
+    auto.disabled = actions.pending();
+    auto.onchange = () => actions.setAuto(auto.checked);
+    const autoLabel = el("label", "toggle");
+    autoLabel.append(auto, el("span", undefined, t("project.run.auto")));
+    controls.append(autoLabel);
+    if (run.status === "running") controls.append(button(t("project.run.pause"), actions.pause));
+    else controls.append(el("span", "project-badge", t("project.run.paused")), button(t("project.run.resume"), actions.resume, true));
+    controls.append(button(t("project.run.close"), actions.closeRun));
   } else {
     controls.append(el("span", "project-badge", t(run.status === "closed" ? "project.run.closed" : "project.run.completed")));
   }
@@ -123,7 +153,7 @@ function artifactDetails(artifacts: Artifact[]): HTMLElement {
   const box = el("div", "project-artifacts");
   for (const artifact of artifacts) {
     const details = el("details");
-    details.append(el("summary", undefined, `${artifact.name} (${artifact.mediaType})`));
+    details.append(el("summary", undefined, `${artifact.name} (${artifact.mediaType})${artifact.source === "screen" ? ` · ${t("project.task.fromScreen")}` : ""}`));
     // textContent only: a worker's output is data, never markup.
     const pre = el("pre", "project-artifact");
     pre.textContent = artifact.text;
@@ -160,12 +190,14 @@ function renderTask(state: ProjectState, task: Task, actions: RunActions, drafts
 
   switch (task.status) {
     case "queued": {
-      const reason = queueReasonOf(state, task);
       if (task.reworkFeedback) card.append(el("p", "project-purpose", t("project.task.reworkNote", { feedback: task.reworkFeedback })));
+      const reason = actions.why(task.id);
       if (reason) card.append(el("p", "project-purpose", t(`project.task.wait.${reason}`)));
-      const online = actions.online(task.memberId);
-      if (!reason && !online) card.append(el("p", "project-purpose", t("project.task.wait.offline")));
-      button(t("project.task.deliver"), () => actions.deliver(task.id), true, !!reason || !online);
+      // A person's click is not held back by the agents-only control mode, but it does wait for an idle agent.
+      const soft: SkipReason[] = ["control-mode", "stale-observation"];
+      const forceable: SkipReason[] = ["agent-busy", "held", "stale-observation"];
+      button(t("project.task.deliver"), () => actions.deliver(task.id), true, !(reason === undefined || soft.includes(reason)));
+      if (reason && forceable.includes(reason)) button(t("project.task.deliverNow"), () => actions.deliverNow(task.id));
       button(t("project.task.cancel"), () => actions.cancel(task.id));
       break;
     }
@@ -175,6 +207,11 @@ function renderTask(state: ProjectState, task: Task, actions: RunActions, drafts
     case "running":
       if (lastReport?.summary) card.append(el("p", "project-purpose", lastReport.summary));
       card.append(el("p", "project-purpose", t("project.task.inProgress")));
+      if (task.observed) {
+        card.append(el("p", "project-warning", t("project.task.observed", { summary: task.observed.summary })));
+        card.append(artifactDetails(state.artifacts.filter((a) => task.observed!.artifactIds.includes(a.id))));
+        button(t("project.task.confirmObserved"), () => actions.confirmObserved(task.id), true);
+      }
       if (!task.cancelRequested) button(t("project.task.cancel"), () => actions.cancel(task.id));
       break;
     case "needs-input": {

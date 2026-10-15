@@ -268,3 +268,21 @@ export function taskResultResult(state: ProjectState, taskId: string): Reply {
     openQuestions: state.issues.filter((i) => i.taskId === task.id && i.kind === "question" && !i.resolvedAt).map((i) => ({ id: i.id, text: i.text })),
   });
 }
+
+// A coordinator's note of what a screen-mode worker finished; the user still has to confirm it.
+export function observedBody(taskId: string, value: Record<string, unknown>): Built {
+  const extra = unknownKeys(value, ["attemptId", "summary", "artifacts"]);
+  if (extra.length) return bad(`task observed 不認得欄位：${extra.join("、")}`);
+  if (typeof value.attemptId !== "string" || !value.attemptId) return bad("attemptId 必須是非空字串");
+  if (typeof value.summary !== "string" || !value.summary.trim()) return bad("summary 必須是非空字串");
+  const artifacts: { name: string; mediaType: "text/plain"; text: string }[] = [];
+  if (value.artifacts !== undefined) {
+    if (!Array.isArray(value.artifacts)) return bad("artifacts 必須是陣列");
+    for (const raw of value.artifacts) {
+      const a = raw as Record<string, unknown> | null;
+      if (!a || typeof a.name !== "string" || typeof a.mediaType !== "string" || typeof a.text !== "string") return bad("每個附件需要字串 name、mediaType、text");
+      artifacts.push(a as never);
+    }
+  }
+  return { ok: true, body: { type: "SubmitObservedResult", taskId, attemptId: value.attemptId, summary: value.summary, artifacts } };
+}

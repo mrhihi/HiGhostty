@@ -5,9 +5,10 @@
 import { t } from "./i18n";
 import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import { INSTANCE_GENERATION, instanceKey, PROJECT_AGENT_KINDS, surfaceForInstance } from "./project-control";
-import { introPrompt, memberStatus, messagePrompt, queuedBatch, queuedReplies, replyPrompt, taskPrompt, type MemberStatus } from "./project-prompts";
+import { introPrompt, memberStatus, type MemberStatus } from "./project-prompts";
+import type { createDelivery } from "./project-delivery";
 import { renderRun, type Attention, type RunActions } from "./project-run-view";
-import { activeRun, blockedMembers, stalledTasks, type Observed } from "./project-tasks";
+import { activeRun, blockedMembers, stalledTasks } from "./project-tasks";
 import type { ActionBody } from "./project-types";
 import { coordinatorOf } from "./projects";
 import { current, dispatch, indexList, onProjectChanged, openProject, type IndexItem, type Loaded } from "./project-store";
@@ -29,8 +30,8 @@ export type ProjectHost = {
   // before any key is sent; if it throws nothing is typed.
   sendPrompt(surface: string, text: string, beforeInput: () => Promise<void>): Promise<SendResult>;
   showTerminal(surface: string): Promise<void>;
-  // What the agents in these terminals are doing right now (read from the screen).
-  observe(surfaceIds: string[]): Promise<Record<string, Observed>>;
+  // The shared hand-over machinery (pump, buttons, messages); the panel only asks it things.
+  delivery: ReturnType<typeof createDelivery>;
   layoutChanged(): void;
   openSettings(): void;
 };
@@ -216,22 +217,14 @@ export function initProjectPanel(host: ProjectHost) {
   // ---- plan, run and tasks (S2: every delivery is a button press) ----
   const drafts = new Map<string, string>();
   let inFlight = 0;
-  const observed = new Map<string, Observed>();
-  // Screens are read only while the view is open and some worker holds a task in progress.
-  async function pollObserved() {
-    const state = stateNow();
-    if (!isOpen() || mode !== "project" || !state) return;
-    const wanted = state.members.filter((m) => state.tasks.some((x) => x.memberId === m.id && ["dispatching", "sent", "accepted", "running", "needs-input", "uncertain"].includes(x.status)));
-    const surfaces = new Map<string, string>();
-    for (const member of wanted) { const surface = surfaceOfMember(member.id); if (surface) surfaces.set(member.id, surface.id); }
-    const seen = surfaces.size ? await host.observe([...surfaces.values()]) : {};
-    observed.clear();
-    for (const [memberId, surfaceId] of surfaces) if (seen[surfaceId]) observed.set(memberId, seen[surfaceId]);
-    renderIfChanged();
-  }
   const attention = (): Attention => {
     const state = stateNow();
-    return state ? { blocked: blockedMembers(state, (id) => observed.get(id)), stalled: stalledTasks(state, Date.now()) } : { blocked: [], stalled: [] };
+    if (!state || !root) return { blocked: [], stalled: [], held: [] };
+    return {
+      blocked: blockedMembers(state, (id) => host.delivery.observedOf(root!, id)),
+      stalled: stalledTasks(state, Date.now()),
+      held: host.delivery.heldMembers(root),
+    };
   };
   async function act(task: () => Promise<unknown>) {
     inFlight++;
@@ -249,49 +242,36 @@ export function initProjectPanel(host: ProjectHost) {
     const binding = stateNow()?.bindings[memberId];
     return binding && surfaceForInstance(binding.instanceId, host.surfaces());
   };
-  async function startRun() {
+  async function startRun(auto: boolean) {
     const state = stateNow();
     const plan = state?.plans.at(-1);
     if (!plan) return;
     await must({
-      type: "StartRun", runId: crypto.randomUUID(), planId: plan.id, version: plan.version, taskIds: plan.steps.map(() => crypto.randomUUID()),
+      type: "StartRun", runId: crypto.randomUUID(), planId: plan.id, version: plan.version, taskIds: plan.steps.map(() => crypto.randomUUID()), auto,
       consent: { id: crypto.randomUUID(), source: "start-button" },
     });
   }
-  // Typing into the worker comes after PrepareDispatch and InputWillStart are in the journal; if the
-  // checks fail nothing is typed and the task goes back to the queue.
-  async function deliverTask(taskId: string) {
-    const first = stateNow();
-    const before = first?.tasks.find((x) => x.id === taskId);
-    const surface = before && surfaceOfMember(before.memberId);
-    if (!first?.config || !before || !surface) return host.notify(t("project.notOnline"));
-    const attemptId = crypto.randomUUID(), effectId = crypto.randomUUID();
-    await must({ type: "PrepareDispatch", taskId, attemptId, effectId });
-    const state = stateNow()!;
-    const task = state.tasks.find((x) => x.id === taskId)!;
-    const prompt = taskPrompt(first.config.id, task, state);
-    let started = false;
-    try {
-      if (!prompt) throw new Error(t("project.task.noPrompt"));
-      const result = await host.sendPrompt(surface.id, prompt, async () => {
-        await must({ type: "RecordInputStart", taskId, attemptId, effectId });
-        started = true;
-      });
-      if (result === "sent") await must({ type: "RecordInputResult", taskId, attemptId, effectId, outcome: "sent" });
-      else {
-        await must({ type: "RecordInputResult", taskId, attemptId, effectId, outcome: "not-sent" });
-        host.notify(t(result === "blocked" ? "project.agentBlocked" : result === "busy" ? "project.agentBusy" : "project.notOnline"));
-      }
-    } catch (error) {
-      await dispatch(root!, user, { type: "RecordInputResult", taskId, attemptId, effectId, outcome: started ? "unknown" : "not-sent" }).catch(() => {});
-      throw error;
-    }
+  // A person's own button: the shared machinery journals first and checks the agent is ready; if it
+  // is not, nothing is typed and the reason is shown.
+  async function handOver(taskId: string, force: boolean) {
+    if (!root) return;
+    const outcome = await host.delivery.handOver(root, taskId, { force });
+    if (!outcome.ok) host.notify(t(`project.task.wait.${outcome.reason}`));
   }
   const runActions: RunActions = {
-    start: () => void act(startRun),
+    start: (auto) => void act(() => startRun(auto)),
     pause: () => void act(async () => { const run = stateNow() && activeRun(stateNow()!); if (run) await must({ type: "PauseRun", runId: run.id }); }),
     resume: () => void act(async () => { const run = stateNow() && activeRun(stateNow()!); if (run) await must({ type: "ResumeRun", runId: run.id }); }),
-    deliver: (taskId) => void act(() => deliverTask(taskId)),
+    deliver: (taskId) => void act(() => handOver(taskId, false)),
+    deliverNow: (taskId) => void act(() => handOver(taskId, true)),
+    giveBack: (memberId) => { if (root) host.delivery.giveBack(root, memberId); renderIfChanged(); },
+    why: (taskId) => (root ? host.delivery.whyNot(root, taskId) : undefined),
+    setAuto: (auto) => void act(async () => { const run = stateNow() && activeRun(stateNow()!); if (run) await must({ type: "SetRunAuto", runId: run.id, auto }); }),
+    closeRun: () => void act(async () => { const run = stateNow() && activeRun(stateNow()!); if (run) await must({ type: "CloseRun", runId: run.id }); }),
+    confirmObserved: (taskId) => void act(async () => {
+      const task = stateNow()?.tasks.find((x) => x.id === taskId);
+      if (task?.attempt) await must({ type: "ConfirmObservedResult", taskId, attemptId: task.attempt.id });
+    }),
     accept: (taskId) => void act(async () => {
       const task = stateNow()?.tasks.find((x) => x.id === taskId);
       if (task?.attempt) await must({ type: "AcceptResult", taskId, attemptId: task.attempt.id });
@@ -306,76 +286,18 @@ export function initProjectPanel(host: ProjectHost) {
       const task = stateNow()?.tasks.find((x) => x.id === taskId);
       if (task?.attempt) await must({ type: "ReconcileTask", taskId, attemptId: task.attempt.id, decision });
     }),
-    reply: (issueId, text) => void act(async () => { await must({ type: "ReplyIssue", issueId, replyId: crypto.randomUUID(), text }); await deliverReplies(); }),
+    reply: (issueId, text) => void act(async () => { await must({ type: "ReplyIssue", issueId, replyId: crypto.randomUUID(), text }); await host.delivery.replies(root!); }),
     goTerminal: (memberId) => { const surface = surfaceOfMember(memberId); if (surface) guard(host.showTerminal(surface.id)); },
     online: (memberId) => !!surfaceOfMember(memberId),
     pending: () => inFlight > 0,
   };
-  // Answers to a worker's question are typed into its terminal like a task: journal first, idle only.
-  async function deliverReplies() {
-    const project = loaded();
-    if (!root || delivering || !project?.state.config || project.readonlyReason) return;
-    delivering = true;
-    const at = root;
-    try {
-      for (const { task, replies } of queuedReplies(project.state)) {
-        const surface = surfaceOfMember(task.memberId);
-        if (!surface) continue;
-        try {
-          const result = await host.sendPrompt(surface.id, replyPrompt(project.state.config.id, task, replies), async () => {
-            for (const reply of replies) await must({ type: "SetReplyDelivery", replyId: reply.id, delivery: "sending" });
-          });
-          if (result === "sent") for (const reply of replies) await dispatch(at, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "sent" });
-        } catch (error) {
-          for (const reply of replies) await dispatch(at, user, { type: "SetReplyDelivery", replyId: reply.id, delivery: "uncertain" }).catch(() => {});
-          host.notify(error);
-        }
-      }
-    } finally {
-      delivering = false;
-    }
-  }
-
   // ---- conversation ----
   async function send(text: string) {
     if (!root) return;
     const done = await dispatch(root, user, { type: "SendMessage", messageId: crypto.randomUUID(), conversationId: "main", text });
     if (!done.ok) throw new Error(done.error.message);
-    await deliver();
+    host.delivery.messages(root).catch(host.notify);
   }
-  // Sends waiting user messages to the coordinator, only from the window that has its terminal.
-  // The journal records `sending` before any key is typed; after that a retry is never automatic.
-  let delivering = false;
-  async function deliver() {
-    const project = loaded();
-    if (!root || delivering || !project?.state.config || project.readonlyReason) return;
-    const coordinator = coordinatorOf(project.state);
-    const binding = coordinator && project.state.bindings[coordinator.id];
-    const surface = binding && surfaceForInstance(binding.instanceId, host.surfaces());
-    const batch = queuedBatch(project.state);
-    if (!surface || !batch.length) return;
-    delivering = true;
-    const at = root;
-    try {
-      const prompt = messagePrompt(project.state.config.id, batch);
-      const result = await host.sendPrompt(surface.id, prompt, async () => {
-        for (const message of batch) {
-          const marked = await dispatch(at, user, { type: "SetMessageDelivery", messageId: message.id, delivery: "sending" });
-          if (!marked.ok) throw new Error(marked.error.message);
-        }
-      });
-      if (result === "sent") {
-        for (const message of batch) await dispatch(at, user, { type: "SetMessageDelivery", messageId: message.id, delivery: "sent" });
-      }
-    } catch (error) {
-      // Typing may or may not have happened after "sending"; never resend on our own.
-      for (const message of batch) await dispatch(at, user, { type: "SetMessageDelivery", messageId: message.id, delivery: "uncertain" }).catch(() => {});
-      host.notify(error);
-    } finally {
-      delivering = false;
-    }
-  }
-
   // ---- rendering ----
   const statusText = (status: MemberStatus) => t(`project.status.${status}`);
   // Re-render only when what is on screen would differ, so typing in a picker or the
@@ -567,12 +489,10 @@ export function initProjectPanel(host: ProjectHost) {
   onProjectChanged((changed) => {
     if (changed !== root) return;
     renderIfChanged();
-    guard(deliver().then(deliverReplies));
   });
   onLocaleChange(() => { renderList(); if (isOpen()) render(); });
   // Messages wait for an idle coordinator; check now and then.
-  setInterval(() => { if (isOpen() && mode === "project") guard(deliver().then(deliverReplies)); }, 2000);
-  setInterval(() => { pollMode().catch(() => {}); pollObserved().catch(() => {}); renderIfChanged(); }, 3000);
+  setInterval(() => { pollMode().catch(() => {}); renderIfChanged(); }, 3000);
   pollMode().catch(() => {});
   refreshList().catch(host.notify);
   listen("project-index-changed", () => { refreshList().catch(() => {}); }).catch(() => {});

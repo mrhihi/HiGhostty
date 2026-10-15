@@ -19,7 +19,7 @@ export type ScheduleContext = {
   // The same agent holds a task of another project.
   busyElsewhere(memberId: string): boolean;
   now: number;
-  // The user pressed "hand over now": skip the idle/unknown/hold checks (never past blocked).
+  // The user pressed "hand over now": skip the busy/stale/hold checks (never past blocked or a screen with no agent).
   force?: boolean;
 };
 
@@ -33,6 +33,8 @@ export function verdict(state: ProjectState, task: Task, ctx: ScheduleContext): 
   const seen = ctx.observed(task.memberId);
   // Typing into an open question would answer it; no override exists for that.
   if (seen?.state === "blocked") return { ok: false, reason: "agent-blocked" };
+  // No agent on that screen (a plain shell, say): typing a prompt there would run it as commands.
+  if (seen?.state === "unknown") return { ok: false, reason: "agent-unknown" };
   if (ctx.force) return { ok: true };
   if (ctx.held(task.memberId)) return { ok: false, reason: "held" };
   if (!seen || ctx.now - seen.at > OBSERVATION_MAX_AGE_MS) return { ok: false, reason: "stale-observation" };

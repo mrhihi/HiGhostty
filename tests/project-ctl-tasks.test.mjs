@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgv, authorize } from "../src/control.ts";
 import { decide, reduce, emptyState } from "../src/projects.ts";
-import { acceptBody, getResult, planSubmitBody, reworkBody, runStartBody, taskGetResult, taskReportBody, taskResultResult } from "../src/project-control.ts";
+import { observedBody, acceptBody, getResult, planSubmitBody, reworkBody, runStartBody, taskGetResult, taskReportBody, taskResultResult } from "../src/project-control.ts";
 
 const NOW = "2026-10-15T00:00:00.000Z";
 const user = { kind: "user" };
@@ -29,9 +29,9 @@ function world() {
 
 test("the project task commands exist with the right write flags", () => {
   const cases = [["project plan submit", true], ["project run start", true], ["project run pause", true], ["project task get", false],
-    ["project task result", false], ["project task report", true], ["project task accept", true], ["project task rework", true]];
+    ["project task result", false], ["project task report", true], ["project task observed", true], ["project task accept", true], ["project task rework", true]];
   for (const [name, write] of cases) {
-    const argv = [...name.split(" "), "p", ...(name.startsWith("project task") ? ["t1"] : []), ...(["project plan submit", "project run start", "project task report", "project task accept", "project task rework"].includes(name) ? ["--json-stdin"] : [])];
+    const argv = [...name.split(" "), "p", ...(name.startsWith("project task") ? ["t1"] : []), ...(["project plan submit", "project run start", "project task report", "project task accept", "project task rework", "project task observed"].includes(name) ? ["--json-stdin"] : [])];
     const parsed = parseArgv(argv);
     assert.ok(parsed.ok, `${name}: ${parsed.ok ? "" : parsed.reply.error.message}`);
     assert.equal(parsed.parsed.op.name, name);
@@ -127,4 +127,12 @@ test("project get now reports the plan and run progress", () => {
   assert.equal(g.run.status, "running");
   assert.deepEqual(g.run.tasks.map((t) => [t.id, t.status, t.waitingFor]), [["t1", "sent", undefined], ["t2", "queued", "dependency"]]);
   assert.equal(getResult(world(), 1).run, null);
+});
+
+test("observed body is strict", () => {
+  assert.equal(observedBody("t", { attemptId: "A", summary: "done" }).body.type, "SubmitObservedResult");
+  assert.equal(observedBody("t", { summary: "x" }).ok, false);
+  assert.equal(observedBody("t", { attemptId: "A", summary: " " }).ok, false);
+  assert.equal(observedBody("t", { attemptId: "A", summary: "x", extra: 1 }).ok, false);
+  assert.equal(observedBody("t", { attemptId: "A", summary: "x", artifacts: [{ name: "n" }] }).ok, false);
 });

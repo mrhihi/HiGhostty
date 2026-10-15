@@ -76,6 +76,7 @@ export const OPS: OpSpec[] = [
   { name: "project task result", write: false, args: ["projectId", "taskId"], summary: "（coordinator）讀任務的成果（摘要與附件內容），驗收前核對用" },
   { name: "project task report", write: true, args: ["projectId", "taskId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（被指派的成員）回報任務：stdin 傳 {"reportId":"唯一字串","attemptId","kind":"accepted|progress|needs-input|declined|result|failed|cancelled","summary","question"?,"artifacts"?:[{"name","mediaType":"text/plain|text/markdown|application/json","text"}]}；附件每份 128 KiB、總計 256 KiB；先完成工作再單獨回報' },
   { name: "project task accept", write: true, args: ["projectId", "taskId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）驗收成果：stdin 傳 {"actionId"?,"attemptId","checks":[{"criterion":"完成條件原文","evidenceArtifactIds":["成果 id"]}]}，每項完成條件都要有對應' },
+  { name: "project task observed", write: true, args: ["projectId", "taskId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）成員無法用協定回報時，把你在它畫面上看到的成果記下來：stdin 傳 {"attemptId","summary","artifacts"?:[…]}；使用者確認前不算成果，也不會讓下游開始' },
   { name: "project task rework", write: true, args: ["projectId", "taskId"], stdin: true, flags: { "json-stdin": "boolean" }, summary: '（coordinator）退回重做：stdin 傳 {"actionId"?,"attemptId","feedback":"哪裡要改"}' },
 ];
 

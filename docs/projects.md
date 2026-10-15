@@ -1,4 +1,4 @@
-# 專案區（S1：清單、成員、coordinator 討論；S2 純邏輯已完成）
+# 專案區（S1 成員與討論、S2 計畫與任務、S3 自動派送）
 
 規格見 `docs/project-implementation.md`；本文記錄 S1 實際做了什麼、與規格不同之處、以及驗收清單。S1 沒有計畫、run、任務、自動派送。
 
@@ -49,7 +49,7 @@
 尚未接 UI、`ctl` 指令與投遞；只有規則。`projects.ts` 的 `decide`／`reduce` 把 S2 的 action 轉給 `decideTasks`／`reduceTasks`。
 
 - **範圍**：`SubmitPlan`、`StartRun`、`PauseRun`／`ResumeRun`、`PrepareDispatch`、`RecordInputStart`／`RecordInputResult`、`ReceiveReport`、`AcceptResult`、`RequestRework`、`RequestCancel`、`RetryTask`、`ReconcileTask`，以及 `validatePlan`、`eligibleTasks`、`queueReasonOf`、`buildTaskPayload`。
-- **還沒做**：`ReplyIssue`（回覆 needs-input）、`ObservedBlocked`、`SubmitObservedResult`、`DeliverNow`、跨專案 reservation（S3）、結案部分取消的 run、「auto-on-protocol-result」驗收。
+- 原先列為未做的項目已在下面「S3」一節完成。
 - **與規格不同**：artifact 文字直接放進 journal 事件（沒有獨立檔案與 sha256）；一個專案只有一個 plan id，每次提交是新版本；同一專案內一位成員同時只接一個任務，`result-ready` 即釋放。
 - **不變式（測試涵蓋）**：沒有回報不改變狀態；舊 attempt 的回報只留紀錄、不動新 attempt；沒有 `InputWillStart` 就收到的回報標 `unmatched`、不推進、不存成果；`uncertain` 不能直接重試；`needs-input` 的 Issue 在後續 progress／result／終結回報時自動關閉；coordinator 驗收必須逐項對上完成條件並附屬於該任務的成果 ID。
 - `reportId` 為不透明字串，去重鍵是 taskId＋attemptId＋reportId，相同 ID 內容不同回 `report_conflict`。
@@ -91,3 +91,23 @@
 
 21. worker 停在核准畫面：計畫區頂端出現「需要你處理」並可前往終端機，專案沒有按任何鍵；你處理後提示消失，任務仍由回報推進。
 22. 交付後不理它超過 10 分鐘（可暫時把 `DEFAULT_STALL_MS` 改小測）：出現沉默提示，任務狀態不變；選「它沒有收到」回到等待、「標為失敗」變失敗，worker 之後的遲到回報被標為過期而不動新狀態。
+
+## S3：自動派送、人工暫停、恢復、跨專案排隊
+
+規則：`src/project-schedule.ts`（`verdict`／`nextDeliverable`／`busyElsewhere`，測試 `tests/project-schedule.test.mjs`）、`src/project-hold.ts`（manualHold，同測試檔）、`src/project-tasks.ts`（`SetRunAuto`、`CloseRun`、`RecoverTasks`、`SubmitObservedResult`／`ConfirmObservedResult`、自動驗收）。接線：`src/project-delivery.ts`（唯一的交付通道，pump 與按鈕共用）、`main.ts` 的 `sendPromptToAgent`。
+
+- **自動交付是每個 run 的開關**（開始時勾選，預設勾；之後可切換）。pump 每 1 秒對所有已載入的專案跑一輪，**一個視窗只處理自己持有終端機的成員**；全程序列化（一個佇列），同時間只會對一個終端機輸入。
+- **判斷順序**（`verdict`）：任務規則（暫停／結案／相依／忙碌／未綁定）→ 控制模式非「完整」→ 終端機不在線 → 同一個 agent 在別的專案有進行中任務 → 螢幕是 blocked（**任何情況都不輸入**）→ 螢幕上沒有 agent（不輸入）→ 人工暫停 → 畫面讀數超過 5 秒 → agent 忙碌。人按「現在交付」只略過最後三項（暫停、讀數過舊、忙碌）。
+- **輸入前**：`sendPromptToAgent` 連兩次（間隔 500 ms）確認 idle，再 `beforeInput`（journal 寫 `InputWillStart`）、貼上、Enter。任何一步呼叫後出錯記 `unknown`（任務變 uncertain，不重送）。
+- **人工優先**：`main.ts` 每秒回報使用者正在看哪些終端機（專案畫面開著、視窗失焦時都算沒在看）。看著成員的終端機立刻 hold；離開後連續 idle 10 秒（`RELEASE_QUIET_MS`）才解除；畫面頂端顯示「N 個任務因人工操作暫停」與「交回專案」。blocked／unknown 不會解除 hold。
+- **跨專案排隊**：同一個 instance 被兩個專案綁定時，由 `busyElsewhere`（讀所有已載入專案的任務狀態）決定先後，**不需要另外的 reservation 狀態**——重開 App 後從 journal 自然還原。
+- **恢復**（`recoverAll`，只由 main 視窗在啟動時執行一次）：`dispatching` 且尚未 `InputWillStart` → 回到 queued；已 `InputWillStart` → uncertain；`sent` 以後的維持原狀（之後靠回報或畫面觀測）。
+- **自動驗收**：步驟可設 `acceptance: "auto-on-protocol-result"`（成員用協定回報 result 即通過）、`"user"`、預設 coordinator；`externalWrite: true` 標示會寫外部系統。`validatePlan` 拒絕「下游（含間接）有 externalWrite 的步驟，上游自動驗收」，也拒絕對 `screen` 成員設自動驗收。取消請求之後才到的 result 一律等人驗收。
+- **畫面追蹤成果**：成員無法用協定回報時（`reportMode: screen`），coordinator 用 `ctl project task observed` 記下畫面上的成果（附件標「由畫面整理」）；使用者按「確認為成果」才進入 `result-ready`，之後仍走驗收。
+- **結案**：「結案」（`CloseRun`）只在沒有進行中或待驗收的任務時可用，保存 `unfinished` 清單；結案後才能對新計畫版本重新開始。
+
+### 與規格不同（S3）
+
+- **沒有 Rust 的 owner／epoch／heartbeat／RuntimeRegistry／effect 路由**。理由：journal 的 revision 檢查加上「只有持有終端機的視窗才會對它輸入」已能避免重複派送（兩個視窗搶同一個任務時，`PrepareDispatch` 會因狀態已變而被拒）；跨專案排隊與重開後的 reservation 都由 journal 狀態推導。代價：持有成員終端機的視窗關掉時，該成員的任務不會被推進（成員本來就離線）。
+- `DeliverNow` 不允許用在 blocked（規格寫「略過 busy／blocked／manual」；對 blocked 輸入等於替使用者回答詢問）與沒有 agent 的畫面。
+- 沒有 `project.json` 快照；artifact 內嵌於 journal（見 S2）。

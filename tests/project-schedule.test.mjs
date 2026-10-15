@@ -53,12 +53,13 @@ test("every check has its own reason, and the task rules come first", () => {
   assert.equal(verdict(s, task(s, "tz"), ctx()).ok, true, "on its own a second task of a free worker is fine; the pump picks one per member");
 });
 
-test("force skips busy, unknown, stale and hold, but never blocked, offline or control mode", () => {
+test("force skips busy, stale and hold, but never blocked, a screen with no agent, offline or control mode", () => {
   const s = project();
   const t = task(s, "tx");
   const f = (over) => verdict(s, t, ctx({ force: true, ...over }));
   assert.equal(f({ observed: () => ({ state: "working", at: NOWMS }) }).ok, true);
-  assert.equal(f({ observed: () => ({ state: "unknown", at: 0 }) }).ok, true);
+  assert.equal(f({ observed: () => ({ state: "idle", at: 0 }) }).ok, true);
+  assert.equal(f({ observed: () => ({ state: "unknown", at: NOWMS }) }).reason, "agent-unknown");
   assert.equal(f({ held: () => true }).ok, true);
   assert.equal(f({ observed: () => ({ state: "blocked", at: NOWMS }) }).reason, "agent-blocked");
   assert.equal(f({ online: () => false }).reason, "offline");

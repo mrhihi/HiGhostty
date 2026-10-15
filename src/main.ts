@@ -46,6 +46,7 @@ import { runProjectControl } from "./project-ctl";
 import { buildAgentCommand, instanceKey, memberCandidates, parseAgentCommand, PROJECT_AGENT_KINDS, type ProjectAgentKind } from "./project-control";
 import { initProjectPanel } from "./project-panel";
 import { loadKnownProjects, memberOfInstance, startProjectEvents } from "./project-store";
+import { createDelivery } from "./project-delivery";
 import "./style.css";
 
 type MenuEntry = { text: string; action: () => unknown } | { item: "Separator" };
@@ -199,6 +200,35 @@ const previewPanel = initPreviewPanel({
   },
   notify,
 });
+// Types a prompt into an agent's terminal when it is ready: checked idle twice, 500 ms apart (a single
+// reading can catch a pause between tool calls). `force` accepts a busy agent but never a question
+// or a screen with no agent: typing into those would answer it or run the text as commands.
+async function sendPromptToAgent(id: string, text: string, beforeInput: () => Promise<void>, options: { force?: boolean } = {}): Promise<"sent" | "busy" | "blocked" | "gone"> {
+  const first = await pickAgent(id);
+  if (!first) return "gone";
+  if (first.state === "blocked") return "blocked";
+  if (!options.force) {
+    if (first.state !== "idle") return "busy";
+    await pause(500);
+    const second = await pickAgent(id);
+    if (!second) return "gone";
+    if (second.state === "blocked") return "blocked";
+    if (second.state !== "idle") return "busy";
+  }
+  await beforeInput();
+  await native({ op: "insert-text", id, text });
+  await native({ op: "key", id, key: "enter" });
+  return "sent";
+}
+const delivery = createDelivery({
+  notify,
+  surfaces: () => [...surfaces.values()].filter((surface) => !surface.exited),
+  observe: async (ids) => {
+    const screens = await scanScreens(ids);
+    return Object.fromEntries(ids.map((id) => [id, screens[id]?.agent ? agentState(screens[id].text, surfaces.get(id)?.title ?? "", promptRules) : "unknown"]));
+  },
+  sendPrompt: sendPromptToAgent,
+});
 projectPanel = initProjectPanel({
   notify,
   surfaces: () => [...surfaces.values()].filter((surface) => !surface.exited),
@@ -218,24 +248,12 @@ projectPanel = initProjectPanel({
     if (!ready) throw new Error(t("project.agentNotReady"));
     return opened.surface;
   },
-  sendPrompt: async (id, text, beforeInput) => {
-    const seen = await pickAgent(id);
-    if (!seen) return "gone";
-    if (seen.state === "blocked") return "blocked";
-    if (seen.state !== "idle") return "busy";
-    await beforeInput();
-    await native({ op: "insert-text", id, text });
-    await native({ op: "key", id, key: "enter" });
-    return "sent";
-  },
+  sendPrompt: sendPromptToAgent,
+  delivery,
   showTerminal: async (id) => {
     const tab = tabFor(id);
     projectPanel?.close();
     if (tab) await activate(tab);
-  },
-  observe: async (ids) => {
-    const screens = await scanScreens(ids);
-    return Object.fromEntries(ids.map((id) => [id, screens[id]?.agent ? agentState(screens[id].text, surfaces.get(id)?.title ?? "", promptRules) : "unknown"]));
   },
   openSettings: () => setPanel("settings"),
   layoutChanged: () => {
@@ -243,6 +261,11 @@ projectPanel = initProjectPanel({
     scheduleLayout();
   },
 });
+// What the user is looking at decides which agents the project must leave alone.
+setInterval(() => {
+  const looking = !projectPanel?.isOpen() && document.hasFocus() && active ? leaves(active.tree).map((id) => surfaces.get(id)).filter((surface): surface is Surface => !!surface) : [];
+  delivery.setViewing(looking);
+}, 1000);
 function showPreview(tab: Tab, path: string, side?: PreviewSide) {
   tab.preview = tab.preview
     ? { ...tab.preview, path, side: side ?? tab.preview.side }
@@ -2413,7 +2436,8 @@ async function start() {
     eventQueue = eventQueue.then(() => handleEvent(payload)).catch(notify);
   });
   await startProjectEvents();
-  loadKnownProjects().catch(() => {});
+  // Only the main window settles tasks left mid-hand-over by the previous run; windows opened later must not.
+  loadKnownProjects().then(() => (win.label === "main" ? delivery.recoverAll() : undefined)).catch(notify).finally(() => delivery.start());
   await listen<ControlRequest>("control-request", ({ payload }) => { handleControl(payload).catch(notify); });
   applyConfig(await native<NativeConfig>({ op: "init" }));
   initialized = true;

@@ -178,6 +178,8 @@ EOF
 "$HIGHOSTTY_CLI" ctl project run pause <projectId>
 ```
 
+- 成員**無法**用協定回報（`reportMode` 是 `screen`）時，你可以用 `"$HIGHOSTTY_CLI" ctl project task observed <projectId> <taskId> --json-stdin`（`{"attemptId":"…","summary":"…"}`）把你在它畫面上看到的成果記下來；這**不算成果**，使用者在畫面確認後才會進入驗收，下游也才會開始。會用協定回報的成員不能用這個指令，請等它回報。
+- 計畫的步驟可加 `"acceptance":"auto-on-protocol-result"`（成員用協定回報 result 就直接通過）或 `"user"`（一定由使用者驗收），以及 `"externalWrite":true`（這一步會寫入外部系統，例如建 Jira 單）。會寫外部系統的步驟，上游不能設自動驗收。
 - 計畫只提交草稿；`run start` 只有在使用者明確說要執行、且你帶上那則訊息的 `messageId` 時才會成功，否則回 `needs_user_decision`，請使用者在專案畫面按「開始」。
 - 任務由使用者在畫面按「交付」才會送給成員；**不要**用 `agent prompt` 直接派工，那會繞過專案的紀錄與保留。
 - `accept` 要逐項對上完成條件，證據必須是該任務自己的成果 id；驗收前先用 `task result` 讀實際內容，不要只看摘要。

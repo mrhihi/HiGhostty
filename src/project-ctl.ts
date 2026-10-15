@@ -2,7 +2,7 @@
 // can read and write a project), so the caller is resolved here to a member by its terminal.
 import { errReply, okReply, type Reply } from "./control";
 import {
-  acceptBody, callerMember, getResult, helloBody, inboxResult, INSTANCE_GENERATION, instanceKey, messageBody, notMemberReply, parseInput,
+  acceptBody, callerMember, observedBody, getResult, helloBody, inboxResult, INSTANCE_GENERATION, instanceKey, messageBody, notMemberReply, parseInput,
   planSubmitBody, projectErrorReply, reworkBody, runStartBody, taskGetResult, taskReportBody, taskResultResult,
 } from "./project-control";
 import { activeRun } from "./project-tasks";
@@ -58,7 +58,8 @@ export async function runProjectControl({ op, args, flags, input, surface }: Cal
     case "project run pause":
     case "project task result":
     case "project task accept":
-    case "project task rework": {
+    case "project task rework":
+    case "project task observed": {
       if (!actor) return notMemberReply();
       if (member!.role !== "coordinator") return errReply("forbidden", "只有 coordinator 能使用這個指令");
       if (op === "project task result") return taskResultResult(project.state, args.taskId);
@@ -73,7 +74,8 @@ export async function runProjectControl({ op, args, flags, input, surface }: Cal
       if (!input2.ok) return input2.reply;
       const built = op === "project plan submit" ? planSubmitBody(input2.value, () => crypto.randomUUID())
         : op === "project run start" ? runStartBody(project.state, input2.value, () => crypto.randomUUID())
-        : op === "project task accept" ? acceptBody(args.taskId, input2.value) : reworkBody(args.taskId, input2.value);
+        : op === "project task accept" ? acceptBody(args.taskId, input2.value)
+        : op === "project task observed" ? observedBody(args.taskId, input2.value) : reworkBody(args.taskId, input2.value);
       if (!built.ok) return built.reply;
       const done = await dispatch(root, actor, built.body, built.actionId);
       if (!done.ok) return storeReply(done.error);
