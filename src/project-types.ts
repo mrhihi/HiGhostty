@@ -86,6 +86,8 @@ export type Task = {
   cancelRequested: boolean;
   resultArtifactIds: string[];
   reworkFeedback?: string;
+  // When the task last moved or was last heard from (event time); used only to notice silence.
+  activityAt?: string;
 };
 export type Run = { id: string; planId: string; planVersion: number; status: "running" | "paused" | "completed"; taskIds: string[]; consentId: string };
 export type ExecutionConsent = { id: string; planId: string; version: number; source: "start-button" | "user-message"; sourceMessageId?: string };

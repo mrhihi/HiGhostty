@@ -512,3 +512,6 @@ body.standalone #app, body.standalone #preview { position: fixed; inset: 0; }
 .project-card.task-failed, .project-card.task-declined, .project-card.task-cancelled { opacity: .8; }
 .project-card textarea { resize: vertical; width: 100%; box-sizing: border-box; }
 .project-artifact { max-height: 240px; overflow: auto; margin: 4px 0; padding: 8px; background: var(--surface-0); border-radius: var(--radius-row); white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; font-size: 12px; }
+.project-attention { display: flex; flex-direction: column; gap: 6px; }
+.project-attention-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.project-attention-row span { flex: 1 1 260px; }

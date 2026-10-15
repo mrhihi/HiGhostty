@@ -6,8 +6,8 @@ import { t } from "./i18n";
 import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import { INSTANCE_GENERATION, instanceKey, PROJECT_AGENT_KINDS, surfaceForInstance } from "./project-control";
 import { introPrompt, memberStatus, messagePrompt, queuedBatch, queuedReplies, replyPrompt, taskPrompt, type MemberStatus } from "./project-prompts";
-import { renderRun, type RunActions } from "./project-run-view";
-import { activeRun } from "./project-tasks";
+import { renderRun, type Attention, type RunActions } from "./project-run-view";
+import { activeRun, blockedMembers, stalledTasks, type Observed } from "./project-tasks";
 import type { ActionBody } from "./project-types";
 import { coordinatorOf } from "./projects";
 import { current, dispatch, indexList, onProjectChanged, openProject, type IndexItem, type Loaded } from "./project-store";
@@ -29,6 +29,8 @@ export type ProjectHost = {
   // before any key is sent; if it throws nothing is typed.
   sendPrompt(surface: string, text: string, beforeInput: () => Promise<void>): Promise<SendResult>;
   showTerminal(surface: string): Promise<void>;
+  // What the agents in these terminals are doing right now (read from the screen).
+  observe(surfaceIds: string[]): Promise<Record<string, Observed>>;
   layoutChanged(): void;
   openSettings(): void;
 };
@@ -214,6 +216,23 @@ export function initProjectPanel(host: ProjectHost) {
   // ---- plan, run and tasks (S2: every delivery is a button press) ----
   const drafts = new Map<string, string>();
   let inFlight = 0;
+  const observed = new Map<string, Observed>();
+  // Screens are read only while the view is open and some worker holds a task in progress.
+  async function pollObserved() {
+    const state = stateNow();
+    if (!isOpen() || mode !== "project" || !state) return;
+    const wanted = state.members.filter((m) => state.tasks.some((x) => x.memberId === m.id && ["dispatching", "sent", "accepted", "running", "needs-input", "uncertain"].includes(x.status)));
+    const surfaces = new Map<string, string>();
+    for (const member of wanted) { const surface = surfaceOfMember(member.id); if (surface) surfaces.set(member.id, surface.id); }
+    const seen = surfaces.size ? await host.observe([...surfaces.values()]) : {};
+    observed.clear();
+    for (const [memberId, surfaceId] of surfaces) if (seen[surfaceId]) observed.set(memberId, seen[surfaceId]);
+    renderIfChanged();
+  }
+  const attention = (): Attention => {
+    const state = stateNow();
+    return state ? { blocked: blockedMembers(state, (id) => observed.get(id)), stalled: stalledTasks(state, Date.now()) } : { blocked: [], stalled: [] };
+  };
   async function act(task: () => Promise<unknown>) {
     inFlight++;
     renderIfChanged();
@@ -365,7 +384,7 @@ export function initProjectPanel(host: ProjectHost) {
   function signature() {
     const project = loaded();
     const live = host.surfaces().map((x) => instanceKey(x)).sort();
-    return JSON.stringify([mode, picking, project?.state, project?.readonlyReason, mode === "create" ? [] : live, introSent.size, controlMode, inFlight]);
+    return JSON.stringify([mode, picking, project?.state, project?.readonlyReason, mode === "create" ? [] : live, introSent.size, controlMode, inFlight, JSON.stringify(attention())]);
   }
   function renderIfChanged() {
     if (isOpen() && signature() !== shown) render();
@@ -394,7 +413,7 @@ export function initProjectPanel(host: ProjectHost) {
       notice.append(" ", open);
       main.append(notice);
     }
-    main.append(renderMembers(state), renderRun(state, runActions, drafts));
+    main.append(renderMembers(state), renderRun(state, runActions, drafts, attention()));
     view.append(main, renderConversation(state));
     applyI18n(view);
   }
@@ -553,7 +572,7 @@ export function initProjectPanel(host: ProjectHost) {
   onLocaleChange(() => { renderList(); if (isOpen()) render(); });
   // Messages wait for an idle coordinator; check now and then.
   setInterval(() => { if (isOpen() && mode === "project") guard(deliver().then(deliverReplies)); }, 2000);
-  setInterval(() => { pollMode().catch(() => {}); renderIfChanged(); }, 3000);
+  setInterval(() => { pollMode().catch(() => {}); pollObserved().catch(() => {}); renderIfChanged(); }, 3000);
   pollMode().catch(() => {});
   refreshList().catch(host.notify);
   listen("project-index-changed", () => { refreshList().catch(() => {}); }).catch(() => {});

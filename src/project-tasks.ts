@@ -141,6 +141,25 @@ export function startBlockers(state: ProjectState, plan: PlanVersion): StartBloc
   return out;
 }
 
+// ---- things that need a person (derived, not journaled) ----
+export const DEFAULT_STALL_MS = 10 * 60_000;
+// Tasks that were handed over but have not been heard from for a while. Silence never changes a
+// task's state; it only asks the user to look.
+export function stalledTasks(state: ProjectState, nowMs: number, timeoutMs = DEFAULT_STALL_MS): Task[] {
+  return state.tasks.filter((t) => ["sent", "accepted", "running"].includes(t.status) && !!t.activityAt && nowMs - Date.parse(t.activityAt) > timeoutMs);
+}
+export type Observed = "working" | "idle" | "blocked" | "unknown";
+// Members whose terminal is waiting on a person while they hold a task in progress.
+export function blockedMembers(state: ProjectState, observed: (memberId: string) => Observed | undefined): { memberId: string; taskIds: string[] }[] {
+  const out: { memberId: string; taskIds: string[] }[] = [];
+  for (const member of state.members) {
+    if (observed(member.id) !== "blocked") continue;
+    const taskIds = state.tasks.filter((t) => t.memberId === member.id && ACTIVE.includes(t.status)).map((t) => t.id);
+    if (taskIds.length) out.push({ memberId: member.id, taskIds });
+  }
+  return out;
+}
+
 // ---- decide ----
 const err = (code: ProjectErrorCode, message: string, details?: unknown): Result<never, ProjectError> => ({ ok: false, error: { code, message, details } });
 type Ev = (type: ProjectEvent["type"], data: Record<string, unknown>) => ProjectEvent;
@@ -308,7 +327,8 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       if (!userOrCoordinator) return err("forbidden", "只有使用者或 coordinator 能核對");
       const task = taskOf(state, body.taskId);
       if (!task) return err("not_found", "沒有這個任務");
-      if (task.status !== "uncertain" || task.attempt?.id !== body.attemptId) return err("invalid_state", "只有 uncertain 的目前嘗試能核對");
+      // Besides uncertain, the user may settle a task that has been silent (sent/accepted/running) by saying what they saw.
+      if (!["uncertain", "sent", "accepted", "running"].includes(task.status) || task.attempt?.id !== body.attemptId) return err("invalid_state", "只有進行中或 uncertain 的目前嘗試能核對");
       if (body.decision === "not-received") return ok([status(task, "queued", { releaseAttempt: true })]);
       return ok([status(task, body.decision === "running" ? "running" : "failed")]);
     }
@@ -398,10 +418,10 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
       return { ...state, runs: state.runs.map((r) => (r.id === d.runId ? { ...r, status: next } : r)) };
     }
     case "TaskQueued":
-      return { ...state, tasks: [...state.tasks, { id: str(d.taskId), runId: str(d.runId), stepKey: str(d.stepKey), planVersion: Number(d.planVersion), memberId: str(d.memberId), status: "queued", attemptIds: [], cancelRequested: false, resultArtifactIds: [] }] };
+      return { ...state, tasks: [...state.tasks, { activityAt: event.at, id: str(d.taskId), runId: str(d.runId), stepKey: str(d.stepKey), planVersion: Number(d.planVersion), memberId: str(d.memberId), status: "queued", attemptIds: [], cancelRequested: false, resultArtifactIds: [] }] };
     case "TaskDispatchPrepared": {
       const attempt = d.attempt as Attempt;
-      return patchTask(state, str(d.taskId), (t) => ({ ...t, status: "dispatching", attempt, attemptIds: [...t.attemptIds, attempt.id], reworkFeedback: t.reworkFeedback }));
+      return patchTask(state, str(d.taskId), (t) => ({ ...t, status: "dispatching", attempt, attemptIds: [...t.attemptIds, attempt.id], reworkFeedback: t.reworkFeedback, activityAt: event.at }));
     }
     case "InputWillStart":
       return patchTask(state, str(d.taskId), (t) => {
@@ -410,7 +430,7 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
       });
     case "TaskStatusChanged":
       return patchTask(state, str(d.taskId), (t) => {
-        const next: Task = { ...t, status: d.status as TaskStatus };
+        const next: Task = { ...t, status: d.status as TaskStatus, activityAt: event.at };
         if (d.releaseAttempt) delete next.attempt;
         if (Array.isArray(d.resultArtifactIds)) next.resultArtifactIds = d.resultArtifactIds as string[];
         return next;
@@ -418,6 +438,8 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
     case "ReportReceived": {
       const report = d.report as Report;
       const artifacts = (d.artifacts as Artifact[]) ?? [];
+      // Hearing from the worker about its current attempt counts as activity; a stale report does not.
+      if (!report.stale) state = patchTask(state, report.taskId, (t) => ({ ...t, activityAt: event.at }));
       return { ...state, reports: [...state.reports, report], artifacts: report.stale ? state.artifacts : [...state.artifacts, ...artifacts] };
     }
     case "IssueOpened":

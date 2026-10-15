@@ -109,5 +109,8 @@
   "project.task.retry": "Try again",
   "project.task.noPrompt": "Could not build the task prompt",
   "project.task.staleReports": "{n} late report(s) kept but not applied",
-  "project.notOpen": "No project is open"
+  "project.notOpen": "No project is open",
+  "project.attention.title": "Needs you",
+  "project.attention.blocked": "“{name}”'s terminal is waiting for an answer (a permission or a menu). The task cannot move on; handle it in the terminal — the project never presses keys for you.",
+  "project.attention.stalled": "“{name}” has not reported for over {minutes} minutes on “{task}”. Silence does not mean it failed."
 }

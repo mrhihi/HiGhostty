@@ -233,6 +233,10 @@ projectPanel = initProjectPanel({
     projectPanel?.close();
     if (tab) await activate(tab);
   },
+  observe: async (ids) => {
+    const screens = await scanScreens(ids);
+    return Object.fromEntries(ids.map((id) => [id, screens[id]?.agent ? agentState(screens[id].text, surfaces.get(id)?.title ?? "", promptRules) : "unknown"]));
+  },
   openSettings: () => setPanel("settings"),
   layoutChanged: () => {
     if (projectPanel?.isOpen()) invoke("native", { request: { op: "focus-web" } }).catch(() => {});

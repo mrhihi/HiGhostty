@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { decide, reduce, replay, emptyState } from "../src/projects.ts";
-import { validatePlan, eligibleTasks, queueReasonOf, buildTaskPayload } from "../src/project-tasks.ts";
+import { validatePlan, eligibleTasks, queueReasonOf, buildTaskPayload, stalledTasks, blockedMembers, DEFAULT_STALL_MS } from "../src/project-tasks.ts";
 
-const NOW = "2026-10-15T00:00:00.000Z";
+let NOW = "2026-10-15T00:00:00.000Z";
 const user = { kind: "user" };
 const as = (memberId) => ({ kind: "member", memberId });
 let n = 0;
@@ -334,4 +334,47 @@ test("replaying every emitted event reproduces the final state", () => {
   state = run(state, user, { type: "AcceptResult", taskId: "t1", attemptId: "A1" });
   assert.deepEqual(replay([...log]), state);
   assert.equal(new Set(log.map((e) => e.eventId)).size, log.length, "event ids are unique");
+});
+
+const at = (minutes) => new Date(Date.parse("2026-10-15T00:00:00.000Z") + minutes * 60_000).toISOString();
+
+test("silence is noticed after the timeout but never changes the task", () => {
+  NOW = at(0);
+  let s = deliver(started(), "t1", "A1");
+  assert.deepEqual(stalledTasks(s, Date.parse(at(9))), []);
+  assert.deepEqual(stalledTasks(s, Date.parse(at(11))).map((t) => t.id), ["t1"]);
+  assert.equal(task(s, "t1").status, "sent", "no state change from silence");
+  // A report restarts the clock.
+  NOW = at(11);
+  s = report(s, "t1", { reportId: "P", attemptId: "A1", kind: "progress", summary: "still here" });
+  assert.deepEqual(stalledTasks(s, Date.parse(at(12))), []);
+  assert.deepEqual(stalledTasks(s, Date.parse(at(11) ) + DEFAULT_STALL_MS + 1).map((t) => t.id), ["t1"]);
+  // A late report from an old attempt does not count as activity.
+  NOW = at(0);
+});
+
+test("only in-progress tasks can be stalled; waiting for the user's answer is not silence", () => {
+  NOW = at(0);
+  let s = deliver(started(), "t1", "A1");
+  s = report(s, "t1", { reportId: "Q", attemptId: "A1", kind: "needs-input", summary: "", question: "?" });
+  assert.deepEqual(stalledTasks(s, Date.parse(at(600))), []);
+  assert.deepEqual(stalledTasks(started(), Date.parse(at(600))), [], "queued tasks are not stalled");
+});
+
+test("blocked terminals are listed only for members that hold a task in progress", () => {
+  NOW = at(0);
+  const s = deliver(started(), "t1", "A1");
+  const seen = { A: "blocked", B: "blocked", c: "blocked" };
+  assert.deepEqual(blockedMembers(s, (id) => seen[id]), [{ memberId: "A", taskIds: ["t1"] }], "B and the coordinator have no task in progress");
+  assert.deepEqual(blockedMembers(s, () => "idle"), []);
+  assert.deepEqual(blockedMembers(s, () => undefined), []);
+});
+
+test("a silent task can be settled by the user without waiting for the worker", () => {
+  NOW = at(0);
+  const s = deliver(started(), "t1", "A1");
+  assert.equal(task(run(s, user, { type: "ReconcileTask", taskId: "t1", attemptId: "A1", decision: "failed" }), "t1").status, "failed");
+  assert.equal(task(run(s, user, { type: "ReconcileTask", taskId: "t1", attemptId: "A1", decision: "not-received" }), "t1").status, "queued");
+  assert.equal(fail(s, user, { type: "ReconcileTask", taskId: "t1", attemptId: "OLD", decision: "failed" }).code, "invalid_state");
+  NOW = "2026-10-15T00:00:00.000Z";
 });

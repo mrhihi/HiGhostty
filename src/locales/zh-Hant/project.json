@@ -109,5 +109,8 @@
   "project.task.retry": "重試",
   "project.task.noPrompt": "無法組出任務 prompt",
   "project.task.staleReports": "有 {n} 份遲到的回報已保留但未生效",
-  "project.notOpen": "沒有開啟的專案"
+  "project.notOpen": "沒有開啟的專案",
+  "project.attention.title": "需要你處理",
+  "project.attention.blocked": "「{name}」的終端機正在等你回答（權限或選單）。任務不會前進；請到終端機處理，專案不會代你按鍵。",
+  "project.attention.stalled": "「{name}」在「{task}」交付後超過 {minutes} 分鐘沒有回報。沒有回報不代表失敗。"
 }

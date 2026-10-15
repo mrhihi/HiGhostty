@@ -2,7 +2,7 @@
 // every button just calls back into the panel, which dispatches the action. Drafts (rework
 // feedback, answers) live in a map owned by the panel so a re-render does not lose them.
 import { t } from "./i18n";
-import { activeRun, queueReasonOf, startBlockers, stepOf } from "./project-tasks";
+import { activeRun, DEFAULT_STALL_MS, queueReasonOf, startBlockers, stepOf } from "./project-tasks";
 import type { Artifact, ProjectState, Task } from "./project-types";
 
 export type RunActions = {
@@ -29,7 +29,10 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return node;
 };
 
-export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<string, string>): HTMLElement {
+// Things that need a person right now; derived from live observation and time, not stored.
+export type Attention = { blocked: { memberId: string; taskIds: string[] }[]; stalled: Task[] };
+
+export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<string, string>, attention: Attention): HTMLElement {
   const section = el("section", "project-run");
   const head = el("div", "project-section-head");
   head.append(el("h3", undefined, t("project.plan.title")));
@@ -41,6 +44,35 @@ export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<
   }
   const run = activeRun(state) ?? state.runs.at(-1);
   const memberName = (id: string) => state.members.find((m) => m.id === id)?.name ?? id;
+  const stepTitle = (task: Task) => stepOf(state, task)?.title ?? task.stepKey;
+
+  if (attention.blocked.length || attention.stalled.length) {
+    const box = el("div", "project-warning project-attention");
+    box.append(el("strong", undefined, t("project.attention.title")));
+    for (const item of attention.blocked) {
+      const row = el("div", "project-attention-row");
+      row.append(el("span", undefined, t("project.attention.blocked", { name: memberName(item.memberId) })));
+      const go = el("button", "ghost-btn", t("project.goTerminal"));
+      go.onclick = () => actions.goTerminal(item.memberId);
+      row.append(go);
+      box.append(row);
+    }
+    for (const task of attention.stalled) {
+      const row = el("div", "project-attention-row");
+      row.append(el("span", undefined, t("project.attention.stalled", { name: memberName(task.memberId), task: stepTitle(task), minutes: Math.round(DEFAULT_STALL_MS / 60_000) })));
+      const go = el("button", "ghost-btn", t("project.goTerminal"));
+      go.onclick = () => actions.goTerminal(task.memberId);
+      const lost = el("button", "ghost-btn", t("project.task.notReceived"));
+      lost.disabled = actions.pending();
+      lost.onclick = () => actions.reconcile(task.id, "not-received");
+      const failed = el("button", "ghost-btn", t("project.task.markFailed"));
+      failed.disabled = actions.pending();
+      failed.onclick = () => actions.reconcile(task.id, "failed");
+      row.append(go, lost, failed);
+      box.append(row);
+    }
+    section.append(box);
+  }
 
   const summary = el("div", "project-plan");
   summary.append(el("strong", undefined, `${plan.title} · v${plan.version}`), el("p", "project-purpose", plan.objective));
