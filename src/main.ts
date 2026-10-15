@@ -37,7 +37,7 @@ import { restoreFiles, sameSaved, saveFiles, type FilesState, type SavedFiles } 
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
 import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDetail, togglePanel, type Detail, type DrawerState, type Panel } from "./drawer";
-import { agentState, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, promptKey, prune, raise, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
+import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, menuAnswerable, menuKeys, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
 import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./prompt-rules";
 import builtinRules from "./prompt-rules.json?raw";
 import { newSessionName, restorable, tmuxCommand, validSession, withProgramPath } from "./tmux";
@@ -1058,6 +1058,37 @@ async function loadPromptRules() {
 const signalHint = (title: string) => title === t("app.alertBell") ? t("app.alertBellHint") : title === t("app.alertStopped") ? t("app.alertStoppedHint") : "";
 const promptLine = (prompt: Prompt, index: number) => `${prompt.selected === index ? "▶" : "  "} ${prompt.options[index]}`;
 let lastAttentionSig: string | undefined;
+// Menus answered from a card: the question we sent a choice for, until the screen changes. While locked the card's
+// buttons are off, so a second click (or another window's) cannot press keys into whatever the screen became.
+const answering = new Map<string, { key: string; at: number }>();
+async function answerPrompt(surfaceId: string, shown: Prompt, index: number) {
+  const keys = menuKeys(shown, index);
+  if (!keys || answering.has(surfaceId)) return;
+  answering.set(surfaceId, { key: promptKey(shown), at: Date.now() });
+  renderAttention();
+  let sent = false;
+  try {
+    // Read the screen again right now: the same question, options and cursor row, or nothing is pressed.
+    const screen = (await scanScreens([surfaceId]))[surfaceId];
+    const now = screen?.agent ? recognizePrompt(screen.text.split("\n"), promptRules) : null;
+    if (!sameMenu(shown, now)) {
+      answering.delete(surfaceId);
+      notify(t("app.answerChanged"));
+      scanAttention().catch(notify);
+      return;
+    }
+    for (const [i, key] of keys.entries()) {
+      if (i) await new Promise((resolve) => setTimeout(resolve, 60));
+      sent = true;
+      await native({ op: "key", id: surfaceId, key });
+    }
+  } catch (error) {
+    // Part of the keys may have gone out: stay locked until the screen changes instead of inviting a second try.
+    if (!sent) answering.delete(surfaceId);
+    notify(error);
+  }
+  renderAttention();
+}
 let lastOwnedSignature = "";
 // 各卡片「畫面內容」方塊是否展開（預設收合）；重繪會重建 DOM，所以記在這裡。
 const expandedBodies = new Set<string>();
@@ -1160,7 +1191,7 @@ function renderAttention() {
     }
   }
   const metaOf = (alert: (typeof alerts)[number]) => [alert.title, alert.prompt?.low ? t("app.uncertain") : "", alert.count > 1 ? `×${alert.count}` : "", screens.get(alert.surfaceId)?.agent, ago(alert.since)].filter(Boolean).join(" · ");
-  const sig = JSON.stringify([projects.map(cardSignature), alerts.map((alert) => [alert.surfaceId, alert.source, alertLabel(alert.surfaceId), alert.title, alert.count, screens.get(alert.surfaceId)?.agent, bodies.get(alert.surfaceId), asks.get(alert.surfaceId)])]);
+  const sig = JSON.stringify([projects.map(cardSignature), alerts.map((alert) => [alert.surfaceId, alert.source, alertLabel(alert.surfaceId), alert.title, alert.count, screens.get(alert.surfaceId)?.agent, bodies.get(alert.surfaceId), asks.get(alert.surfaceId), alert.prompt?.selected, answering.get(alert.surfaceId)?.key])]);
   const hadCards = lastAttentionSig !== undefined && lastAttentionSig !== "[]";
   // Same content: only refresh the relative times, so scroll positions and focus survive the 1.5s scan.
   if (sig === lastAttentionSig) {
@@ -1192,6 +1223,18 @@ function renderAttention() {
     const foldSummary = document.createElement("summary"); foldSummary.textContent = t("app.screenContent");
     fold.append(foldSummary, pre);
     fold.addEventListener("toggle", () => { if (fold.open) expandedBodies.add(alert.surfaceId); else expandedBodies.delete(alert.surfaceId); });
+    // A menu read reliably off the screen can be answered here; the keys are sent only after the screen is read again.
+    const choices = document.createElement("div"); choices.className = "alert-options";
+    if (alert.source === "prompt" && menuAnswerable(alert.prompt)) {
+      const shown = alert.prompt, locked = answering.has(alert.surfaceId);
+      shown.options.forEach((option, index) => {
+        const choice = button(option, () => answerPrompt(alert.surfaceId, shown, index), option);
+        choice.className = "ghost-btn"; choice.disabled = locked; choice.dataset.choice = String(index);
+        if (index === shown.selected) choice.classList.add("current");
+        choices.append(choice);
+      });
+      if (locked) choices.append(Object.assign(document.createElement("span"), { className: "help", textContent: t("app.answerSent") }));
+    }
     const actions = document.createElement("div"); actions.className = "alert-actions";
     actions.append(
       button(t("app.goTo"), () => { attentionDrop.close(false); const tab = tabFor(alert.surfaceId); if (tab) { tab.focused = alert.surfaceId; activate(tab).catch(notify); } }),
@@ -1202,6 +1245,7 @@ function renderAttention() {
     card.append(head);
     if (ask.textContent) card.append(ask);
     if (pre.textContent) card.append(fold);
+    if (choices.children.length) card.append(choices);
     card.append(actions); list.append(card);
     if (pre.textContent) pre.scrollTop = bodyTops.get(alert.surfaceId) ?? 0;
   }
@@ -1231,6 +1275,8 @@ async function scanAttention() {
   const now = Date.now();
   for (const [id, screen] of Object.entries(found)) {
     screens.set(id, screen);
+    const lock = answering.get(id);
+    if (lock && (Date.now() - lock.at > ANSWER_LOCK_MS || promptKey((screen.agent ? recognizePrompt(screen.text.split("\n"), promptRules) : null) ?? undefined) !== lock.key)) answering.delete(id);
     if (!screen.agent) { idleTracks.delete(id); dismissed.delete(id); setAttention(clearSource(attention, id, "prompt")); continue; }
     const step = idleStep(idleTracks.get(id), screen.text, now, promptRules);
     idleTracks.set(id, step.track);
@@ -1242,7 +1288,7 @@ async function scanAttention() {
       if (!dismissed.has(id) && !(current?.source === "prompt" && promptKey(current.prompt) === key)) raiseAlert(id, "prompt", step.prompt.label, step.prompt.question, snapshot(screen.text), step.prompt);
     } else if (step.track.since === now) setAttention(clearSource(attention, id, "prompt"));
   }
-  for (const id of [...screens.keys()]) if (!surfaces.has(id)) { screens.delete(id); idleTracks.delete(id); dismissed.delete(id); }
+  for (const id of [...screens.keys()]) if (!surfaces.has(id)) { answering.delete(id); screens.delete(id); idleTracks.delete(id); dismissed.delete(id); }
   renderAttention();
 }
 // 頁籤列的點擊不留下鍵盤焦點：游標點到頁籤（或其按鈕）後，焦點一律回到終端機，

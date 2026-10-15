@@ -8,7 +8,7 @@
 | P1 | 待辦投影（`project-attention.ts`）、浮層專案卡片、成員小卡、計畫摘要化、coordinator／工作 session 掛專案子列、討論區收合完成；「稍後」未做；單行背景提示已寫（**版面改動待實機驗收**） |
 | P2 | opt-in 的每任務獨立 session（`handOverIsolated`）完成；controller 單一化、Rust registry、重啟恢復、execution 環境變數未做 |
 | P3 | 求助 run 並行（上限 2）、coordinator notice 喚醒完成；`waiting-help` 完成；協助 task 掛原 run（目前是並行的另一個 run）、依賴循環檢查、notice ack 指令未做 |
-| P4 | 已讀跨視窗同步完成；原生選項原地回答、舊資料收編不需新程式（見 `docs/projects.md`） |
+| P4 | 已讀跨視窗同步完成；原生選項原地回答已寫（只用既有 `key` op，送出前重掃比對、送出後上鎖；**待實機驗收**）；舊資料收編不需新程式（見 `docs/projects.md`） |
 | P5 | 文件已隨各批更新（`docs/projects.md`、`docs/attention.md`）；實機驗收與 `project-verification.md` 未做 |
 
 依據目前工作目錄（含既有未提交變更）、herdr 官方文件與官方網站互動示範。本文提出下一版的調整，不把舊規格的設計當成已完成的功能。既有實機驗收表也仍標示未實測。

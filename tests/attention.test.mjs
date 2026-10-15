@@ -206,3 +206,34 @@ test("an agent's own alert outranks a detected prompt and survives prompt cleari
   assert.equal(raise(s, a("2", "agent", "要你決定")).get("2").source, "agent");
   assert.equal(sorted(raise(raise(emptyAttention, a("3", "prompt")), a("4", "agent"))).at(0).surfaceId, "4");
 });
+
+import { menuAnswerable, menuKeys, sameMenu } from "../src/attention.ts";
+const menu = (over = {}) => ({ kind: "menu", label: "x", question: "Pick one?", options: ["1. A", "2. B", "3. C"], selected: 0, ...over });
+
+test("a plain single-choice menu is answered by arrows then Enter", () => {
+  assert.deepEqual(menuKeys(menu(), 0), ["enter"]);
+  assert.deepEqual(menuKeys(menu(), 2), ["down", "down", "enter"]);
+  assert.deepEqual(menuKeys(menu({ selected: 2 }), 0), ["up", "up", "enter"]);
+  assert.deepEqual(menuKeys(menu({ kind: "confirm", selected: 1 }), 2), ["down", "enter"]);
+});
+
+test("nothing is sent for what we cannot be sure of", () => {
+  assert.equal(menuKeys(menu(), 3), undefined, "no such option");
+  assert.equal(menuKeys(menu(), -1), undefined);
+  assert.equal(menuKeys(menu({ low: true }), 0), undefined, "a low-confidence guess");
+  for (const kind of ["password", "login", "input", "yesno", "press-enter"]) assert.equal(menuAnswerable(menu({ kind })), false, kind);
+  assert.equal(menuAnswerable(menu({ selected: undefined })), false, "cursor not read from the screen");
+  assert.equal(menuAnswerable(menu({ selected: -1 })), false);
+  assert.equal(menuAnswerable(menu({ options: ["1. A"] })), false, "one option is not a choice");
+  assert.equal(menuAnswerable(menu({ options: Array.from({ length: 10 }, (_, i) => `${i}. x`) })), false, "too long to trust relative moves");
+  assert.equal(menuAnswerable(menu({ options: ["[ ] A", "[x] B"] })), false, "checkboxes: Enter would submit a selection");
+  assert.equal(menuAnswerable(undefined), false);
+});
+
+test("the screen must still show the same menu with the cursor in the same place", () => {
+  assert.equal(sameMenu(menu(), menu()), true);
+  assert.equal(sameMenu(menu(), menu({ selected: 1 })), false, "the cursor moved");
+  assert.equal(sameMenu(menu(), menu({ question: "Other?" })), false);
+  assert.equal(sameMenu(menu(), menu({ options: ["1. A", "2. B"] })), false);
+  assert.equal(sameMenu(menu(), null), false);
+});

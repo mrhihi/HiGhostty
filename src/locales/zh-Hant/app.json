@@ -190,5 +190,7 @@
   "app.joinProject": "加入專案",
   "app.coordinatorFavoriteHelp": "選一個專案並填這個收藏負責什麼：存檔後立刻加入成為成員，終端機沒開也可以。啟動命令必須是 agent（claude、codex、copilot 或 gemini），tmux 一律開啟。要用時可從專案畫面或這裡開啟。",
   "app.joinCoordinator": "加入 Coordinator",
-  "app.joinCoordinatorHelp": "把這個頁籤標為專案的 coordinator：tmux 一律開啟且不能取消，啟動指令只能從清單選 agent（參數仍可自由輸入）。於下次開啟頁籤生效。"
+  "app.joinCoordinatorHelp": "把這個頁籤標為專案的 coordinator：tmux 一律開啟且不能取消，啟動指令只能從清單選 agent（參數仍可自由輸入）。於下次開啟頁籤生效。",
+  "app.answerChanged": "提示在送出前已經變了，所以沒有按任何鍵。請看新的內容。",
+  "app.answerSent": "已送出，等畫面變化。"
 }

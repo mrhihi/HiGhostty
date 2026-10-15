@@ -190,5 +190,7 @@
   "app.joinProject": "Join project",
   "app.coordinatorFavoriteHelp": "Pick a project and say what this favorite handles: saving joins it as a member right away, even while its terminal is closed. The command must be an agent (claude, codex, copilot or gemini); tmux stays on. Open it from the project view or here when you need it.",
   "app.joinCoordinator": "Join as Coordinator",
-  "app.joinCoordinatorHelp": "Marks this tab as a project coordinator: tmux stays on and cannot be turned off, and the launch command can only be an agent chosen from the list (arguments stay free text). Takes effect the next time the tab opens."
+  "app.joinCoordinatorHelp": "Marks this tab as a project coordinator: tmux stays on and cannot be turned off, and the launch command can only be an agent chosen from the list (arguments stay free text). Takes effect the next time the tab opens.",
+  "app.answerChanged": "The prompt changed before anything was sent, so nothing was pressed. Check the new one.",
+  "app.answerSent": "Sent. Waiting for the screen to change."
 }

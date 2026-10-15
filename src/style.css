@@ -535,3 +535,6 @@ body.standalone #app, body.standalone #preview { position: fixed; inset: 0; }
 #project-banner { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 10px; min-height: 30px; background: var(--surface-2); border-bottom: 1px solid var(--surface-0); border-left: 3px solid var(--attention); font-size: 14px; }
 #project-banner[hidden] { display: none; }
 #project-banner .banner-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-options { display: flex; flex-direction: column; gap: 6px; }
+.alert-options .ghost-btn { text-align: left; justify-content: flex-start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-options .ghost-btn.current { border-color: var(--accent, currentColor); }

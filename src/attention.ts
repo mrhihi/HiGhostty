@@ -213,3 +213,27 @@ export function idleStep(previous: IdleTrack | undefined, text: string, now: num
   const waiting = !!prompt && track.changed && now - track.since >= QUIET_MS;
   return { track, waiting, prompt };
 }
+
+// ---- answering a menu from the attention card ----
+// Only a plain single-choice menu whose cursor row was read off the screen qualifies: the answer is "move the cursor
+// to row N, press Enter", using the ordinary arrow and Enter keys. Anything else (a low-confidence guess, a password or
+// login, free text, a checkbox list where Enter would submit a selection nobody looked at) is left to the person.
+export const MAX_MENU_OPTIONS = 9;
+const CHECKBOX_ROW = /^\s*(?:\[[ x✔✓*]\]|\([ x*]\)|[☐☑☒✓])/i;
+export function menuAnswerable(prompt: Prompt | undefined): prompt is Prompt & { selected: number } {
+  if (!prompt || prompt.low || !["menu", "confirm", "trust"].includes(prompt.kind)) return false;
+  const n = prompt.options.length;
+  if (n < 2 || n > MAX_MENU_OPTIONS || !Number.isInteger(prompt.selected) || prompt.selected! < 0 || prompt.selected! >= n) return false;
+  return !prompt.options.some((option) => CHECKBOX_ROW.test(option));
+}
+// The keys that choose option `index`, or undefined when that is not something we will send.
+export function menuKeys(prompt: Prompt | undefined, index: number): string[] | undefined {
+  if (!menuAnswerable(prompt) || !Number.isInteger(index) || index < 0 || index >= prompt.options.length) return undefined;
+  const steps = index - prompt.selected;
+  return [...Array<string>(Math.abs(steps)).fill(steps > 0 ? "down" : "up"), "enter"];
+}
+// Before anything is sent the screen is read again: the same question, the same options and the cursor where we
+// thought it was. Anything else means the person or the agent moved on, and the card must be redrawn instead.
+export const sameMenu = (shown: Prompt, now: Prompt | null | undefined): boolean => !!now && promptKey(now) === promptKey(shown);
+// After sending we wait for the screen to change; if it never does, let the person try again or go there themselves.
+export const ANSWER_LOCK_MS = 15_000;
