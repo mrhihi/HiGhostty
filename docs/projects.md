@@ -1,4 +1,4 @@
-# 專案區（S1：清單、成員、coordinator 討論）
+# 專案區（S1：清單、成員、coordinator 討論；S2 純邏輯已完成）
 
 規格見 `docs/project-implementation.md`；本文記錄 S1 實際做了什麼、與規格不同之處、以及驗收清單。S1 沒有計畫、run、任務、自動派送。
 
@@ -43,3 +43,13 @@
 10. 側欄「×」只從清單移除，資料夾與 journal 不動；再用「開啟既有專案」可開回。
 11. 全域控制模式為「唯讀」或「關閉」時，專案畫面頂端顯示需完整模式的提示與「開啟設定」；改成「完整」後 3 秒內提示消失。
 12. 成員（含 coordinator）頁籤的「編輯頁籤」：啟動指令是 agent 下拉＋參數、tmux 勾選灰掉且已勾；從專案移除成員後恢復一般輸入。對應收藏的「編輯收藏」同樣鎖住。重開 App 後鎖仍在。
+
+## S2 純邏輯（`src/project-tasks.ts`，測試 `tests/project-tasks.test.mjs`）
+
+尚未接 UI、`ctl` 指令與投遞；只有規則。`projects.ts` 的 `decide`／`reduce` 把 S2 的 action 轉給 `decideTasks`／`reduceTasks`。
+
+- **範圍**：`SubmitPlan`、`StartRun`、`PauseRun`／`ResumeRun`、`PrepareDispatch`、`RecordInputStart`／`RecordInputResult`、`ReceiveReport`、`AcceptResult`、`RequestRework`、`RequestCancel`、`RetryTask`、`ReconcileTask`，以及 `validatePlan`、`eligibleTasks`、`queueReasonOf`、`buildTaskPayload`。
+- **還沒做**：`ReplyIssue`（回覆 needs-input）、`ObservedBlocked`、`SubmitObservedResult`、`DeliverNow`、跨專案 reservation（S3）、結案部分取消的 run、「auto-on-protocol-result」驗收。
+- **與規格不同**：artifact 文字直接放進 journal 事件（沒有獨立檔案與 sha256）；一個專案只有一個 plan id，每次提交是新版本；同一專案內一位成員同時只接一個任務，`result-ready` 即釋放。
+- **不變式（測試涵蓋）**：沒有回報不改變狀態；舊 attempt 的回報只留紀錄、不動新 attempt；沒有 `InputWillStart` 就收到的回報標 `unmatched`、不推進、不存成果；`uncertain` 不能直接重試；`needs-input` 的 Issue 在後續 progress／result／終結回報時自動關閉；coordinator 驗收必須逐項對上完成條件並附屬於該任務的成果 ID。
+- `reportId` 為不透明字串，去重鍵是 taskId＋attemptId＋reportId，相同 ID 內容不同回 `report_conflict`。

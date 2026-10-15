@@ -74,7 +74,7 @@ export const OPS: OpSpec[] = [
 // Flags every command accepts. `--timeout` (ms) bounds how long the CLI waits for the reply.
 const GLOBAL_FLAGS: Record<string, FlagKind> = { timeout: "number" };
 
-export type ErrorCode = "project_unavailable" | "revision_conflict" | "storage_readonly" | "needs_user_decision" | "disabled" | "forbidden" | "busy" | "agent_blocked" | "agent_prompt_stalled" | "unknown_op" | "bad_args" | "not_found" | "failed" | "timeout" | "unavailable";
+export type ErrorCode = "invalid_plan" | "stale_attempt" | "report_conflict" | "project_unavailable" | "revision_conflict" | "storage_readonly" | "needs_user_decision" | "disabled" | "forbidden" | "busy" | "agent_blocked" | "agent_prompt_stalled" | "unknown_op" | "bad_args" | "not_found" | "failed" | "timeout" | "unavailable";
 export type Reply = { ok: true; result: unknown } | { ok: false; error: { code: ErrorCode; message: string } };
 export const okReply = (result: unknown): Reply => ({ ok: true, result });
 export const errReply = (code: ErrorCode, message: string): Reply => ({ ok: false, error: { code, message } });

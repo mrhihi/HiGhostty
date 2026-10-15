@@ -68,6 +68,7 @@ export function surfaceForInstance<T extends { id: string; tmuxSession?: string 
 const ERROR_CODES: Record<ProjectError["code"], ErrorCode> = {
   bad_args: "bad_args", not_found: "not_found", forbidden: "forbidden",
   already_exists: "bad_args", instance_in_use: "bad_args", needs_user_decision: "needs_user_decision",
+  invalid_plan: "invalid_plan", revision_conflict: "revision_conflict", stale_attempt: "stale_attempt", report_conflict: "report_conflict", invalid_state: "bad_args",
 };
 export const projectErrorReply = (error: ProjectError): Reply => errReply(ERROR_CODES[error.code], error.message);
 

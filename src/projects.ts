@@ -1,5 +1,6 @@
 // Pure rules for a project: decide(state, action) validates and produces events,
 // reduce(state, event) replays them. No IDs are made, no files read, no DOM here.
+import { decideTasks, reduceTasks } from "./project-tasks.ts";
 import type {
   Actor, ActionBody, Binding, Decision, Member, Message, ProjectAction, ProjectError, ProjectErrorCode,
   ProjectEvent, ProjectState, Result,
@@ -11,6 +12,7 @@ export const MAX_NAME_CHARS = 80;
 
 export const emptyState = (): ProjectState => ({
   config: null, members: [], bindings: {}, handshakes: {}, messages: [], messageSeq: 0,
+  plans: [], consents: [], runs: [], tasks: [], artifacts: [], reports: [], issues: [],
 });
 
 const err = (code: ProjectErrorCode, message: string): Result<never, ProjectError> => ({ ok: false, error: { code, message } });
@@ -78,6 +80,9 @@ export function decide(state: ProjectState, action: ProjectAction, now: string):
       const m = member(body.memberId);
       if (!m) return err("not_found", "沒有這個成員");
       if (m.role === "coordinator") return err("bad_args", "不能移除 coordinator");
+      if (state.tasks.some((t) => t.memberId === m.id && !["completed", "failed", "cancelled", "declined"].includes(t.status))) {
+        return err("invalid_state", "這位成員還有未結束的任務；請先取消或完成它們");
+      }
       return ok([ev("MemberRemoved", { memberId: m.id })]);
     }
     case "BindMember": {
@@ -140,6 +145,8 @@ export function decide(state: ProjectState, action: ProjectAction, now: string):
       if (!msg || msg.author !== "user") return err("not_found", "沒有這則使用者訊息");
       return ok([ev("MessageDeliveryChanged", { messageId: msg.id, delivery: body.delivery })]);
     }
+    default:
+      return decideTasks(state, actor, body, ev);
   }
 }
 
@@ -209,6 +216,8 @@ export function reduce(state: ProjectState, event: ProjectEvent): ProjectState {
         messages: state.messages.map((m) =>
           m.id === d.messageId && m.delivery !== "replied" ? { ...m, delivery: d.delivery as Message["delivery"] } : m),
       };
+    default:
+      return reduceTasks(state, event);
   }
 }
 
