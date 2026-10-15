@@ -4,8 +4,7 @@
 // terminal NSViews are hidden by sending empty rects (main.ts treats isOpen() like "full").
 import { t } from "./i18n";
 import { applyI18n, onLocaleChange } from "./i18n-runtime";
-import { AGENT_KINDS } from "./control";
-import { INSTANCE_GENERATION, instanceKey, surfaceForInstance } from "./project-control";
+import { INSTANCE_GENERATION, instanceKey, PROJECT_AGENT_KINDS, surfaceForInstance } from "./project-control";
 import { introPrompt, memberStatus, messagePrompt, queuedBatch, type MemberStatus } from "./project-prompts";
 import { coordinatorOf } from "./projects";
 import { current, dispatch, indexList, onProjectChanged, openProject, type IndexItem, type Loaded } from "./project-store";
@@ -408,7 +407,7 @@ export function initProjectPanel(host: ProjectHost) {
     pathRow.append(el("span", undefined, t("project.folder")), pathText, choose);
     form.append(pathRow);
     const kind = el("select");
-    for (const k of AGENT_KINDS) kind.append(Object.assign(el("option", undefined, k), { value: k }));
+    for (const k of PROJECT_AGENT_KINDS) kind.append(Object.assign(el("option", undefined, k), { value: k }));
     field(t("project.coordinatorKind"), kind);
     const tmux = el("input");
     tmux.type = "checkbox";

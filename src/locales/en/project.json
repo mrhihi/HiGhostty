@@ -30,7 +30,7 @@
   "project.rebind": "Use another terminal",
   "project.removeMember": "Remove member",
   "project.pickHint": "Pick the terminal this member runs in:",
-  "project.pickNone": "No such tab is open. Open an agent from a favorite or command with tmux turned on.",
+  "project.pickNone": "No such tab is open. Start claude, codex, copilot or gemini from a favorite or command with tmux turned on.",
   "project.choose": "Use this",
   "project.addThis": "Add",
   "project.memberName": "Name",
@@ -57,5 +57,5 @@
   "project.needFull": "Agents can only read this project until agent control is set to Full; they cannot introduce themselves or reply.",
   "project.needFullOff": "Agent control is off, so agents cannot reach this project at all.",
   "project.openSettings": "Open settings",
-  "project.pickRule": "Only tabs that were started with a command and run in tmux can be members, so they stay linked after a restart."
+  "project.pickRule": "Only tabs started with Claude Code, Codex, GitHub Copilot CLI or Gemini CLI (command claude, codex, copilot or gemini) and run in tmux can be members, so they stay linked after a restart."
 }

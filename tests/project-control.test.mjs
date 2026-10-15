@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgv, authorize } from "../src/control.ts";
 import { decide, reduce, emptyState } from "../src/projects.ts";
-import { memberCandidates, surfaceForInstance, instanceKey, parseInput, helloBody, messageBody, callerMember, getResult, inboxResult, projectErrorReply, MAX_INPUT_BYTES } from "../src/project-control.ts";
+import { agentKindOf, memberCandidates, surfaceForInstance, instanceKey, parseInput, helloBody, messageBody, callerMember, getResult, inboxResult, projectErrorReply, MAX_INPUT_BYTES } from "../src/project-control.ts";
 
 const NOW = "2026-10-15T00:00:00.000Z";
 const user = { kind: "user" };
@@ -128,7 +128,17 @@ test("only tmux tabs with a start command offer their first pane as a member", (
     { command: "claude", leaves: ["c"] },
     { command: "claude", tmux: true, leaves: ["d"] },
     { command: "  ", tmux: true, leaves: ["e"] },
+    { command: "vim notes.md", tmux: true, leaves: ["e"] },
     { command: "claude", tmux: true, leaves: ["gone"] },
   ];
   assert.deepEqual(memberCandidates(tabs, surfaces).map((s) => s.id), ["a"]);
+});
+
+test("agentKindOf accepts the four supported agents only in their plain form", () => {
+  for (const [command, kind] of [
+    ["claude", "claude"], ["claude --model opus", "claude"], ["/usr/local/bin/codex", "codex"], ["codex resume", "codex"],
+    ["copilot", "copilot"], ["gh copilot", "copilot"], ["gemini", "gemini"], ["FOO=1 BAR=x claude", "claude"], ["  claude  ", "claude"],
+  ]) assert.equal(agentKindOf(command), kind, command);
+  for (const command of [undefined, "", "  ", "vim", "aider", "opencode", "gh pr list", "gh", "cd x && claude", "echo claude", "claudex", "FOO=1"])
+    assert.equal(agentKindOf(command), undefined, String(command));
 });

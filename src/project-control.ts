@@ -13,8 +13,21 @@ export function instanceKey(surface: { id: string; tmuxSession?: string }): stri
   return surface.tmuxSession ? `tmux:${surface.tmuxSession}` : `surface:${surface.id}`;
 }
 export const INSTANCE_GENERATION = 1;
+// Agents a project can drive. Their start commands: claude, codex, copilot (or `gh copilot`), gemini.
+export const PROJECT_AGENT_KINDS = ["claude", "codex", "copilot", "gemini"] as const;
+export type ProjectAgentKind = (typeof PROJECT_AGENT_KINDS)[number];
+// Which supported agent a start command launches; undefined for anything else. Leading
+// `VAR=value` words are skipped; only the plain form counts (no `cd x && …`, pipes or wrappers).
+export function agentKindOf(command: string | undefined): ProjectAgentKind | undefined {
+  const words = (command ?? "").trim().split(/\s+/).filter(Boolean);
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+  const name = (words[0] ?? "").split("/").pop();
+  if (name === "gh") return words[1] === "copilot" ? "copilot" : undefined;
+  return (PROJECT_AGENT_KINDS as readonly string[]).includes(name ?? "") ? (name as ProjectAgentKind) : undefined;
+}
+
 // Terminals that may become members: the first pane of a tab that was opened with a start
-// command and runs in tmux. Only those keep the same identity (the tmux session) after a restart.
+// command for a supported agent and runs in tmux. Only those keep the same identity (the tmux session) after a restart.
 export function memberCandidates<S extends { id: string; tmuxSession?: string; exited?: boolean }>(
   tabs: { command?: string; tmux?: boolean; leaves: string[] }[],
   surfaces: Map<string, S>,
@@ -22,7 +35,7 @@ export function memberCandidates<S extends { id: string; tmuxSession?: string; e
   const found: S[] = [];
   for (const tab of tabs) {
     const first = surfaces.get(tab.leaves[0] ?? "");
-    if (tab.command?.trim() && tab.tmux && first?.tmuxSession && !first.exited) found.push(first);
+    if (agentKindOf(tab.command) && tab.tmux && first?.tmuxSession && !first.exited) found.push(first);
   }
   return found;
 }
