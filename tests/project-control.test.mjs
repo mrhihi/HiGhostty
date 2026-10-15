@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgv, authorize } from "../src/control.ts";
 import { decide, reduce, emptyState } from "../src/projects.ts";
-import { surfaceForInstance, instanceKey, parseInput, helloBody, messageBody, callerMember, getResult, inboxResult, projectErrorReply, MAX_INPUT_BYTES } from "../src/project-control.ts";
+import { memberCandidates, surfaceForInstance, instanceKey, parseInput, helloBody, messageBody, callerMember, getResult, inboxResult, projectErrorReply, MAX_INPUT_BYTES } from "../src/project-control.ts";
 
 const NOW = "2026-10-15T00:00:00.000Z";
 const user = { kind: "user" };
@@ -115,4 +115,20 @@ test("surfaceForInstance finds the terminal behind a key", () => {
   assert.equal(surfaceForInstance("tmux:hg-2", list).id, "s2");
   assert.equal(surfaceForInstance("surface:s2", list), undefined, "a tmux surface is only known by its session");
   assert.equal(surfaceForInstance("tmux:gone", list), undefined);
+});
+
+test("only tmux tabs with a start command offer their first pane as a member", () => {
+  const surfaces = new Map([
+    ["a", { id: "a", tmuxSession: "hg-a" }], ["b", { id: "b", tmuxSession: "hg-b" }], ["c", { id: "c" }],
+    ["d", { id: "d", tmuxSession: "hg-d", exited: true }], ["e", { id: "e", tmuxSession: "hg-e" }],
+  ]);
+  const tabs = [
+    { command: "claude", tmux: true, leaves: ["a", "e"] },
+    { tmux: true, leaves: ["b"] },
+    { command: "claude", leaves: ["c"] },
+    { command: "claude", tmux: true, leaves: ["d"] },
+    { command: "  ", tmux: true, leaves: ["e"] },
+    { command: "claude", tmux: true, leaves: ["gone"] },
+  ];
+  assert.deepEqual(memberCandidates(tabs, surfaces).map((s) => s.id), ["a"]);
 });

@@ -13,6 +13,19 @@ export function instanceKey(surface: { id: string; tmuxSession?: string }): stri
   return surface.tmuxSession ? `tmux:${surface.tmuxSession}` : `surface:${surface.id}`;
 }
 export const INSTANCE_GENERATION = 1;
+// Terminals that may become members: the first pane of a tab that was opened with a start
+// command and runs in tmux. Only those keep the same identity (the tmux session) after a restart.
+export function memberCandidates<S extends { id: string; tmuxSession?: string; exited?: boolean }>(
+  tabs: { command?: string; tmux?: boolean; leaves: string[] }[],
+  surfaces: Map<string, S>,
+): S[] {
+  const found: S[] = [];
+  for (const tab of tabs) {
+    const first = surfaces.get(tab.leaves[0] ?? "");
+    if (tab.command?.trim() && tab.tmux && first?.tmuxSession && !first.exited) found.push(first);
+  }
+  return found;
+}
 // The open terminal an instance key points at, if any (a tmux key matches by session).
 export function surfaceForInstance<T extends { id: string; tmuxSession?: string }>(key: string, surfaces: Iterable<T>): T | undefined {
   for (const surface of surfaces) if (instanceKey(surface) === key) return surface;

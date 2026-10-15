@@ -18,6 +18,8 @@ export type ProjectHost = {
   notify(error: unknown): void;
   // Open terminals in this window; the picker and member status read them.
   surfaces(): { id: string; cwd: string; title: string; tmuxSession?: string }[];
+  // The subset that can be added as members (see memberCandidates).
+  candidates(): { id: string; cwd: string; title: string; tmuxSession?: string }[];
   pickDirectory(): Promise<string | null>;
   // Opens the agent in a background terminal and resolves once it is ready; returns the surface id.
   startAgent(kind: AgentKind, cwd: string, tmux: boolean): Promise<string>;
@@ -329,8 +331,8 @@ export function initProjectPanel(host: ProjectHost) {
   function renderPicker(state: ProjectState, memberId?: string) {
     const taken = new Set(Object.values(state.bindings).map((b) => b.instanceId));
     const box = el("div", "project-picker");
-    const candidates = host.surfaces().filter((s) => !taken.has(instanceKey(s)));
-    box.append(el("div", "help", t(candidates.length ? "project.pickHint" : "project.pickNone")));
+    const candidates = host.candidates().filter((s) => !taken.has(instanceKey(s)));
+    box.append(el("div", "help", t(candidates.length ? "project.pickHint" : "project.pickNone")), el("div", "help", t("project.pickRule")));
     for (const surface of candidates) {
       const row = el("div", "project-pick-row");
       row.append(el("span", undefined, `${surface.title || nameOf(surface.cwd)} — ${surface.cwd}${surface.tmuxSession ? " (tmux)" : ""}`));

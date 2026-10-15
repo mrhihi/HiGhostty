@@ -15,6 +15,7 @@
 
 - **沒有 owner／epoch／heartbeat**：journal 的 revision CAS 與 `flock` 已足夠序列化；S3 才需要 owner。
 - **instance 身分**：沒有 `HIGHOSTTY_INSTANCE_ID`，改用 `instanceKey`：tmux 頁籤是 `tmux:<session>`（重開 App 後仍認得），其他是 `surface:<id>`（重開後顯示離線，需重新綁定或「重新啟動」）。generation 固定 1。
+- **成員候選**：只列「有啟動指令、且在 tmux 執行的頁籤」的第一個窗格（`memberCandidates`），讓身分（tmux session）在重開 App 後仍成立。手動在一般 shell 開的 agent 不能加入；窗格分割出來的 shell 也不列。
 - **專案內容切換**：不做 `ContentState`，比照檔案面板的全版模式：`updateLayout()` 把專案視為 `terminalHidden()`，送空 rects；`native()` 在專案開著時略過 `focus` op。S2 前要評估是否改成規格的 `ContentState`。
 - **沒有 `project.json` 快照、artifact、`prevHash`**。
 - **投遞**：只由「持有 coordinator 終端機的視窗」投遞；idle 才送；寫入 `sending` 之後不自動重送（失敗標 `uncertain`）。
@@ -33,7 +34,7 @@
 2. `project get <id>`（唯讀模式也可）回成員與 handshake；`project hello`／`message` 在唯讀模式回 `forbidden`。
 3. 在討論區送訊息：先「等待 coordinator」→「送出中」→「已送出」；coordinator 收到通知後用 `project inbox` 讀並 `project message --json-stdin` 回覆，原訊息變「已回覆」。coordinator 忙碌時訊息留在「等待」，閒置後才送；blocked 時不送。
 4. 重送同一個 messageId 的 `project message` 不會產生第二則。
-5. 加入成員：選一個開著的終端機，填名稱與用途；同一個終端機不能加兩次。「前往終端機」回到該頁籤並關掉專案畫面。
+5. 加入成員：候選只列有啟動指令且勾 tmux 的頁籤（一般 shell 頁籤不出現，選擇器有說明）；填名稱與用途；同一個終端機不能加兩次。「前往終端機」回到該頁籤並關掉專案畫面。
 6. 重開 App：tmux coordinator 仍綁定；非 tmux 的成員顯示離線，可「重新啟動」或「改用其他終端機」。
 7. 專案畫面開著時按 ⌘T／切頁籤／⌘W：鍵盤不會進到被隱藏的終端機；中文輸入法在討論框組字時 Enter 不會送出。
 8. 唯讀資料夾／同步資料夾（路徑含 Mobile Documents）：顯示唯讀原因，不能送訊息。同一專案開兩個視窗：兩邊都看到新訊息，不重複投遞。

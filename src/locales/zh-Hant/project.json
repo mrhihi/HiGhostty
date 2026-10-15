@@ -30,7 +30,7 @@
   "project.rebind": "改用其他終端機",
   "project.removeMember": "移除成員",
   "project.pickHint": "選擇這個成員所在的終端機：",
-  "project.pickNone": "沒有其他開著的終端機。請先在頁籤中開啟該 agent。",
+  "project.pickNone": "目前沒有符合的頁籤。請用有啟動指令的收藏或命令，並勾選 tmux 開啟 agent。",
   "project.choose": "使用這個",
   "project.addThis": "加入",
   "project.memberName": "名稱",
@@ -56,5 +56,6 @@
   "project.needFolder": "請選擇資料夾並輸入名稱",
   "project.needFull": "在「agent 控制指令」改為「完整」之前，agent 只能讀取這個專案，不能自我介紹或回覆。",
   "project.needFullOff": "agent 控制指令已關閉，agent 完全無法連到這個專案。",
-  "project.openSettings": "開啟設定"
+  "project.openSettings": "開啟設定",
+  "project.pickRule": "只能選「有啟動指令、且在 tmux 執行」的頁籤，這樣重開 App 後仍能連回。"
 }

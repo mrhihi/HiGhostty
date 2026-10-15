@@ -43,6 +43,7 @@ import builtinRules from "./prompt-rules.json?raw";
 import { newSessionName, restorable, tmuxCommand, validSession } from "./tmux";
 import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, previewSide, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
 import { runProjectControl } from "./project-ctl";
+import { memberCandidates } from "./project-control";
 import { initProjectPanel } from "./project-panel";
 import { startProjectEvents } from "./project-store";
 import "./style.css";
@@ -201,6 +202,7 @@ const previewPanel = initPreviewPanel({
 projectPanel = initProjectPanel({
   notify,
   surfaces: () => [...surfaces.values()].filter((surface) => !surface.exited),
+  candidates: () => memberCandidates(tabs.map((tab) => ({ command: tab.command, tmux: tab.tmux, leaves: leaves(tab.tree) })), surfaces),
   pickDirectory: () => invoke<string | null>("pick_directory", { path: defaultPath() || homePath || "~" }),
   startAgent: async (kind, cwd, tmux) => {
     const made = agentCommand(kind, []);
