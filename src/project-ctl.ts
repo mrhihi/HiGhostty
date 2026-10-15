@@ -1,8 +1,9 @@
 // `highostty ctl project …` against the journal. The caller's own window answers (any window
 // can read and write a project), so the caller is resolved here to a member by its terminal.
+import { pledgeInstruction } from "./project-prompts";
 import { errReply, okReply, type Reply } from "./control";
 import {
-  acceptBody, callerMember, observedBody, getResult, helloBody, inboxResult, INSTANCE_GENERATION, instanceKey, messageBody, notMemberReply, parseInput,
+  acceptBody, callerMember, executionGuard, helpAnswerBody, helpAskBody, helpGetResult, observedBody, getResult, helloBody, inboxResult, INSTANCE_GENERATION, instanceKey, messageBody, notMemberReply, parseInput,
   planSubmitBody, projectErrorReply, reworkBody, runStartBody, taskGetResult, taskReportBody, taskResultResult,
 } from "./project-control";
 import { activeRun } from "./project-tasks";
@@ -41,7 +42,8 @@ export async function runProjectControl({ op, args, flags, input, surface }: Cal
       const hello = helloBody(body.value);
       if (!hello.ok) return hello.reply;
       const done = await dispatch(root, actor, hello.body);
-      return done.ok ? okReply({ member: member!.id, revision: done.value.revision, handshake: true }) : storeReply(done.error);
+      // A worker is reminded right after hello, when it is most likely to take the rule in.
+      return done.ok ? okReply({ member: member!.id, revision: done.value.revision, handshake: true, ...(member!.role === "worker" ? { say: pledgeInstruction } : {}) }) : storeReply(done.error);
     }
     case "project message": {
       if (!actor) return notMemberReply();
@@ -53,6 +55,21 @@ export async function runProjectControl({ op, args, flags, input, surface }: Cal
       const done = await dispatch(root, actor, message.body, `message:${message.body.messageId}`);
       return done.ok ? okReply({ messageId: message.body.messageId, revision: done.value.revision }) : storeReply(done.error);
     }
+    case "project help ask":
+    case "project help answer": {
+      if (!actor) return notMemberReply();
+      const asking = op === "project help ask";
+      if (asking !== (member!.role === "worker")) return errReply("forbidden", asking ? "只有 worker 能求助；coordinator 請直接指派任務" : "只有 coordinator 能回覆求助");
+      const input2 = parseInput(input, flags);
+      if (!input2.ok) return input2.reply;
+      const built = asking ? helpAskBody(input2.value, () => crypto.randomUUID()) : helpAnswerBody(input2.value);
+      if (!built.ok) return built.reply;
+      const done = await dispatch(root, actor, built.body, built.actionId);
+      return done.ok ? okReply({ helpId: (built.body as { helpId: string }).helpId, revision: done.value.revision }) : storeReply(done.error);
+    }
+    case "project help get":
+      if (!member) return notMemberReply();
+      return helpGetResult(project.state, member, args.helpId);
     case "project plan submit":
     case "project run start":
     case "project run pause":
@@ -84,15 +101,20 @@ export async function runProjectControl({ op, args, flags, input, surface }: Cal
       if (built.body.type === "StartRun") return okReply({ runId: built.body.runId, tasks: built.body.taskIds, revision: done.value.revision });
       return okReply({ taskId: args.taskId, status: state.tasks.find((t) => t.id === args.taskId)?.status, revision: done.value.revision });
     }
-    case "project task get":
+    case "project task get": {
       if (!member) return notMemberReply();
+      const blocked = executionGuard(project.state, surface && instanceKey(surface), args.taskId);
+      if (blocked) return blocked;
       return taskGetResult(project.state, member.id, args.taskId);
+    }
     case "project task report": {
       if (!actor) return notMemberReply();
       const input2 = parseInput(input, flags);
       if (!input2.ok) return input2.reply;
       const built = taskReportBody(args.taskId, input2.value);
       if (!built.ok) return built.reply;
+      const blocked = executionGuard(project.state, surface && instanceKey(surface), args.taskId, built.body.type === "ReceiveReport" ? built.body.report.attemptId : undefined);
+      if (blocked) return blocked;
       const done = await dispatch(root, actor, built.body, built.actionId);
       if (!done.ok) return storeReply(done.error);
       const saved = done.value.events.find((e) => e.type === "ReportReceived")?.data.report as { stale?: string } | undefined;

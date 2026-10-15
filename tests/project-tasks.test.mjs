@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decide, reduce, replay, emptyState } from "../src/projects.ts";
-import { validatePlan, eligibleTasks, queueReasonOf, buildTaskPayload, stalledTasks, blockedMembers, DEFAULT_STALL_MS } from "../src/project-tasks.ts";
+import { decide, reduce, replay, emptyState, memberForInstance } from "../src/projects.ts";
+import { queuedHelpResults, helpResultPrompt, queuedNotices, noticePrompt } from "../src/project-prompts.ts";
+import { helpGetResult, executionGuard } from "../src/project-control.ts";
+import { verdict } from "../src/project-schedule.ts";
+import { isolated } from "../src/project-schedule.ts";
+import { activeRun, validatePlan, eligibleTasks, queueReasonOf, buildTaskPayload, stalledTasks, blockedMembers, DEFAULT_STALL_MS } from "../src/project-tasks.ts";
 
 let NOW = "2026-10-15T00:00:00.000Z";
 const user = { kind: "user" };
@@ -526,4 +530,122 @@ test("rebinding a member resets how it is assumed to report", () => {
   s = run(s, user, { type: "BindMember", memberId: "A", instanceId: "other", generation: 1 });
   assert.equal(s.members.find((m) => m.id === "A").reportMode, "screen");
   assert.equal(s.members.find((m) => m.id === "c").reportMode, "protocol", "the coordinator is left alone");
+});
+
+test("work started for a help request is reported back to the asker once it is done", () => {
+  let s = world();
+  s = run(s, as("B"), { type: "AskHelp", helpId: "h1", text: "我查不了 Jira" });
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "查 Jira", steps: [{ key: "q", memberId: "A", instruction: "查", completion: ["列出單據"] }] } });
+  s = run(s, as("c"), { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "help-request", sourceHelpId: "h1" } });
+  assert.deepEqual(queuedHelpResults(s), [], "nothing to report while the work runs");
+  assert.equal(fail(s, user, { type: "SetHelpDelivery", helpId: "h1", part: "result", delivery: "sent" }).code, "not_found");
+  assert.equal(helpGetResult(s, { id: "B" }, "h1").result.work[0].status, "queued");
+
+  s = deliver(s, "t1", "A1");
+  s = report(s, "t1", result("R1", "A1", "issues", '["GSS-1"]'));
+  s = run(s, user, { type: "AcceptResult", taskId: "t1", attemptId: "A1", checks: [] });
+  const queued = queuedHelpResults(s);
+  assert.deepEqual(queued.map((g) => [g.memberId, g.helps.map((h) => h.id)]), [["B", ["h1"]]]);
+  assert.ok(helpResultPrompt("p1", queued[0].helps).includes("project help get p1 h1"));
+  const read = helpGetResult(s, { id: "B" }, "h1").result;
+  assert.equal(read.resultReady, true);
+  assert.deepEqual(read.work[0].resultArtifacts.map((a) => [a.name, a.text]), [["issues", '["GSS-1"]']]);
+
+  s = run(s, user, { type: "SetHelpDelivery", helpId: "h1", part: "result", delivery: "sending" });
+  s = run(s, user, { type: "SetHelpDelivery", helpId: "h1", part: "result", delivery: "sent" });
+  assert.deepEqual(queuedHelpResults(s), [], "reported once, not again");
+});
+
+test("a help run may start while the plan is running; plain runs still go one at a time", () => {
+  let s = world();
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "主計畫", steps: [{ key: "m", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  s = run(s, as("B"), { type: "AskHelp", helpId: "h1", text: "幫我" });
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", basePlanVersion: 1, plan: { objective: "幫忙", steps: [{ key: "h", memberId: "B", instruction: "做", completion: ["完成"] }] } });
+  assert.equal(fail(s, user, { type: "StartRun", runId: "rx", planId: "pl", version: 2, taskIds: ["tx"], consent: { id: "kx", source: "start-button" } }).code, "invalid_state");
+  s = run(s, as("c"), { type: "StartRun", runId: "r2", planId: "pl", version: 2, taskIds: ["t2"], consent: { id: "k2", source: "help-request", sourceHelpId: "h1" } });
+  assert.deepEqual(s.runs.map((r) => [r.id, r.status]), [["r1", "running"], ["r2", "running"]]);
+  assert.equal(activeRun(s).id, "r1", "the plan's own run stays the active one");
+});
+
+test("a result, failure or decline queues a notice for the coordinator; moving on settles it", () => {
+  const noticeOf = (s) => s.notices.map((n) => [n.kind, n.delivery, n.handled]);
+  let s = world();
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  s = deliver(s, "t1", "A1");
+  s = report(s, "t1", result("R1", "A1", "out", "\"x\""));
+  assert.deepEqual(noticeOf(s), [["result-ready", "queued", false]]);
+  assert.deepEqual(queuedNotices(s).map((n) => n.id), ["notice:t1:A1:result-ready"]);
+  assert.ok(noticePrompt("p1", queuedNotices(s)).includes("taskId t1，attemptId A1"));
+  s = run(s, user, { type: "SetNoticeDelivery", noticeId: "notice:t1:A1:result-ready", delivery: "sent" });
+  assert.deepEqual(queuedNotices(s), []);
+  s = run(s, user, { type: "AcceptResult", taskId: "t1", attemptId: "A1", checks: [] });
+  assert.equal(s.notices[0].handled, true);
+});
+
+test("a notice is not typed once its task moved on, and a result the user accepts raises none", () => {
+  let s = world();
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"], acceptance: "user" }] } });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  s = deliver(s, "t1", "A1");
+  s = report(s, "t1", result("R1", "A1", "out", "\"x\""));
+  assert.deepEqual(s.notices, [], "the user reviews it, not the coordinator");
+  let f = world();
+  f = run(f, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+  f = run(f, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  f = deliver(f, "t1", "A1");
+  f = report(f, "t1", { reportId: "F1", attemptId: "A1", kind: "failed", summary: "壞了" });
+  assert.equal(queuedNotices(f).length, 1);
+  f = run(f, user, { type: "RetryTask", taskId: "t1" });
+  assert.deepEqual(queuedNotices(f), [], "retried: nothing left to wake the coordinator for");
+});
+
+test("a work session is registered for one attempt and speaks only for it", () => {
+  let s = world();
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  s = run(s, user, { type: "PrepareDispatch", taskId: "t1", attemptId: "A1", effectId: "e1" });
+  const reg = (id, extra = {}) => ({ type: "RegisterExecution", executionId: id, memberId: "A", taskId: "t1", attemptId: "A1", instanceId: "tmux:work-1", generation: 1, ...extra });
+  assert.equal(fail(s, user, reg("x1", { attemptId: "OLD" })).code, "stale_attempt");
+  assert.equal(fail(s, user, reg("x1", { memberId: "B" })).code, "forbidden");
+  assert.equal(fail(s, as("A"), reg("x1")).code, "forbidden");
+  s = run(s, user, reg("x1"));
+  assert.equal(memberForInstance(s, "tmux:work-1").id, "A", "its terminal now resolves to the member");
+  assert.equal(fail(s, user, reg("x2", { instanceId: "tmux:other" })).code, "already_exists", "one session per attempt");
+  assert.equal(fail(s, user, reg("x3", { instanceId: "tmux:work-1", attemptId: "A9" })).code, "stale_attempt");
+  // The guard: its own task passes, anything else is refused.
+  assert.equal(executionGuard(s, "tmux:work-1", "t1", "A1"), undefined);
+  assert.equal(executionGuard(s, "tmux:work-1", "t2").ok, false);
+  assert.equal(executionGuard(s, "tmux:work-1", "t1", "A2").ok, false);
+  assert.equal(executionGuard(s, "tmux:personal", "t2"), undefined, "a personal terminal is not an execution");
+  s = run(s, user, { type: "EndExecution", executionId: "x1" });
+  assert.equal(memberForInstance(s, "tmux:work-1"), undefined, "an ended session no longer speaks");
+});
+
+test("a worker with a launch spec is scheduled without looking at its personal terminal", () => {
+  let s = world();
+  const spec = { kind: "claude", cwd: { kind: "absolute", path: "/jira" }, args: [], tmux: true };
+  assert.equal(fail(s, as("A"), { type: "SetMemberLaunch", memberId: "A", launch: spec }).code, "forbidden");
+  assert.equal(fail(s, user, { type: "SetMemberLaunch", memberId: "c", launch: spec }).code, "bad_args");
+  assert.equal(fail(s, user, { type: "SetMemberLaunch", memberId: "A", launch: { ...spec, cwd: { kind: "absolute", path: "rel" } } }).code, "bad_args");
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  const ctx = { controlMode: "full", online: () => false, observed: () => ({ state: "working", at: 0 }), held: () => true, busyElsewhere: () => true, now: 1e9 };
+  assert.deepEqual(verdict(s, s.tasks[0], ctx), { ok: false, reason: "offline" }, "typing into the personal terminal needs it online");
+  s = run(s, user, { type: "SetMemberLaunch", memberId: "A", launch: spec });
+  assert.equal(isolated(s, "A"), true);
+  assert.deepEqual(verdict(s, s.tasks[0], ctx), { ok: true }, "a fresh session ignores the personal terminal's state");
+  assert.equal(verdict(s, s.tasks[0], { ...ctx, controlMode: "readonly" }).ok, false, "agent control mode still gates it");
+  s = run(s, user, { type: "SetMemberLaunch", memberId: "A", launch: null });
+  assert.equal(isolated(s, "A"), false);
+});
+
+test("the launch setting cannot change while the member has a task in progress", () => {
+  let s = world();
+  const spec = { kind: "claude", cwd: { kind: "absolute", path: "/j" }, args: [], tmux: true };
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [{ key: "q", memberId: "A", instruction: "做", completion: ["完成"] }] } });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1"], consent: { id: "k1", source: "start-button" } });
+  s = deliver(s, "t1", "A1");
+  assert.equal(fail(s, user, { type: "SetMemberLaunch", memberId: "A", launch: spec }).code, "invalid_state");
 });

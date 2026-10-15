@@ -1,10 +1,11 @@
 // Pure rules for a project: decide(state, action) validates and produces events,
 // reduce(state, event) replays them. No IDs are made, no files read, no DOM here.
-import { decideTasks, reduceTasks } from "./project-tasks.ts";
+import { decideTasks, helpResultReady, memberBusy, reduceTasks } from "./project-tasks.ts";
 import type {
-  Actor, ActionBody, Binding, Decision, Member, Message, ProjectAction, ProjectError, ProjectErrorCode,
+  Actor, ActionBody, Binding, Decision, Help, Member, Message, ProjectAction, ProjectError, ProjectErrorCode,
   ProjectEvent, ProjectState, Result,
 } from "./project-types.ts";
+import { validModel } from "./project-types.ts";
 
 export const MAX_MESSAGE_CHARS = 20_000;
 export const MAX_PURPOSE_CHARS = 500;
@@ -12,7 +13,7 @@ export const MAX_NAME_CHARS = 80;
 
 export const emptyState = (): ProjectState => ({
   config: null, members: [], bindings: {}, handshakes: {}, messages: [], messageSeq: 0,
-  plans: [], consents: [], runs: [], tasks: [], artifacts: [], reports: [], issues: [], replies: [],
+  plans: [], consents: [], runs: [], tasks: [], artifacts: [], reports: [], issues: [], replies: [], helps: [], notices: [], executions: [],
 });
 
 const err = (code: ProjectErrorCode, message: string): Result<never, ProjectError> => ({ ok: false, error: { code, message } });
@@ -27,8 +28,12 @@ export function coordinatorOf(state: ProjectState): Member | undefined {
 // Which member a binding-holding instance belongs to, if any.
 export function memberForInstance(state: ProjectState, instanceId: string): Member | undefined {
   const b = Object.values(state.bindings).find((x) => x.instanceId === instanceId);
-  return b && state.members.find((m) => m.id === b.memberId);
+  const memberId = b?.memberId ?? executionForInstance(state, instanceId)?.memberId;
+  return memberId ? state.members.find((m) => m.id === memberId) : undefined;
 }
+// The live work session running in this instance, if any.
+export const executionForInstance = (state: ProjectState, instanceId: string) =>
+  state.executions.find((x) => x.status === "live" && x.instanceId === instanceId);
 
 export function decide(state: ProjectState, action: ProjectAction, now: string): Result<Decision, ProjectError> {
   const { actor, body } = action;
@@ -100,6 +105,28 @@ export function decide(state: ProjectState, action: ProjectAction, now: string):
       if (purpose.length > MAX_PURPOSE_CHARS) return err("bad_args", "用途過長");
       return ok([ev("MemberPurposeUpdated", { memberId: m.id, purpose, source: body.source })]);
     }
+    case "SetMemberModel": {
+      if (!isUser) return err("forbidden", "只有使用者能指定成員的預設模型");
+      if (!member(body.memberId)) return err("not_found", "沒有這個成員");
+      const model = body.model.trim();
+      if (model && !validModel(model)) return err("bad_args", "模型名稱只能用英數與 . _ : - [ ] /，最多 60 字");
+      return ok([ev("MemberModelUpdated", { memberId: body.memberId, model })]);
+    }
+    case "SetMemberLaunch": {
+      if (!isUser) return err("forbidden", "只有使用者能設定成員的工作 session");
+      const m = member(body.memberId);
+      if (!m) return err("not_found", "沒有這個成員");
+      if (m.role !== "worker") return err("bad_args", "只有 worker 能設定獨立工作 session");
+      // Switching mid-task would leave its replies with no terminal to go to.
+      if (memberBusy(state, m.id) || state.executions.some((x) => x.status === "live" && x.memberId === m.id)) return err("invalid_state", "這位成員還有進行中的任務或工作 session，請先處理完再切換");
+      const l = body.launch;
+      if (l !== null) {
+        if (!l || typeof l !== "object" || !["claude", "codex", "copilot", "gemini"].includes(l.kind)) return err("bad_args", "不支援的 agent 種類");
+        if (l.cwd?.kind !== "absolute" || typeof l.cwd.path !== "string" || !l.cwd.path.startsWith("/")) return err("bad_args", "工作目錄必須是絕對路徑");
+        if (!Array.isArray(l.args) || l.args.some((a) => typeof a !== "string" || a.includes("\0"))) return err("bad_args", "args 必須是字串陣列");
+      }
+      return ok([ev("MemberLaunchChanged", { memberId: m.id, launch: l })]);
+    }
     case "Hello": {
       if (actor.kind !== "member") return err("forbidden", "hello 只能由成員 agent 呼叫");
       const m = member(actor.memberId);
@@ -144,6 +171,31 @@ export function decide(state: ProjectState, action: ProjectAction, now: string):
       const msg = state.messages.find((x) => x.id === body.messageId);
       if (!msg || msg.author !== "user") return err("not_found", "沒有這則使用者訊息");
       return ok([ev("MessageDeliveryChanged", { messageId: msg.id, delivery: body.delivery })]);
+    }
+    case "AskHelp": {
+      const asker = actor.kind === "member" ? member(actor.memberId) : undefined;
+      if (!asker || asker.role !== "worker") return err("forbidden", "只有 worker 能向 coordinator 求助");
+      const text = body.text.trim();
+      if (!text) return err("bad_args", "求助內容不可空白");
+      if (text.length > MAX_MESSAGE_CHARS) return err("bad_args", "求助內容過長");
+      if (state.helps.some((x) => x.id === body.helpId)) return err("already_exists", "helpId 重複");
+      return ok([ev("HelpAsked", { helpId: body.helpId, memberId: asker.id, text })]);
+    }
+    case "AnswerHelp": {
+      const coord = coordinatorOf(state);
+      if (!coord || !callerIs(coord.id)) return err("forbidden", "只有 coordinator 能回覆求助");
+      const help = state.helps.find((x) => x.id === body.helpId);
+      if (!help) return err("not_found", "沒有這個求助");
+      if (help.answer) return err("invalid_state", "這個求助已回覆過");
+      const text = body.text.trim();
+      if (!text) return err("bad_args", "回覆不可空白");
+      if (text.length > MAX_MESSAGE_CHARS) return err("bad_args", "回覆過長");
+      return ok([ev("HelpAnswered", { helpId: help.id, text })]);
+    }
+    case "SetHelpDelivery": {
+      const help = state.helps.find((x) => x.id === body.helpId);
+      if (!help || (body.part === "answer" && !help.answer) || (body.part === "result" && !helpResultReady(state, help.id))) return err("not_found", "沒有這個求助");
+      return ok([ev("HelpDeliveryChanged", { helpId: help.id, part: body.part, delivery: body.delivery })]);
     }
     default:
       return decideTasks(state, actor, body, ev);
@@ -190,6 +242,14 @@ export function reduce(state: ProjectState, event: ProjectEvent): ProjectState {
         members: state.members.map((m) =>
           m.id === d.memberId ? { ...m, purpose: str(d.purpose), purposeSource: d.source === "agent" ? "agent" : "user" } : m),
       };
+    case "MemberModelUpdated":
+      return { ...state, members: state.members.map((m) => (m.id === d.memberId ? { ...m, model: str(d.model) || undefined } : m)) };
+    case "MemberLaunchChanged":
+      return { ...state, members: state.members.map((m) => {
+        if (m.id !== d.memberId) return m;
+        const { launch: _old, ...rest } = m;
+        return d.launch ? { ...rest, launch: d.launch as Member["launch"] } : rest;
+      }) };
     case "HandshakeRecorded": {
       const id = str(d.memberId);
       const mode = d.reportMode === "screen" ? "screen" : "protocol";
@@ -218,6 +278,22 @@ export function reduce(state: ProjectState, event: ProjectEvent): ProjectState {
         // `replied` is final; a late host reply must not step it back to `sent`.
         messages: state.messages.map((m) =>
           m.id === d.messageId && m.delivery !== "replied" ? { ...m, delivery: d.delivery as Message["delivery"] } : m),
+      };
+    case "HelpAsked":
+      return { ...state, helps: [...state.helps, { id: str(d.helpId), memberId: str(d.memberId), text: str(d.text), delivery: "queued" }] };
+    case "HelpAnswered":
+      // Answering settles the request itself; the answer then waits to reach the asker.
+      return { ...state, helps: state.helps.map((h) => (h.id === d.helpId ? { ...h, delivery: "replied", answer: { text: str(d.text), delivery: "queued" } } : h)) };
+    case "HelpDeliveryChanged":
+      return {
+        ...state,
+        helps: state.helps.map((h) => {
+          if (h.id !== d.helpId) return h;
+          const delivery = d.delivery as Help["delivery"];
+          if (d.part === "result") return { ...h, resultDelivery: delivery };
+          if (d.part === "answer") return h.answer ? { ...h, answer: { ...h.answer, delivery } } : h;
+          return h.delivery === "replied" ? h : { ...h, delivery };
+        }),
       };
     default:
       return reduceTasks(state, event);

@@ -156,3 +156,12 @@ test("agent commands split into a chosen agent and free-text arguments and rebui
   assert.equal(buildAgentCommand(p, "claude", ""), "FOO=1 /opt/bin/claude");
   assert.equal(parseAgentCommand("vim x"), undefined);
 });
+
+test("agentKindOf follows where-resolved names for aliases and wrappers", () => {
+  const resolve = (program) => ({ cc: ["claude"], mycodex: ["cli.js", "codex"], vimx: ["vim"] })[program];
+  assert.equal(agentKindOf("cc --model opus", resolve), "claude");
+  assert.equal(agentKindOf("FOO=1 mycodex", resolve), "codex");
+  assert.equal(agentKindOf("vimx", resolve), undefined);
+  assert.equal(agentKindOf("cc"), undefined);
+  assert.equal(parseAgentCommand("cc -x", resolve)?.kind, "claude");
+});

@@ -256,7 +256,7 @@ buildTaskPayload(state: ProjectState, taskId: string): TaskPayload;
 
 移除成員／綁定／啟動命令變更由 user action 執行；coordinator 可提議但不能默默將既有任務換到另一個 instance。這是使用者的工作區與流程設定，不涉及 worker 的工具權限。
 
-`ExecutionConsent` 保存 `{id,planId,version,sourceMessageId,scopeSummary,source:"start-button"|"user-message"}`。人按開始即原子建立 consent + run。人明確說「寫好計畫直接執行」時，coordinator 可在提交草稿後引用這則已保存的 user message 建立 run，不增加確認按鈕。controller 檢查 sourceMessageId 真的是人類訊息、尚未撤銷且非 worker 回報；範圍摘要與該原訊息一起顯示於執行紀錄。語意與範圍由 coordinator 依對話判斷，不宣稱 TS 可以驗證自由文字語意；只有執行意圖不清楚或超出要求時才回人處討論。這份 consent 是流程紀錄，不取代任何 worker 的核准機制。
+`ExecutionConsent` 保存 `{id,planId,version,sourceMessageId,scopeSummary,source:"start-button"|"user-message"|"help-request",sourceHelpId?}`。人按開始即原子建立 consent + run。人明確說「寫好計畫直接執行」時，coordinator 可在提交草稿後引用這則已保存的 user message 建立 run，不增加確認按鈕。controller 檢查 sourceMessageId 真的是人類訊息、尚未撤銷且非 worker 回報；範圍摘要與該原訊息一起顯示於執行紀錄。語意與範圍由 coordinator 依對話判斷，不宣稱 TS 可以驗證自由文字語意；只有執行意圖不清楚或超出要求時才回人處討論。成員求助（`help ask`）自己做不到的事時，coordinator 可用 `helpId` 當同意來源（`source:"help-request"`）直接派工，不必使用者再確認；controller 只檢查該 helpId 存在。這份 consent 是流程紀錄，不取代任何 worker 的核准機制。
 
 每個 event 共同欄位 `{eventId, type, at, actor, data}`。effects 只包含 `DeliverTask`、`DeliverInboxBatch`、`RefreshInstance`；`DeliverInboxBatch` 的對象可以是 coordinator，也可以是 worker（投遞 `ReplyIssue` 的答覆或取消請求）。S0 實測 worker 回報 `needs-input` 後會回到 idle 等待，不會自己輪詢 `project inbox`，所以答覆必須主動以 prompt 送進原 attempt 的 instance，內容帶 taskId／attemptId，走與 DeliverTask 相同的 reservation、idle 檢查與 InputWillStart 規則。各自帶 projectId、epoch、effectId、instanceId/generation 與對應 artifact/message IDs；不提供任意 shell 命令 effect。
 
@@ -312,7 +312,7 @@ CLI 仍不解讀語意；增加通用 `--json-stdin` 輸入傳輸，CLI 最多�
 | `project task get <projectId> <taskId>` | false | 僅限該 task 的 member：回目標、完成條件、輸入 artifact 內容與前次 rework 意見 |
 | `project message <projectId> --json-stdin` | true | coordinator 回覆 `{messageId,inReplyTo,text}` |
 | `project plan submit <projectId> --json-stdin` | true | `{actionId?,basePlanVersion?,plan}` → `{planId,version,revision}`；`basePlanVersion` 過期回 `revision_conflict` |
-| `project run start <projectId> --json-stdin` | true | `{actionId?,planId,version,instructionMessageId}`；僅匹配人已記錄的執行要求，否則回 needs_user_decision |
+| `project run start <projectId> --json-stdin` | true | `{actionId?,planId,version,instructionMessageId}` 或 `{…,helpId}`（二選一）；沒有匹配的人類訊息或求助時回 needs_user_decision |
 | `project task report <projectId> <taskId> --json-stdin` | true | `{reportId,attemptId,kind,summary,artifacts?,question?}`；`reportId` 為不透明字串（S0 實測各 agent 格式不同），去重靠 `taskId`＋`attemptId`＋`reportId`，CLI 以 JSON 解析不可字串比對 |
 | `project task accept <projectId> <taskId> --json-stdin` | true | coordinator 回 `{actionId?,attemptId,checks:[{criterion,evidenceArtifactIds}]}`，所有條件需有對應 |
 | `project task rework <projectId> <taskId> --json-stdin` | true | coordinator 回 `{actionId?,attemptId,feedback}` → RequestRework |

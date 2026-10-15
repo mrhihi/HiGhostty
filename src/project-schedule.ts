@@ -23,11 +23,22 @@ export type ScheduleContext = {
   force?: boolean;
 };
 
+// A worker with a launch spec gets a work session per task; the personal terminal is never typed into.
+export const isolated = (state: ProjectState, memberId: string): boolean => {
+  const member = state.members.find((m) => m.id === memberId);
+  return member?.role === "worker" && !!member.launch;
+};
+// The work session of a task's current attempt, if one is running.
+export const executionOfTask = (state: ProjectState, task: { id: string; attempt?: { id: string } }) =>
+  state.executions.find((x) => x.status === "live" && x.taskId === task.id && x.attemptId === task.attempt?.id);
+
 export function verdict(state: ProjectState, task: Task, ctx: ScheduleContext): { ok: true } | { ok: false; reason: SkipReason } {
   if (task.status !== "queued") return { ok: false, reason: "busy" };
   const rule = queueReasonOf(state, task);
   if (rule) return { ok: false, reason: rule };
   if (ctx.controlMode !== "full") return { ok: false, reason: "control-mode" };
+  // A work session starts fresh: nothing to observe, no terminal to hold, no other project sharing it.
+  if (isolated(state, task.memberId)) return { ok: true };
   if (!ctx.online(task.memberId)) return { ok: false, reason: "offline" };
   if (ctx.busyElsewhere(task.memberId)) return { ok: false, reason: "other-project" };
   const seen = ctx.observed(task.memberId);

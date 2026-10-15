@@ -136,3 +136,15 @@ test("observed body is strict", () => {
   assert.equal(observedBody("t", { attemptId: "A", summary: "x", extra: 1 }).ok, false);
   assert.equal(observedBody("t", { attemptId: "A", summary: "x", artifacts: [{ name: "n" }] }).ok, false);
 });
+
+test("run start accepts a helpId instead of a user message, never both", () => {
+  const s = run(world(), as("c"), { type: "SubmitPlan", planId: "pl", plan: PLAN });
+  assert.equal(runStartBody(s, { instructionMessageId: "m1", helpId: "h1" }, ids).ok, false);
+  const built = runStartBody(s, { helpId: "h1" }, ids);
+  assert.deepEqual([built.body.consent.source, built.body.consent.sourceHelpId], ["help-request", "h1"]);
+  // A helpId that no worker asked is refused; a real one lets the coordinator start without the user.
+  assert.equal(decide(s, { actionId: "x", actor: as("c"), body: built.body }, NOW).error.code, "not_found");
+  const asked = run(s, as("A"), { type: "AskHelp", helpId: "h1", text: "我查不了 Jira" });
+  const started = run(asked, as("c"), built.body);
+  assert.equal(started.consents[0].source, "help-request");
+});

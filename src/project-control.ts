@@ -1,8 +1,8 @@
 // `highostty ctl project …`: input parsing, caller → member resolution and reply shapes.
 // Pure; main.ts only wires it to the store. Command names live in control.ts's OPS.
 import { errReply, okReply, type ErrorCode, type Reply } from "./control.ts";
-import { coordinatorOf, inboxFor, memberForInstance, MAX_MESSAGE_CHARS } from "./projects.ts";
-import { activeRun, buildTaskPayload, queueReasonOf, stepOf } from "./project-tasks.ts";
+import { coordinatorOf, executionForInstance, inboxFor, memberForInstance, MAX_MESSAGE_CHARS } from "./projects.ts";
+import { activeRun, buildTaskPayload, helpResultReady, helpTasks, queueReasonOf, stepOf } from "./project-tasks.ts";
 import type { ActionBody, ProjectError, ProjectState, ReportKind } from "./project-types.ts";
 
 // The CLI reads at most this much from stdin (control.rs enforces the same limit).
@@ -17,21 +17,28 @@ export const INSTANCE_GENERATION = 1;
 // Agents a project can drive. Their start commands: claude, codex, copilot (or `gh copilot`), gemini.
 export const PROJECT_AGENT_KINDS = ["claude", "codex", "copilot", "gemini"] as const;
 export type ProjectAgentKind = (typeof PROJECT_AGENT_KINDS)[number];
+// What the login shell's `where` says a program really is (file names of its path, symlink target or
+// alias target); undefined while unknown. Lets an alias or wrapper count as the agent it launches.
+export type ProgramResolver = (program: string) => string[] | undefined;
 // Which supported agent a start command launches; undefined for anything else. Leading
 // `VAR=value` words are skipped; only the plain form counts (no `cd x && …`, pipes or wrappers).
-export function agentKindOf(command: string | undefined): ProjectAgentKind | undefined {
+export function agentKindOf(command: string | undefined, resolve?: ProgramResolver): ProjectAgentKind | undefined {
   const words = (command ?? "").trim().split(/\s+/).filter(Boolean);
   while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
-  const name = (words[0] ?? "").split("/").pop();
+  const program = words[0] ?? "";
+  const name = program.split("/").pop();
   if (name === "gh") return words[1] === "copilot" ? "copilot" : undefined;
-  return (PROJECT_AGENT_KINDS as readonly string[]).includes(name ?? "") ? (name as ProjectAgentKind) : undefined;
+  const kinds = PROJECT_AGENT_KINDS as readonly string[];
+  if (kinds.includes(name ?? "")) return name as ProjectAgentKind;
+  const found = program ? resolve?.(program)?.find((real) => kinds.includes(real)) : undefined;
+  return found as ProjectAgentKind | undefined;
 }
 
 // A supported agent's start command split for editing: the agent is chosen from a list, the
 // rest (arguments) stays free text. `prefix` is any leading `VAR=value` words, `program` what ran.
 export type AgentCommand = { prefix: string; program: string; kind: ProjectAgentKind; args: string };
-export function parseAgentCommand(command: string | undefined): AgentCommand | undefined {
-  const kind = agentKindOf(command);
+export function parseAgentCommand(command: string | undefined, resolve?: ProgramResolver): AgentCommand | undefined {
+  const kind = agentKindOf(command, resolve);
   if (!kind) return undefined;
   const words = (command ?? "").trim().split(/\s+/).filter(Boolean);
   const prefix: string[] = [];
@@ -52,11 +59,12 @@ export function buildAgentCommand(parsed: AgentCommand, kind: ProjectAgentKind, 
 export function memberCandidates<S extends { id: string; tmuxSession?: string; exited?: boolean }>(
   tabs: { command?: string; tmux?: boolean; leaves: string[] }[],
   surfaces: Map<string, S>,
+  resolve?: ProgramResolver,
 ): S[] {
   const found: S[] = [];
   for (const tab of tabs) {
     const first = surfaces.get(tab.leaves[0] ?? "");
-    if (agentKindOf(tab.command) && tab.tmux && first?.tmuxSession && !first.exited) found.push(first);
+    if (agentKindOf(tab.command, resolve) && tab.tmux && first?.tmuxSession && !first.exited) found.push(first);
   }
   return found;
 }
@@ -114,6 +122,39 @@ export function messageBody(value: Record<string, unknown>, newId: () => string)
   };
 }
 
+// `helpId` is optional for the agent; the caller supplies a generated one when absent (a resend with the same id is a no-op).
+export function helpAskBody(value: Record<string, unknown>, newId: () => string): Built {
+  const extra = unknownKeys(value, ["text", "helpId"]);
+  if (extra.length) return bad(`help ask 不認得欄位：${extra.join("、")}`);
+  if (typeof value.text !== "string" || !value.text.trim()) return bad("text 必須是非空字串");
+  if (value.text.length > MAX_MESSAGE_CHARS) return bad(`text 最多 ${MAX_MESSAGE_CHARS} 字`);
+  const problem = optionalString(value.helpId);
+  if (problem) return bad(`helpId ${problem}`);
+  const helpId = (value.helpId as string | undefined) ?? newId();
+  return { ok: true, actionId: `help:${helpId}`, body: { type: "AskHelp", helpId, text: value.text } };
+}
+export function helpAnswerBody(value: Record<string, unknown>): Built {
+  const extra = unknownKeys(value, ["text", "helpId"]);
+  if (extra.length) return bad(`help answer 不認得欄位：${extra.join("、")}`);
+  if (typeof value.helpId !== "string" || !value.helpId) return bad("helpId 必須是非空字串");
+  if (typeof value.text !== "string" || !value.text.trim()) return bad("text 必須是非空字串");
+  if (value.text.length > MAX_MESSAGE_CHARS) return bad(`text 最多 ${MAX_MESSAGE_CHARS} 字`);
+  return { ok: true, actionId: `help-answer:${value.helpId}`, body: { type: "AnswerHelp", helpId: value.helpId, text: value.text } };
+}
+// Only the asker and the coordinator may read a request (and its answer).
+export function helpGetResult(state: ProjectState, caller: { id: string }, helpId: string): Reply {
+  const help = state.helps.find((h) => h.id === helpId);
+  const coordinator = coordinatorOf(state);
+  if (!help || (help.memberId !== caller.id && coordinator?.id !== caller.id)) return errReply("not_found", "沒有這個求助，或不是你的求助");
+  const asker = state.members.find((m) => m.id === help.memberId);
+  // What the coordinator had done for this request: each task's outcome and results, so the asker can carry on.
+  const work = helpTasks(state, help.id).map((t) => ({
+    taskId: t.id, step: t.stepKey, member: state.members.find((m) => m.id === t.memberId)?.name, status: t.status,
+    resultArtifacts: state.artifacts.filter((a) => t.resultArtifactIds.includes(a.id)).map(({ name, mediaType, text }) => ({ name, mediaType, text })),
+  }));
+  return okReply({ helpId: help.id, from: { id: help.memberId, name: asker?.name }, text: help.text, answered: !!help.answer, answer: help.answer?.text, ...(work.length ? { resultReady: helpResultReady(state, help.id), work } : {}) });
+}
+
 // Who the caller is within this project; undefined when its terminal is not a member.
 export function callerMember(state: ProjectState, instance: string | undefined) {
   return instance ? memberForInstance(state, instance) : undefined;
@@ -130,7 +171,7 @@ export function getResult(state: ProjectState, revision: number) {
     coordinator: coordinator?.id,
     members: state.members.map((m) => ({
       id: m.id, role: m.role, name: m.name, purpose: m.purpose, purposeSource: m.purposeSource, reportMode: m.reportMode,
-      bound: !!state.bindings[m.id], handshake: !!state.handshakes[m.id],
+      model: m.model, bound: !!state.bindings[m.id], handshake: !!state.handshakes[m.id],
     })),
     messages: state.messages.length,
     plan: state.plans.length ? { id: state.plans[0].id, latestVersion: state.plans.at(-1)!.version } : null,
@@ -170,10 +211,10 @@ export function planSubmitBody(value: Record<string, unknown>, newId: () => stri
 
 // The coordinator names the user's message; plan and version default to the latest.
 export function runStartBody(state: ProjectState, value: Record<string, unknown>, newId: () => string): Built {
-  const extra = unknownKeys(value, ["actionId", "planId", "version", "instructionMessageId"]);
+  const extra = unknownKeys(value, ["actionId", "planId", "version", "instructionMessageId", "helpId"]);
   if (extra.length) return bad(`run start 不認得欄位：${extra.join("、")}`);
-  for (const key of ["actionId", "planId", "instructionMessageId"]) { const p = optionalString(value[key]); if (p) return bad(`${key} ${p}`); }
-  if (typeof value.instructionMessageId !== "string") return bad("缺少 instructionMessageId（使用者要求執行的那則訊息）");
+  for (const key of ["actionId", "planId", "instructionMessageId", "helpId"]) { const p = optionalString(value[key]); if (p) return bad(`${key} ${p}`); }
+  if ((typeof value.instructionMessageId === "string") === (typeof value.helpId === "string")) return bad("instructionMessageId（使用者要求執行的那則訊息）與 helpId（成員求助）二選一");
   const latest = state.plans.at(-1);
   if (!latest) return bad("還沒有計畫；先用 plan submit 提交");
   const version = value.version === undefined ? latest.version : value.version;
@@ -185,7 +226,9 @@ export function runStartBody(state: ProjectState, value: Record<string, unknown>
     ok: true, actionId: value.actionId as string | undefined,
     body: {
       type: "StartRun", runId: newId(), planId: plan.id, version: version as number, taskIds: plan.steps.map(() => newId()),
-      consent: { id: newId(), source: "user-message", sourceMessageId: value.instructionMessageId },
+      consent: typeof value.helpId === "string"
+        ? { id: newId(), source: "help-request", sourceHelpId: value.helpId }
+        : { id: newId(), source: "user-message", sourceMessageId: value.instructionMessageId as string },
     },
   };
 }
@@ -285,4 +328,13 @@ export function observedBody(taskId: string, value: Record<string, unknown>): Bu
     }
   }
   return { ok: true, body: { type: "SubmitObservedResult", taskId, attemptId: value.attemptId, summary: value.summary, artifacts } };
+}
+
+// A work session may only read and report its own task and attempt; its member's other jobs are not its business.
+export function executionGuard(state: ProjectState, instance: string | undefined, taskId: string, attemptId?: string): Reply | undefined {
+  const execution = instance ? executionForInstance(state, instance) : undefined;
+  if (!execution) return undefined;
+  if (execution.taskId !== taskId) return errReply("forbidden", "這個工作 session 只負責它自己的任務");
+  if (attemptId !== undefined && execution.attemptId !== attemptId) return errReply("stale_attempt", "這個工作 session 屬於另一次嘗試");
+  return undefined;
 }

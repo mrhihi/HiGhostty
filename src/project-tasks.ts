@@ -3,9 +3,10 @@
 // projects.ts routes the S2 action types here. Not covered yet: ReplyIssue, ObservedBlocked,
 // SubmitObservedResult, DeliverNow, cross-project reservation (S3).
 import type {
-  Actor, Artifact, Attempt, Issue, IssueReply, Member, PlanVersion, ProjectError, ProjectErrorCode, ProjectEvent, ProjectState, Report, ReportInput,
+  Actor, Artifact, Attempt, Execution, Issue, Notice, IssueReply, Member, PlanVersion, ProjectError, ProjectErrorCode, ProjectEvent, ProjectState, Report, ReportInput,
   Result, Step, Task, TaskActionBody, TaskStatus,
 } from "./project-types.ts";
+import { validModel } from "./project-types.ts";
 
 export const MAX_STEPS = 100;
 export const MAX_ARTIFACT_CHARS = 128 * 1024;
@@ -40,9 +41,10 @@ export function validatePlan(plan: unknown, members: Member[]): Result<Omit<Plan
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) { add("schema", `第 ${index + 1} 步必須是物件`); continue; }
     const s = raw as Record<string, unknown>;
     const key = text(s.key);
-    unknown(s, ["key", "memberId", "title", "instruction", "dependsOn", "completion", "inputFrom", "acceptance", "externalWrite"], `步驟 ${key || index + 1}`, key);
+    unknown(s, ["key", "memberId", "title", "instruction", "dependsOn", "completion", "inputFrom", "acceptance", "externalWrite", "model"], `步驟 ${key || index + 1}`, key);
     if (s.acceptance !== undefined && !["coordinator", "user", "auto-on-protocol-result"].includes(s.acceptance as string)) add("schema", "acceptance 必須是 coordinator、user 或 auto-on-protocol-result", key);
     if (s.externalWrite !== undefined && typeof s.externalWrite !== "boolean") add("schema", "externalWrite 必須是布林值", key);
+    if (s.model !== undefined && s.model !== "" && !validModel(s.model)) add("schema", "model 只能用英數與 . _ : - [ ] /，最多 60 字（例如 opus、sonnet、haiku）", key);
     if (!key) add("schema", `第 ${index + 1} 步缺少 key`);
     else if (seen.has(key)) add("duplicate_key", `步驟 key 重複：${key}`, key);
     seen.add(key);
@@ -69,6 +71,7 @@ export function validatePlan(plan: unknown, members: Member[]): Result<Omit<Plan
       dependsOn: list(s.dependsOn, "dependsOn"), completion, inputFrom,
       ...(typeof s.acceptance === "string" && ["coordinator", "user", "auto-on-protocol-result"].includes(s.acceptance) ? { acceptance: s.acceptance as Step["acceptance"] } : {}),
       ...(s.externalWrite === true ? { externalWrite: true } : {}),
+      ...(validModel(s.model) ? { model: s.model } : {}),
     });
   }
   const byKey = new Map(steps.map((s) => [s.key, s]));
@@ -123,7 +126,24 @@ export const stepOf = (state: ProjectState, task: Task): Step | undefined => {
   const run = runOf(state, task.runId);
   return run && planOf(state, run)?.steps.find((s) => s.key === task.stepKey);
 };
-export const activeRun = (state: ProjectState) => state.runs.find((r) => r.status === "running" || r.status === "paused");
+// The runs a coordinator started on behalf of a worker's help request, and the tasks in them.
+export const helpRuns = (state: ProjectState, helpId: string) =>
+  state.runs.filter((r) => state.consents.some((c) => c.id === r.consentId && c.sourceHelpId === helpId));
+// A help's result is ready once it has runs and every one of them is settled (completed or closed).
+export function helpResultReady(state: ProjectState, helpId: string): boolean {
+  const runs = helpRuns(state, helpId);
+  return runs.length > 0 && runs.every((r) => r.status === "completed" || r.status === "closed");
+}
+export const helpTasks = (state: ProjectState, helpId: string) => {
+  const ids = new Set(helpRuns(state, helpId).flatMap((r) => r.taskIds));
+  return state.tasks.filter((t) => ids.has(t.id));
+};
+const isLive = (r: { status: string }) => r.status === "running" || r.status === "paused";
+export const isHelpRun = (state: ProjectState, run: { consentId: string }) =>
+  state.consents.some((c) => c.id === run.consentId && c.source === "help-request");
+// The plan's own run. A run a coordinator opened for a worker's help request runs beside it and never counts as "the" active run.
+export const activeRun = (state: ProjectState) => state.runs.find((r) => isLive(r) && !isHelpRun(state, r)) ?? state.runs.find(isLive);
+export const MAX_HELP_RUNS = 2;
 // The worker is busy while a task of theirs holds an attempt that is not yet a result.
 export const memberBusy = (state: ProjectState, memberId: string) =>
   state.tasks.some((t) => t.memberId === memberId && ACTIVE.includes(t.status));
@@ -209,7 +229,10 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       const plan = state.plans.find((p) => p.id === body.planId && p.version === body.version);
       if (!plan) return err("not_found", "沒有這個計畫版本");
       if (runOf(state, body.runId)) return err("already_exists", "runId 重複");
-      if (activeRun(state)) return err("invalid_state", "專案已有進行中的計畫；一次只能執行一份");
+      if (body.consent.source === "help-request") {
+        // Help runs go beside the running plan (the helper may be asked while the asker waits); bounded so they cannot pile up.
+        if (state.runs.filter((r) => isLive(r) && isHelpRun(state, r)).length >= MAX_HELP_RUNS) return err("invalid_state", `同時進行的求助工作已達上限 ${MAX_HELP_RUNS}`);
+      } else if (state.runs.some(isLive)) return err("invalid_state", "專案已有進行中的計畫；一次只能執行一份");
       if (body.taskIds.length !== plan.steps.length || new Set(body.taskIds).size !== body.taskIds.length) return err("bad_args", "taskIds 必須與步驟一一對應且不重複");
       const blocked = startBlockers(state, plan);
       if (blocked.length) {
@@ -218,13 +241,17 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       }
       const consent = body.consent;
       if (consent.source === "start-button" ? !isUser : !isCoordinator) return err("forbidden", "同意來源與操作者不符");
+      if (consent.source === "help-request") {
+        // A worker asking for something it cannot do itself is the request; the coordinator may route it without the user.
+        if (!state.helps.some((h) => h.id === consent.sourceHelpId)) return err("not_found", "找不到對應的求助（helpId）");
+      }
       if (consent.source === "user-message") {
         const src = state.messages.find((m) => m.id === consent.sourceMessageId);
         if (!src || src.author !== "user") return err("needs_user_decision", "找不到對應的使用者訊息，請使用者按「開始」確認");
       }
       const scopeSummary = plan.objective.slice(0, 200);
       return ok([
-        ev("ExecutionConsentRecorded", { consent: { id: consent.id, planId: plan.id, version: plan.version, source: consent.source, sourceMessageId: consent.sourceMessageId, scopeSummary } }),
+        ev("ExecutionConsentRecorded", { consent: { id: consent.id, planId: plan.id, version: plan.version, source: consent.source, sourceMessageId: consent.sourceMessageId, sourceHelpId: consent.sourceHelpId, scopeSummary } }),
         ev("RunStarted", { runId: body.runId, planId: plan.id, planVersion: plan.version, taskIds: body.taskIds, consentId: consent.id, auto: body.auto === true }),
         ...plan.steps.map((step, i) => ev("TaskQueued", { taskId: body.taskIds[i], runId: body.runId, stepKey: step.key, planVersion: plan.version, memberId: step.memberId })),
       ]);
@@ -297,6 +324,28 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       if (!isUser) return err("forbidden", "只有使用者能更新投遞狀態");
       if (!state.replies.some((r) => r.id === body.replyId)) return err("not_found", "沒有這則回覆");
       return ok([ev("ReplyDeliveryChanged", { replyId: body.replyId, delivery: body.delivery })]);
+    }
+    case "RegisterExecution": {
+      if (!isUser) return err("forbidden", "只有使用者端的控制器能登記工作 session");
+      const task = taskOf(state, body.taskId);
+      if (!task?.attempt) return err("not_found", "沒有這個任務或嘗試");
+      if (task.memberId !== body.memberId) return err("forbidden", "任務不是這位成員的");
+      if (task.attempt.id !== body.attemptId) return err("stale_attempt", "attempt 不符");
+      if (state.executions.some((x) => x.id === body.executionId)) return err("already_exists", "executionId 重複");
+      if (state.executions.some((x) => x.status === "live" && x.taskId === task.id && x.attemptId === body.attemptId)) return err("already_exists", "這次嘗試已有工作 session");
+      const holder = Object.values(state.bindings).find((b) => b.instanceId === body.instanceId) ?? state.executions.find((x) => x.status === "live" && x.instanceId === body.instanceId);
+      if (holder) return err("instance_in_use", "這個終端機已被成員或工作 session 使用");
+      return ok([ev("ExecutionRegistered", { execution: { id: body.executionId, memberId: body.memberId, taskId: body.taskId, attemptId: body.attemptId, instanceId: body.instanceId, generation: body.generation, status: "live" } })]);
+    }
+    case "EndExecution": {
+      if (!isUser) return err("forbidden", "只有使用者端的控制器能結束工作 session");
+      if (!state.executions.some((x) => x.id === body.executionId)) return err("not_found", "沒有這個工作 session");
+      return ok([ev("ExecutionEnded", { executionId: body.executionId })]);
+    }
+    case "SetNoticeDelivery": {
+      if (!isUser) return err("forbidden", "只有使用者端的控制器能更新投遞狀態");
+      if (!state.notices.some((n) => n.id === body.noticeId)) return err("not_found", "沒有這則通知");
+      return ok([ev("NoticeDeliveryChanged", { noticeId: body.noticeId, delivery: body.delivery })]);
     }
     case "SetRunAuto": {
       if (!isUser) return err("forbidden", "只有使用者能切換自動交付");
@@ -476,6 +525,10 @@ function receiveReport(state: ProjectState, task: Task, actor: Actor, input: Rep
       if (run && state.tasks.filter((t) => t.runId === run.id && t.id !== task.id).every((t) => t.status === "completed")) events.push(ev("RunCompleted", { runId: run.id }));
     }
   }
+  // Wake the coordinator for what it must act on. A result a person accepts, or one accepted automatically, is not its business.
+  const settled = events.some((e) => e.type === "TaskStatusChanged" && e.data.status === "completed");
+  const mine = input.kind === "result" ? (!settled && stepOf(state, task)?.acceptance !== "user" ? "result-ready" : undefined) : input.kind === "failed" || input.kind === "declined" ? input.kind : undefined;
+  if (mine) events.push(ev("NoticeQueued", { notice: { id: `notice:${task.id}:${input.attemptId}:${mine}`, kind: mine, taskId: task.id, attemptId: input.attemptId, delivery: "queued", handled: false } }));
   return ok(events);
 }
 
@@ -518,7 +571,19 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
         const attempt = t.attempt;
         return attempt && attempt.id === d.attemptId ? { ...t, attempt: { ...attempt, inputStarted: true } } : t;
       });
+    case "ExecutionRegistered":
+      return { ...state, executions: [...state.executions, d.execution as Execution] };
+    case "ExecutionEnded":
+      return { ...state, executions: state.executions.map((x) => (x.id === d.executionId ? { ...x, status: "ended" as const } : x)) };
+    case "NoticeQueued": {
+      const notice = d.notice as Notice;
+      return state.notices.some((n) => n.id === notice.id) ? state : { ...state, notices: [...state.notices, notice] };
+    }
+    case "NoticeDeliveryChanged":
+      return { ...state, notices: state.notices.map((n) => (n.id === d.noticeId && n.delivery !== "replied" ? { ...n, delivery: d.delivery as Notice["delivery"] } : n)) };
     case "TaskStatusChanged":
+      // The task moving off the state a notice reported means someone dealt with it.
+      state = { ...state, notices: state.notices.map((n) => (n.taskId === d.taskId && !n.handled && n.kind !== d.status ? { ...n, handled: true } : n)) };
       return patchTask(state, str(d.taskId), (t) => {
         const next: Task = { ...t, status: d.status as TaskStatus, activityAt: event.at };
         if (d.releaseAttempt) delete next.attempt;
@@ -544,6 +609,7 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
     case "TaskCancelRequested":
       return patchTask(state, str(d.taskId), (t) => ({ ...t, cancelRequested: true }));
     case "TaskReworkRequested":
+      state = { ...state, notices: state.notices.map((n) => (n.taskId === d.taskId ? { ...n, handled: true } : n)) };
       return patchTask(state, str(d.taskId), (t) => {
         const next: Task = { ...t, status: "queued", reworkFeedback: str(d.feedback), cancelRequested: false };
         delete next.attempt;
@@ -551,6 +617,7 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
         return next;
       });
     case "TaskRetryRequested":
+      state = { ...state, notices: state.notices.map((n) => (n.taskId === d.taskId ? { ...n, handled: true } : n)) };
       return patchTask(state, str(d.taskId), (t) => {
         const next: Task = { ...t, status: "queued", memberId: str(d.memberId) || t.memberId, cancelRequested: false, reworkFeedback: undefined, resultArtifactIds: [] };
         delete next.attempt;

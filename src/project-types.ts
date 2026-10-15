@@ -29,7 +29,11 @@ export type Member = {
   reportMode: ReportMode;
   launch?: LaunchSpec;
   favoriteId?: string;
+  // The model this agent should normally use (a task's own `model` wins). Free text such as opus or sonnet.
+  model?: string;
 };
+// A model name is typed into an agent's terminal (`/model <name>`), so only plain identifier characters pass.
+export const validModel = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:\-\[\]\/]{0,59}$/.test(value);
 
 export type Binding = {
   projectId: string;
@@ -66,6 +70,8 @@ export type Step = {
   acceptance?: "coordinator" | "user" | "auto-on-protocol-result";
   // The step changes something outside HiGhostty (creates a ticket, sends mail…).
   externalWrite?: boolean;
+  // The model that suits this step (e.g. a small one for routine edits, a large one for design); empty: the member's default.
+  model?: string;
 };
 export type PlanVersion = { id: string; version: number; title: string; objective: string; scope: string; steps: Step[] };
 
@@ -104,7 +110,7 @@ export type Run = {
   // Task ids that were not completed when the user closed the run.
   unfinished?: string[];
 };
-export type ExecutionConsent = { id: string; planId: string; version: number; source: "start-button" | "user-message"; sourceMessageId?: string };
+export type ExecutionConsent = { id: string; planId: string; version: number; source: "start-button" | "user-message" | "help-request"; sourceMessageId?: string; sourceHelpId?: string };
 // S2 keeps artifact text inside the journal (reports are capped well below its 1 MiB line limit).
 export type Artifact = { id: string; taskId: string; attemptId: string; name: string; mediaType: "text/plain" | "text/markdown" | "application/json"; text: string; bytes: number; source?: "screen" };
 export type ReportKind = "accepted" | "progress" | "needs-input" | "declined" | "result" | "failed" | "cancelled";
@@ -113,6 +119,21 @@ export type Issue = { id: string; taskId?: string; memberId: string; kind: "ques
 
 // A user's answer to a worker's question; delivered into the worker's terminal like a task.
 export type IssueReply = { id: string; issueId: string; taskId: string; attemptId: string; text: string; delivery: MessageDelivery };
+
+// A worker asking the coordinator whether another agent can help. `delivery` is the request reaching the
+// coordinator (`replied` once answered); the answer is then delivered to the asker like a reply.
+export type Help = { id: string; memberId: string; text: string; delivery: MessageDelivery; answer?: { text: string; delivery: MessageDelivery }; resultDelivery?: MessageDelivery };
+
+// A fact the coordinator should act on (a result to check, a task that failed or was declined). Kept in the
+// journal so it survives a restart; `delivery` is the wake-up reaching the coordinator, `handled` says the
+// task has since moved on (accepted, reworked, retried…), which only the journal can tell.
+export type NoticeKind = "result-ready" | "failed" | "declined";
+export type Notice = { id: string; kind: NoticeKind; taskId: string; attemptId: string; delivery: MessageDelivery; handled: boolean };
+
+// One work session run for a task attempt. The member is the long-lived collaborator; the execution is this
+// session, found by its instance (a tmux session). A report from it counts only for its own task and attempt,
+// so another job of the same member (or the member's personal terminal) cannot speak for it.
+export type Execution = { id: string; memberId: string; taskId: string; attemptId: string; instanceId: string; generation: number; status: "live" | "ended" };
 
 export type ProjectState = {
   config: ProjectConfig | null;
@@ -129,6 +150,9 @@ export type ProjectState = {
   reports: Report[];
   issues: Issue[];
   replies: IssueReply[];
+  helps: Help[];
+  notices: Notice[];
+  executions: Execution[];
 };
 
 export type Actor = { kind: "user" } | { kind: "member"; memberId: string };
@@ -137,11 +161,11 @@ export type ProjectEvent = {
   eventId: string;
   type:
     | "ProjectCreated" | "ProjectRenamed" | "MemberAdded" | "MemberRemoved" | "BindingChanged"
-    | "MemberPurposeUpdated" | "HandshakeRecorded" | "MessageQueued" | "MessageAdded" | "MessageDeliveryChanged"
+    | "MemberPurposeUpdated" | "MemberModelUpdated" | "HandshakeRecorded" | "MessageQueued" | "MessageAdded" | "MessageDeliveryChanged"
     | "PlanVersionCreated" | "ExecutionConsentRecorded" | "RunStarted" | "RunPaused" | "RunResumed" | "RunCompleted"
     | "TaskQueued" | "TaskDispatchPrepared" | "InputWillStart" | "TaskStatusChanged" | "ReportReceived"
     | "RunAutoChanged" | "RunClosed" | "ObservedResultSubmitted"
-    | "IssueOpened" | "IssueResolved" | "IssueReplyQueued" | "ReplyDeliveryChanged" | "TaskCancelRequested" | "TaskReworkRequested" | "TaskRetryRequested";
+    | "MemberLaunchChanged" | "ExecutionRegistered" | "ExecutionEnded" | "NoticeQueued" | "NoticeDeliveryChanged" | "HelpAsked" | "HelpAnswered" | "HelpDeliveryChanged" | "IssueOpened" | "IssueResolved" | "IssueReplyQueued" | "ReplyDeliveryChanged" | "TaskCancelRequested" | "TaskReworkRequested" | "TaskRetryRequested";
   at: string;
   actor: Actor;
   data: Record<string, unknown>;
@@ -154,10 +178,16 @@ export type ActionBody =
   | { type: "RemoveMember"; memberId: string }
   | { type: "BindMember"; memberId: string; instanceId: string; generation: number }
   | { type: "UpdatePurpose"; memberId: string; purpose: string; source: "user" | "agent" }
+  | { type: "SetMemberModel"; memberId: string; model: string }
+  // A worker with a launch spec runs each task in its own work session; null goes back to typing into its terminal.
+  | { type: "SetMemberLaunch"; memberId: string; launch: LaunchSpec | null }
   | { type: "Hello"; purpose: string; reportMode: ReportMode; reportNeedsApproval?: boolean; protocolVersion: number }
   | { type: "SendMessage"; messageId: string; conversationId: string; text: string }
   | { type: "CoordinatorMessage"; messageId: string; inReplyTo?: string; text: string }
   | { type: "SetMessageDelivery"; messageId: string; delivery: MessageDelivery }
+  | { type: "AskHelp"; helpId: string; text: string }
+  | { type: "AnswerHelp"; helpId: string; text: string }
+  | { type: "SetHelpDelivery"; helpId: string; part: "ask" | "answer" | "result"; delivery: MessageDelivery }
   | TaskActionBody;
 
 export type ReportInput = {
@@ -170,7 +200,7 @@ export type ReportInput = {
 };
 export type TaskActionBody =
   | { type: "SubmitPlan"; planId: string; plan: unknown; basePlanVersion?: number }
-  | { type: "StartRun"; runId: string; planId: string; version: number; taskIds: string[]; auto?: boolean; consent: { id: string; source: "start-button" | "user-message"; sourceMessageId?: string } }
+  | { type: "StartRun"; runId: string; planId: string; version: number; taskIds: string[]; auto?: boolean; consent: { id: string; source: "start-button" | "user-message" | "help-request"; sourceMessageId?: string; sourceHelpId?: string } }
   | { type: "SetRunAuto"; runId: string; auto: boolean }
   | { type: "CloseRun"; runId: string }
   | { type: "RecoverTasks" }
@@ -183,6 +213,9 @@ export type TaskActionBody =
   | { type: "ReceiveReport"; taskId: string; report: ReportInput }
   | { type: "ReplyIssue"; issueId: string; replyId: string; text: string }
   | { type: "SetReplyDelivery"; replyId: string; delivery: MessageDelivery }
+  | { type: "SetNoticeDelivery"; noticeId: string; delivery: MessageDelivery }
+  | { type: "RegisterExecution"; executionId: string; memberId: string; taskId: string; attemptId: string; instanceId: string; generation: number }
+  | { type: "EndExecution"; executionId: string }
   | { type: "AcceptResult"; taskId: string; attemptId: string; checks?: { criterion: string; evidenceArtifactIds: string[] }[] }
   | { type: "RequestRework"; taskId: string; attemptId: string; feedback: string }
   | { type: "RequestCancel"; taskId: string }
