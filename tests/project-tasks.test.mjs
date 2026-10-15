@@ -378,3 +378,121 @@ test("a silent task can be settled by the user without waiting for the worker", 
   assert.equal(fail(s, user, { type: "ReconcileTask", taskId: "t1", attemptId: "OLD", decision: "failed" }).code, "invalid_state");
   NOW = "2026-10-15T00:00:00.000Z";
 });
+
+// ---- S2/S3 leftovers ----
+const withReportMode = (s, id, reportMode) => ({ ...s, members: s.members.map((m) => (m.id === id ? { ...m, reportMode } : m)) });
+const twoStep = (extraA = {}, extraB = {}) => ({
+  objective: "o",
+  steps: [
+    { key: "collect", memberId: "A", instruction: "i", completion: ["ok"], ...extraA },
+    { key: "jira", memberId: "B", instruction: "j", dependsOn: ["collect"], completion: ["ok"], ...extraB },
+  ],
+});
+
+test("auto acceptance is refused before an external write and for workers that do not report by protocol", () => {
+  const members = [mem("A"), mem("B")];
+  const bad = validatePlan(twoStep({ acceptance: "auto-on-protocol-result" }, { externalWrite: true }), members);
+  assert.ok(!bad.ok && bad.error.some((e) => e.code === "auto_before_external_write"));
+  assert.ok(validatePlan(twoStep({ acceptance: "auto-on-protocol-result" }), members).ok, "fine when nothing downstream writes outside");
+  assert.ok(validatePlan(twoStep({ acceptance: "user" }, { externalWrite: true }), members).ok);
+  const screen = validatePlan(twoStep({ acceptance: "auto-on-protocol-result" }), [{ ...mem("A"), reportMode: "screen" }, mem("B")]);
+  assert.ok(!screen.ok && screen.error.some((e) => e.code === "auto_needs_protocol"));
+  assert.ok(!validatePlan(twoStep({ acceptance: "whenever" }), members).ok);
+  // transitive: A(auto) → mid → B(external)
+  const chain = validatePlan({ objective: "o", steps: [
+    { key: "a", memberId: "A", instruction: "i", completion: ["ok"], acceptance: "auto-on-protocol-result" },
+    { key: "m", memberId: "A", instruction: "i", completion: ["ok"], dependsOn: ["a"] },
+    { key: "b", memberId: "B", instruction: "i", completion: ["ok"], dependsOn: ["m"], externalWrite: true }] }, members);
+  assert.ok(!chain.ok && chain.error.some((e) => e.code === "auto_before_external_write"));
+});
+
+test("an auto-accept step completes on its protocol result and opens the next step; the run completes with the last", () => {
+  let s = world();
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: twoStep({ acceptance: "auto-on-protocol-result" }, { inputFrom: [{ stepKey: "collect", artifactNames: ["requirements"] }] }) });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1", "t2"], consent: { id: "k", source: "start-button" } });
+  s = deliver(s, "t1", "A1");
+  s = report(s, "t1", result("R1", "A1"));
+  assert.equal(task(s, "t1").status, "completed");
+  assert.equal(task(s, "t1").resultArtifactIds.length, 1, "its result is kept for the next step");
+  assert.deepEqual(eligibleTasks(s).map((t) => t.id), ["t2"]);
+  assert.equal(buildTaskPayload(s, "t2").inputs[0].artifacts.length, 1);
+  // A worker that cancels before reporting is not auto-accepted.
+  let c = world();
+  c = run(c, as("c"), { type: "SubmitPlan", planId: "pl", plan: twoStep({ acceptance: "auto-on-protocol-result" }) });
+  c = run(c, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1", "t2"], consent: { id: "k", source: "start-button" } });
+  c = deliver(c, "t1", "A1");
+  c = run(c, user, { type: "RequestCancel", taskId: "t1" });
+  c = report(c, "t1", result("R1", "A1"));
+  assert.equal(task(c, "t1").status, "result-ready", "a result that arrives after a cancel request waits for a person");
+});
+
+test("a worker that reports by screen cannot be auto-accepted even if the plan asked for it", () => {
+  let s = world();
+  s = run(s, as("c"), { type: "SubmitPlan", planId: "pl", plan: twoStep({ acceptance: "auto-on-protocol-result" }) });
+  s = run(s, user, { type: "StartRun", runId: "r1", planId: "pl", version: 1, taskIds: ["t1", "t2"], consent: { id: "k", source: "start-button" } });
+  s = deliver(withReportMode(s, "A", "screen"), "t1", "A1");
+  s = report(s, "t1", result("R1", "A1"));
+  assert.equal(task(s, "t1").status, "result-ready");
+});
+
+test("screen results need the user's confirmation before they count", () => {
+  let s = deliver(withReportMode(started(), "A", "screen"), "t1", "A1");
+  const obs = { type: "SubmitObservedResult", taskId: "t1", attemptId: "A1", summary: "畫面上看到完成", artifacts: [{ name: "requirements", mediaType: "text/plain", text: "x" }] };
+  assert.equal(fail(s, user, obs).code, "forbidden");
+  assert.equal(fail(deliver(started(), "t1", "A1"), as("c"), obs).code, "invalid_state", "protocol workers must report themselves");
+  s = run(s, as("c"), obs);
+  assert.equal(task(s, "t1").status, "sent", "nothing moves until the user confirms");
+  assert.equal(task(s, "t1").observed.summary, "畫面上看到完成");
+  assert.equal(s.artifacts[0].source, "screen");
+  assert.equal(fail(s, as("c"), { type: "ConfirmObservedResult", taskId: "t1", attemptId: "A1" }).code, "forbidden");
+  assert.equal(fail(s, user, { type: "ConfirmObservedResult", taskId: "t1", attemptId: "OLD" }).code, "stale_attempt");
+  s = run(s, user, { type: "ConfirmObservedResult", taskId: "t1", attemptId: "A1" });
+  assert.equal(task(s, "t1").status, "result-ready");
+  assert.equal(task(s, "t1").observed, undefined);
+  assert.equal(buildTaskPayload(s, "t1").stepKey, "collect");
+  s = run(s, user, { type: "AcceptResult", taskId: "t1", attemptId: "A1" });
+  assert.deepEqual(eligibleTasks(s).map((t) => t.id), ["t2"]);
+});
+
+test("closing a run records what was left; busy or awaiting-acceptance tasks block it", () => {
+  let s = started();
+  s = deliver(s, "t1", "A1");
+  assert.equal(fail(s, user, { type: "CloseRun", runId: "r1" }).code, "invalid_state");
+  s = report(s, "t1", { reportId: "F", attemptId: "A1", kind: "failed", summary: "no" });
+  assert.equal(fail(s, as("c"), { type: "CloseRun", runId: "r1" }).code, "forbidden");
+  s = run(s, user, { type: "CloseRun", runId: "r1" });
+  assert.equal(s.runs[0].status, "closed");
+  assert.deepEqual(s.runs[0].unfinished, ["t1", "t2"]);
+  assert.equal(queueReasonOf(s, task(s, "t2")), "closed");
+  assert.equal(fail(s, user, { type: "RetryTask", taskId: "t1" }).code, "invalid_state");
+  assert.equal(fail(s, user, { type: "CloseRun", runId: "r1" }).code, "invalid_state");
+  assert.ok(run(s, user, { type: "SubmitPlan", planId: "x", plan: PLAN }), "a new plan can be started after closing");
+});
+
+test("auto delivery is a per-run switch only the user flips", () => {
+  let s = started();
+  assert.equal(s.runs[0].auto, false);
+  assert.equal(fail(s, as("c"), { type: "SetRunAuto", runId: "r1", auto: true }).code, "forbidden");
+  s = run(s, user, { type: "SetRunAuto", runId: "r1", auto: true });
+  assert.equal(s.runs[0].auto, true);
+  assert.equal(run(s, user, { type: "SetRunAuto", runId: "r1", auto: true }), s, "no change, no event");
+  let auto = run(world(), as("c"), { type: "SubmitPlan", planId: "pl", plan: PLAN });
+  auto = run(auto, user, { type: "StartRun", runId: "r", planId: "pl", version: 1, taskIds: ["a", "b"], auto: true, consent: { id: "k", source: "start-button" } });
+  assert.equal(auto.runs[0].auto, true);
+});
+
+test("recovery after a restart: unstarted hand-overs go back to the queue, started ones become uncertain, sent ones stay", () => {
+  let s = run(world(), as("c"), { type: "SubmitPlan", planId: "pl", plan: { objective: "o", steps: [
+    { key: "x", memberId: "A", instruction: "i", completion: ["ok"] }, { key: "y", memberId: "B", instruction: "i", completion: ["ok"] }] } });
+  s = run(s, user, { type: "StartRun", runId: "r", planId: "pl", version: 1, taskIds: ["tx", "ty"], consent: { id: "k", source: "start-button" } });
+  s = run(s, user, { type: "PrepareDispatch", taskId: "tx", attemptId: "AX", effectId: "ex" });
+  s = run(s, user, { type: "PrepareDispatch", taskId: "ty", attemptId: "AY", effectId: "ey" });
+  s = run(s, user, { type: "RecordInputStart", taskId: "ty", attemptId: "AY", effectId: "ey" });
+  assert.equal(fail(s, as("c"), { type: "RecoverTasks" }).code, "forbidden");
+  s = run(s, user, { type: "RecoverTasks" });
+  assert.deepEqual([task(s, "tx").status, task(s, "tx").attempt], ["queued", undefined]);
+  assert.equal(task(s, "ty").status, "uncertain", "never re-sent on its own");
+  assert.deepEqual(task(s, "tx").attemptIds, ["AX"], "history is kept");
+  const sent = deliver(started(), "t1", "A1");
+  assert.equal(run(sent, user, { type: "RecoverTasks" }), sent, "sent tasks are left alone");
+});

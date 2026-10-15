@@ -61,6 +61,11 @@ export type Step = {
   dependsOn: string[];
   completion: string[]; // explicit result conditions
   inputFrom: { stepKey: string; artifactNames: string[] }[];
+  // Who accepts the result. Default coordinator. "auto-on-protocol-result" is only for intermediate
+  // steps with no external effect: validatePlan rejects it when a later step writes outside.
+  acceptance?: "coordinator" | "user" | "auto-on-protocol-result";
+  // The step changes something outside HiGhostty (creates a ticket, sends mail…).
+  externalWrite?: boolean;
 };
 export type PlanVersion = { id: string; version: number; title: string; objective: string; scope: string; steps: Step[] };
 
@@ -86,13 +91,22 @@ export type Task = {
   cancelRequested: boolean;
   resultArtifactIds: string[];
   reworkFeedback?: string;
+  // A result the coordinator wrote down from the screen of a worker that cannot report; it needs
+  // the user's confirmation before it becomes a result.
+  observed?: { summary: string; artifactIds: string[]; at: string };
   // When the task last moved or was last heard from (event time); used only to notice silence.
   activityAt?: string;
 };
-export type Run = { id: string; planId: string; planVersion: number; status: "running" | "paused" | "completed"; taskIds: string[]; consentId: string };
+export type Run = {
+  id: string; planId: string; planVersion: number; status: "running" | "paused" | "completed" | "closed"; taskIds: string[]; consentId: string;
+  // Hand tasks over automatically when every check passes (otherwise each needs the user's button).
+  auto: boolean;
+  // Task ids that were not completed when the user closed the run.
+  unfinished?: string[];
+};
 export type ExecutionConsent = { id: string; planId: string; version: number; source: "start-button" | "user-message"; sourceMessageId?: string };
 // S2 keeps artifact text inside the journal (reports are capped well below its 1 MiB line limit).
-export type Artifact = { id: string; taskId: string; attemptId: string; name: string; mediaType: "text/plain" | "text/markdown" | "application/json"; text: string; bytes: number };
+export type Artifact = { id: string; taskId: string; attemptId: string; name: string; mediaType: "text/plain" | "text/markdown" | "application/json"; text: string; bytes: number; source?: "screen" };
 export type ReportKind = "accepted" | "progress" | "needs-input" | "declined" | "result" | "failed" | "cancelled";
 export type Report = { reportId: string; taskId: string; attemptId: string; kind: ReportKind; summary: string; fingerprint: string; stale?: "old-attempt" | "unmatched" | "terminal" };
 export type Issue = { id: string; taskId?: string; memberId: string; kind: "question" | "terminal-blocked" | "delivery-unknown" | "offline"; text: string; resolvedAt?: string };
@@ -126,6 +140,7 @@ export type ProjectEvent = {
     | "MemberPurposeUpdated" | "HandshakeRecorded" | "MessageQueued" | "MessageAdded" | "MessageDeliveryChanged"
     | "PlanVersionCreated" | "ExecutionConsentRecorded" | "RunStarted" | "RunPaused" | "RunResumed" | "RunCompleted"
     | "TaskQueued" | "TaskDispatchPrepared" | "InputWillStart" | "TaskStatusChanged" | "ReportReceived"
+    | "RunAutoChanged" | "RunClosed" | "ObservedResultSubmitted"
     | "IssueOpened" | "IssueResolved" | "IssueReplyQueued" | "ReplyDeliveryChanged" | "TaskCancelRequested" | "TaskReworkRequested" | "TaskRetryRequested";
   at: string;
   actor: Actor;
@@ -155,7 +170,12 @@ export type ReportInput = {
 };
 export type TaskActionBody =
   | { type: "SubmitPlan"; planId: string; plan: unknown; basePlanVersion?: number }
-  | { type: "StartRun"; runId: string; planId: string; version: number; taskIds: string[]; consent: { id: string; source: "start-button" | "user-message"; sourceMessageId?: string } }
+  | { type: "StartRun"; runId: string; planId: string; version: number; taskIds: string[]; auto?: boolean; consent: { id: string; source: "start-button" | "user-message"; sourceMessageId?: string } }
+  | { type: "SetRunAuto"; runId: string; auto: boolean }
+  | { type: "CloseRun"; runId: string }
+  | { type: "RecoverTasks" }
+  | { type: "SubmitObservedResult"; taskId: string; attemptId: string; summary: string; artifacts?: { name: string; mediaType: Artifact["mediaType"]; text: string }[] }
+  | { type: "ConfirmObservedResult"; taskId: string; attemptId: string }
   | { type: "PauseRun" | "ResumeRun"; runId: string }
   | { type: "PrepareDispatch"; taskId: string; attemptId: string; effectId: string }
   | { type: "RecordInputStart"; taskId: string; attemptId: string; effectId: string }

@@ -112,5 +112,7 @@
   "project.notOpen": "No project is open",
   "project.attention.title": "Needs you",
   "project.attention.blocked": "“{name}”'s terminal is waiting for an answer (a permission or a menu). The task cannot move on; handle it in the terminal — the project never presses keys for you.",
-  "project.attention.stalled": "“{name}” has not reported for over {minutes} minutes on “{task}”. Silence does not mean it failed."
+  "project.attention.stalled": "“{name}” has not reported for over {minutes} minutes on “{task}”. Silence does not mean it failed.",
+  "project.run.closed": "Closed with unfinished tasks",
+  "project.task.wait.closed": "This run was closed."
 }

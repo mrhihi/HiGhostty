@@ -40,7 +40,9 @@ export function validatePlan(plan: unknown, members: Member[]): Result<Omit<Plan
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) { add("schema", `第 ${index + 1} 步必須是物件`); continue; }
     const s = raw as Record<string, unknown>;
     const key = text(s.key);
-    unknown(s, ["key", "memberId", "title", "instruction", "dependsOn", "completion", "inputFrom"], `步驟 ${key || index + 1}`, key);
+    unknown(s, ["key", "memberId", "title", "instruction", "dependsOn", "completion", "inputFrom", "acceptance", "externalWrite"], `步驟 ${key || index + 1}`, key);
+    if (s.acceptance !== undefined && !["coordinator", "user", "auto-on-protocol-result"].includes(s.acceptance as string)) add("schema", "acceptance 必須是 coordinator、user 或 auto-on-protocol-result", key);
+    if (s.externalWrite !== undefined && typeof s.externalWrite !== "boolean") add("schema", "externalWrite 必須是布林值", key);
     if (!key) add("schema", `第 ${index + 1} 步缺少 key`);
     else if (seen.has(key)) add("duplicate_key", `步驟 key 重複：${key}`, key);
     seen.add(key);
@@ -65,6 +67,8 @@ export function validatePlan(plan: unknown, members: Member[]): Result<Omit<Plan
     steps.push({
       key, memberId: text(s.memberId), title: text(s.title) || key, instruction: text(s.instruction),
       dependsOn: list(s.dependsOn, "dependsOn"), completion, inputFrom,
+      ...(typeof s.acceptance === "string" && ["coordinator", "user", "auto-on-protocol-result"].includes(s.acceptance) ? { acceptance: s.acceptance as Step["acceptance"] } : {}),
+      ...(s.externalWrite === true ? { externalWrite: true } : {}),
     });
   }
   const byKey = new Map(steps.map((s) => [s.key, s]));
@@ -79,6 +83,19 @@ export function validatePlan(plan: unknown, members: Member[]): Result<Omit<Plan
     for (const input of step.inputFrom) {
       if (!step.dependsOn.includes(input.stepKey)) add("input_not_dependency", `inputFrom ${input.stepKey} 必須列在 dependsOn`, step.key);
     }
+  }
+  // Auto-accepting a step is only safe when nothing downstream writes outside on the strength of it.
+  for (const step of steps) {
+    if (step.acceptance !== "auto-on-protocol-result") continue;
+    const member = members.find((m) => m.id === step.memberId);
+    if (member && member.reportMode !== "protocol") add("auto_needs_protocol", "自動驗收只適用會用協定回報的成員", step.key);
+    const reaches = new Set<string>();
+    const walk = (key: string) => {
+      for (const next of steps) if (next.dependsOn.includes(key) && !reaches.has(next.key)) { reaches.add(next.key); walk(next.key); }
+    };
+    walk(step.key);
+    const writer = steps.find((x) => reaches.has(x.key) && x.externalWrite);
+    if (writer) add("auto_before_external_write", `步驟「${writer.key}」會寫入外部系統，上游「${step.key}」不能自動驗收`, step.key);
   }
   // Cycles: depth-first with colors.
   const color = new Map<string, 1 | 2>();
@@ -106,16 +123,17 @@ export const stepOf = (state: ProjectState, task: Task): Step | undefined => {
   const run = runOf(state, task.runId);
   return run && planOf(state, run)?.steps.find((s) => s.key === task.stepKey);
 };
-export const activeRun = (state: ProjectState) => state.runs.find((r) => r.status !== "completed");
+export const activeRun = (state: ProjectState) => state.runs.find((r) => r.status === "running" || r.status === "paused");
 // The worker is busy while a task of theirs holds an attempt that is not yet a result.
 export const memberBusy = (state: ProjectState, memberId: string) =>
   state.tasks.some((t) => t.memberId === memberId && ACTIVE.includes(t.status));
 
 // Why a queued task cannot be delivered right now (undefined when it can).
-export type QueueReason = "paused" | "dependency" | "busy" | "unbound";
+export type QueueReason = "paused" | "closed" | "dependency" | "busy" | "unbound";
 export function queueReasonOf(state: ProjectState, task: Task): QueueReason | undefined {
   const run = runOf(state, task.runId);
-  if (!run || run.status === "paused") return "paused";
+  if (!run || run.status === "closed" || run.status === "completed") return "closed";
+  if (run.status === "paused") return "paused";
   const step = stepOf(state, task);
   if (!step) return "dependency";
   for (const dep of step.dependsOn) {
@@ -207,7 +225,7 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       const scopeSummary = plan.objective.slice(0, 200);
       return ok([
         ev("ExecutionConsentRecorded", { consent: { id: consent.id, planId: plan.id, version: plan.version, source: consent.source, sourceMessageId: consent.sourceMessageId, scopeSummary } }),
-        ev("RunStarted", { runId: body.runId, planId: plan.id, planVersion: plan.version, taskIds: body.taskIds, consentId: consent.id }),
+        ev("RunStarted", { runId: body.runId, planId: plan.id, planVersion: plan.version, taskIds: body.taskIds, consentId: consent.id, auto: body.auto === true }),
         ...plan.steps.map((step, i) => ev("TaskQueued", { taskId: body.taskIds[i], runId: body.runId, stepKey: step.key, planVersion: plan.version, memberId: step.memberId })),
       ]);
     }
@@ -227,7 +245,7 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       if (task.status !== "queued") return err("invalid_state", `任務目前是 ${task.status}，只有 queued 能交付`);
       if (task.attemptIds.includes(body.attemptId)) return err("already_exists", "attemptId 重複");
       const reason = queueReasonOf(state, task);
-      if (reason) return err("invalid_state", { paused: "計畫已暫停", dependency: "相依的步驟尚未完成", busy: "這位成員還有進行中的任務", unbound: "成員沒有綁定終端機" }[reason], reason);
+      if (reason) return err("invalid_state", { paused: "計畫已暫停", closed: "這個 run 已結束", dependency: "相依的步驟尚未完成", busy: "這位成員還有進行中的任務", unbound: "成員沒有綁定終端機" }[reason], reason);
       const binding = state.bindings[task.memberId];
       return ok([ev("TaskDispatchPrepared", {
         taskId: task.id,
@@ -278,6 +296,55 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       if (!state.replies.some((r) => r.id === body.replyId)) return err("not_found", "沒有這則回覆");
       return ok([ev("ReplyDeliveryChanged", { replyId: body.replyId, delivery: body.delivery })]);
     }
+    case "SetRunAuto": {
+      if (!isUser) return err("forbidden", "只有使用者能切換自動交付");
+      const run = runOf(state, body.runId);
+      if (!run) return err("not_found", "沒有這個 run");
+      if (run.auto === body.auto) return ok([]);
+      return ok([ev("RunAutoChanged", { runId: run.id, auto: body.auto })]);
+    }
+    case "CloseRun": {
+      if (!isUser) return err("forbidden", "結案必須由使用者決定");
+      const run = runOf(state, body.runId);
+      if (!run || (run.status !== "running" && run.status !== "paused")) return err("invalid_state", "這個 run 已經結束");
+      const open = state.tasks.filter((t) => t.runId === run.id && t.status !== "completed");
+      const busy = open.filter((t) => !["queued", "declined", "failed", "cancelled"].includes(t.status));
+      if (busy.length) return err("invalid_state", "還有進行中或待驗收的任務；請先處理它們", busy.map((t) => t.id));
+      return ok([ev("RunClosed", { runId: run.id, unfinished: open.map((t) => t.id) })]);
+    }
+    case "RecoverTasks": {
+      // After a restart: a hand-over that never started typing goes back to the queue; one that may have typed is unclear.
+      if (!isUser) return err("forbidden", "只有使用者端的控制器能恢復任務");
+      const events: ProjectEvent[] = [];
+      for (const task of state.tasks) {
+        if (task.status !== "dispatching" || !task.attempt) continue;
+        events.push(task.attempt.inputStarted ? status(task, "uncertain") : status(task, "queued", { releaseAttempt: true }));
+      }
+      return ok(events);
+    }
+    case "SubmitObservedResult": {
+      if (!isCoordinator) return err("forbidden", "只有 coordinator 能整理畫面上的成果");
+      const task = taskOf(state, body.taskId);
+      if (!task?.attempt) return err("not_found", "沒有這個任務或嘗試");
+      if (task.attempt.id !== body.attemptId) return err("stale_attempt", "attempt 不符");
+      if (!["sent", "accepted", "running", "uncertain"].includes(task.status)) return err("invalid_state", `任務目前是 ${task.status}`);
+      if (state.members.find((m) => m.id === task.memberId)?.reportMode === "protocol") return err("invalid_state", "這位成員會用協定回報，請等它回報");
+      if (!body.summary.trim()) return err("bad_args", "summary 不可空白");
+      const made = [] as Artifact[];
+      for (const [i, a] of (body.artifacts ?? []).entries()) {
+        if (!a.name?.trim() || !ARTIFACT_TYPES.includes(a.mediaType) || typeof a.text !== "string" || a.text.length > MAX_ARTIFACT_CHARS) return err("bad_args", "附件需要 name、合法的 mediaType 與不超過 128 KiB 的 text");
+        made.push({ id: `${task.id}:${body.attemptId}:observed:${i}`, taskId: task.id, attemptId: body.attemptId, name: a.name.trim(), mediaType: a.mediaType, text: a.text, bytes: new TextEncoder().encode(a.text).length, source: "screen" });
+      }
+      return ok([ev("ObservedResultSubmitted", { taskId: task.id, summary: body.summary.trim(), artifacts: made })]);
+    }
+    case "ConfirmObservedResult": {
+      if (!isUser) return err("forbidden", "畫面整理的成果必須由使用者確認");
+      const task = taskOf(state, body.taskId);
+      if (!task?.attempt || task.attempt.id !== body.attemptId) return err("stale_attempt", "attempt 不符");
+      if (!task.observed) return err("invalid_state", "沒有待確認的畫面成果");
+      if (!["sent", "accepted", "running", "uncertain"].includes(task.status)) return err("invalid_state", `任務目前是 ${task.status}`);
+      return ok([status(task, "result-ready", { resultArtifactIds: task.observed.artifactIds })]);
+    }
     case "AcceptResult": {
       if (!userOrCoordinator) return err("forbidden", "只有使用者或 coordinator 能驗收");
       const task = taskOf(state, body.taskId);
@@ -318,7 +385,7 @@ export function decideTasks(state: ProjectState, actor: Actor, body: TaskActionB
       if (!task) return err("not_found", "沒有這個任務");
       if (!["declined", "failed", "cancelled"].includes(task.status)) return err("invalid_state", `任務目前是 ${task.status}；uncertain 要先核對`);
       const run = runOf(state, task.runId);
-      if (!run || run.status === "completed") return err("invalid_state", "這個 run 已結束");
+      if (!run || (run.status !== "running" && run.status !== "paused")) return err("invalid_state", "這個 run 已結束");
       const member = body.memberId ? state.members.find((m) => m.id === body.memberId) : undefined;
       if (body.memberId && (!member || member.role !== "worker")) return err("bad_args", "新成員必須是現有的 worker");
       return ok([ev("TaskRetryRequested", { taskId: task.id, memberId: body.memberId ?? task.memberId })]);
@@ -395,6 +462,16 @@ function receiveReport(state: ProjectState, task: Task, actor: Actor, input: Rep
     events.push(...closeQuestions());
   }
   void actor;
+  if (input.kind === "result") {
+    const step = stepOf(state, task);
+    const member = state.members.find((m) => m.id === task.memberId);
+    // Only an intermediate step that opted in, from a worker that reports by protocol, is accepted without a person.
+    if (step?.acceptance === "auto-on-protocol-result" && member?.reportMode === "protocol" && !task.cancelRequested) {
+      events.push(ev("TaskStatusChanged", { taskId: task.id, status: "completed", acceptedBy: "auto", checks: [] }));
+      const run = runOf(state, task.runId);
+      if (run && state.tasks.filter((t) => t.runId === run.id && t.id !== task.id).every((t) => t.status === "completed")) events.push(ev("RunCompleted", { runId: run.id }));
+    }
+  }
   return ok(events);
 }
 
@@ -410,12 +487,21 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
     case "ExecutionConsentRecorded":
       return { ...state, consents: [...state.consents, d.consent as ProjectState["consents"][number]] };
     case "RunStarted":
-      return { ...state, runs: [...state.runs, { id: str(d.runId), planId: str(d.planId), planVersion: Number(d.planVersion), status: "running", taskIds: d.taskIds as string[], consentId: str(d.consentId) }] };
+      return { ...state, runs: [...state.runs, { id: str(d.runId), planId: str(d.planId), planVersion: Number(d.planVersion), status: "running", taskIds: d.taskIds as string[], consentId: str(d.consentId), auto: d.auto === true }] };
     case "RunPaused":
     case "RunResumed":
     case "RunCompleted": {
       const next = event.type === "RunPaused" ? "paused" : event.type === "RunResumed" ? "running" : "completed";
       return { ...state, runs: state.runs.map((r) => (r.id === d.runId ? { ...r, status: next } : r)) };
+    }
+    case "RunAutoChanged":
+      return { ...state, runs: state.runs.map((r) => (r.id === d.runId ? { ...r, auto: d.auto === true } : r)) };
+    case "RunClosed":
+      return { ...state, runs: state.runs.map((r) => (r.id === d.runId ? { ...r, status: "closed", unfinished: d.unfinished as string[] } : r)) };
+    case "ObservedResultSubmitted": {
+      const artifacts = (d.artifacts as Artifact[]) ?? [];
+      const next = patchTask(state, str(d.taskId), (t) => ({ ...t, observed: { summary: str(d.summary), artifactIds: artifacts.map((a) => a.id), at: event.at } }));
+      return { ...next, artifacts: [...next.artifacts, ...artifacts] };
     }
     case "TaskQueued":
       return { ...state, tasks: [...state.tasks, { activityAt: event.at, id: str(d.taskId), runId: str(d.runId), stepKey: str(d.stepKey), planVersion: Number(d.planVersion), memberId: str(d.memberId), status: "queued", attemptIds: [], cancelRequested: false, resultArtifactIds: [] }] };
@@ -432,6 +518,7 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
       return patchTask(state, str(d.taskId), (t) => {
         const next: Task = { ...t, status: d.status as TaskStatus, activityAt: event.at };
         if (d.releaseAttempt) delete next.attempt;
+        if (d.status === "result-ready" || d.status === "failed" || d.status === "cancelled" || d.status === "queued") delete next.observed;
         if (Array.isArray(d.resultArtifactIds)) next.resultArtifactIds = d.resultArtifactIds as string[];
         return next;
       });
@@ -456,12 +543,14 @@ export function reduceTasks(state: ProjectState, event: ProjectEvent): ProjectSt
       return patchTask(state, str(d.taskId), (t) => {
         const next: Task = { ...t, status: "queued", reworkFeedback: str(d.feedback), cancelRequested: false };
         delete next.attempt;
+        delete next.observed;
         return next;
       });
     case "TaskRetryRequested":
       return patchTask(state, str(d.taskId), (t) => {
         const next: Task = { ...t, status: "queued", memberId: str(d.memberId) || t.memberId, cancelRequested: false, reworkFeedback: undefined, resultArtifactIds: [] };
         delete next.attempt;
+        delete next.observed;
         return next;
       });
     default:

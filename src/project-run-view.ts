@@ -94,7 +94,7 @@ export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<
     b.onclick = run;
     return b;
   };
-  if (!run || run.status === "completed" && run.planVersion !== plan.version) {
+  if (!run || ((run.status === "completed" || run.status === "closed") && run.planVersion !== plan.version)) {
     const blockers = startBlockers(state, plan);
     if (blockers.length) {
       const list = el("ul", "project-warning");
@@ -107,7 +107,7 @@ export function renderRun(state: ProjectState, actions: RunActions, drafts: Map<
   } else if (run.status === "paused") {
     controls.append(el("span", "project-badge", t("project.run.paused")), button(t("project.run.resume"), actions.resume, true));
   } else {
-    controls.append(el("span", "project-badge", t("project.run.completed")));
+    controls.append(el("span", "project-badge", t(run.status === "closed" ? "project.run.closed" : "project.run.completed")));
   }
   section.append(controls);
 
