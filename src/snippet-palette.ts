@@ -16,6 +16,8 @@ import {
   type Snippet,
   type SnippetsDocument,
 } from "./snippets";
+import { t } from "./i18n";
+import { onLocaleChange } from "./i18n-runtime";
 
 export type SnippetsHost = {
   native: <T = Record<string, unknown>>(request: Record<string, unknown>) => Promise<T>;
@@ -101,23 +103,23 @@ export function initSnippets(host: SnippetsHost) {
       label.append(document.createTextNode(title), input);
       return label;
     };
-    const name = el("input"); name.value = draft.name ?? snippet?.name ?? ""; name.setAttribute("aria-label", "名稱"); name.placeholder = "例：看 git 記錄";
-    const text = el("textarea", "mono"); text.rows = 4; text.value = draft.text ?? snippet?.text ?? ""; text.setAttribute("aria-label", "內容"); text.placeholder = "git log --oneline -20";
+    const name = el("input"); name.value = draft.name ?? snippet?.name ?? ""; name.setAttribute("aria-label", t("snippets.name")); name.placeholder = t("snippets.namePlaceholder");
+    const text = el("textarea", "mono"); text.rows = 4; text.value = draft.text ?? snippet?.text ?? ""; text.setAttribute("aria-label", t("snippets.text")); text.placeholder = "git log --oneline -20";
     const cwd = host.cwd();
     const scope = el("select");
-    scope.add(new Option("全域（所有目錄）", GLOBAL));
+    scope.add(new Option(t("snippets.scopeGlobalOption"), GLOBAL));
     const choices = scopeChoices(cwd);
-    choices.forEach((path, index) => scope.add(new Option(`${index === 0 ? "目前目錄　" : "上層　"}${scopeLabel(path, host.home())}`, path)));
+    choices.forEach((path, index) => scope.add(new Option(`${index === 0 ? t("snippets.scopeCurrent") : t("snippets.scopeParent")}${scopeLabel(path, host.home())}`, path)));
     const initialScope = draft.scope ?? snippet?.scope ?? (cwd || GLOBAL);
     if (!isGlobal(initialScope) && !choices.includes(initialScope)) scope.add(new Option(scopeLabel(initialScope, host.home()), initialScope));
-    scope.add(new Option("其他目錄…", "__custom__"));
+    scope.add(new Option(t("snippets.scopeOther"), "__custom__"));
     scope.value = initialScope;
-    const custom = el("input", "mono"); custom.placeholder = "~/work 或絕對路徑"; custom.hidden = true; custom.setAttribute("aria-label", "目錄路徑");
-    const keywords = el("input"); keywords.value = snippet?.keywords ?? ""; keywords.placeholder = "以空白分隔，輸入時可搜尋"; keywords.setAttribute("aria-label", "關鍵字");
+    const custom = el("input", "mono"); custom.placeholder = t("snippets.customPlaceholder"); custom.hidden = true; custom.setAttribute("aria-label", t("snippets.customAria"));
+    const keywords = el("input"); keywords.value = snippet?.keywords ?? ""; keywords.placeholder = t("snippets.keywordsPlaceholder"); keywords.setAttribute("aria-label", t("snippets.keywords"));
     const run = el("input"); run.type = "checkbox"; run.checked = !!snippet?.run;
-    const runLabel = el("label", "toggle"); runLabel.append(run, document.createTextNode("插入後自動執行（送出 Enter）"));
-    const hint = el("p", "help", "可用變數：${cwd} 目前目錄、${dir} 目錄名、${home} 家目錄。範圍會套用到該目錄及其所有子目錄。");
-    form.append(field("名稱", name), field("內容", text), field("適用目錄", scope), custom, field("關鍵字", keywords), runLabel, hint);
+    const runLabel = el("label", "toggle"); runLabel.append(run, document.createTextNode(t("snippets.runToggle")));
+    const hint = el("p", "help", t("snippets.formHint"));
+    form.append(field(t("snippets.name"), name), field(t("snippets.text"), text), field(t("snippets.scope"), scope), custom, field(t("snippets.keywords"), keywords), runLabel, hint);
     const initial = JSON.stringify([name.value, text.value, scope.value, keywords.value, run.checked]);
     const current = () => JSON.stringify([name.value, text.value, scope.value, keywords.value, run.checked]);
     const listeners: (() => void)[] = [];
@@ -143,9 +145,15 @@ export function initSnippets(host: SnippetsHost) {
   palette.id = "palette-drop";
   palette.hidden = true;
   palette.setAttribute("role", "dialog");
-  palette.setAttribute("aria-label", "指令片段");
-  const input = el("input"); input.id = "palette-input"; input.placeholder = "輸入以搜尋片段…"; input.setAttribute("aria-label", "搜尋片段"); input.autocomplete = "off"; input.spellcheck = false;
-  const add = el("button", "icon-btn", "＋"); add.title = "新增片段"; add.setAttribute("aria-label", "新增片段");
+  const input = el("input"); input.id = "palette-input"; input.autocomplete = "off"; input.spellcheck = false;
+  const add = el("button", "icon-btn", "＋");
+  // 靜態標籤在建立時與語言切換時各套一次。
+  const applyStatic = () => {
+    palette.setAttribute("aria-label", t("snippets.paletteTitle"));
+    input.placeholder = t("snippets.searchPlaceholder"); input.setAttribute("aria-label", t("snippets.searchAria"));
+    add.title = t("snippets.add"); add.setAttribute("aria-label", t("snippets.add"));
+  };
+  applyStatic();
   const bar = el("div", "palette-bar"); bar.append(input, add);
   const list = el("div"); list.id = "palette-list"; list.setAttribute("role", "listbox");
   const editor = el("div", "palette-editor"); editor.hidden = true;
@@ -195,10 +203,10 @@ export function initSnippets(host: SnippetsHost) {
     });
     if (!results.length) {
       const query = input.value.trim();
-      const empty = el("div", "palette-empty", items.length ? "沒有符合的片段" : "這裡還沒有片段");
+      const empty = el("div", "palette-empty", items.length ? t("snippets.emptyNoMatch") : t("snippets.emptyNone"));
       list.append(empty);
       if (query) {
-        const create = el("div", "palette-row create selected", `＋ 新增片段「${query}」`);
+        const create = el("div", "palette-row create selected", t("snippets.createNamed", { query }));
         create.onmousedown = (event) => event.preventDefault();
         create.onclick = () => openEditor(undefined, { name: query });
         list.append(create);
@@ -208,7 +216,7 @@ export function initSnippets(host: SnippetsHost) {
     updateHints();
   }
   function updateHints() {
-    hints(["↑↓", "選擇"], ["↵", "插入"], ["⌘↵", "插入並執行"], ["⌘E", "編輯"], ["⌘⌫", "刪除"], ["esc", "關閉"]);
+    hints(["↑↓", t("snippets.hintSelect")], ["↵", t("snippets.hintInsert")], ["⌘↵", t("snippets.hintInsertRun")], ["⌘E", t("snippets.hintEdit")], ["⌘⌫", t("snippets.hintDelete")], ["esc", t("snippets.hintClose")]);
   }
   function syncSelection() {
     list.querySelectorAll<HTMLElement>(".palette-row").forEach((row, index) => {
@@ -270,9 +278,9 @@ export function initSnippets(host: SnippetsHost) {
     editor.hidden = false;
     editor.replaceChildren();
     const form = createForm(snippet, draft);
-    const title = el("strong", "palette-editor-title", snippet ? "編輯片段" : "新增片段");
-    const save = el("button", "primary-btn", snippet ? "儲存" : "新增");
-    const cancel = el("button", "ghost-btn", "取消");
+    const title = el("strong", "palette-editor-title", snippet ? t("snippets.editTitle") : t("snippets.add"));
+    const save = el("button", "primary-btn", snippet ? t("snippets.save") : t("snippets.create"));
+    const cancel = el("button", "ghost-btn", t("snippets.cancel"));
     const actions = el("div", "palette-editor-actions");
     actions.append(cancel, save);
     const submit = async () => {
@@ -292,7 +300,7 @@ export function initSnippets(host: SnippetsHost) {
       // ⌘Enter saves; plain Enter stays a newline in the content box.
       else if (event.key === "Enter" && (event.metaKey || (event.target instanceof HTMLInputElement && !event.shiftKey))) { event.preventDefault(); submit(); }
     };
-    hints(["⌘↵", "儲存"], ["esc", "取消"]);
+    hints(["⌘↵", t("snippets.save")], ["esc", t("snippets.cancel")]);
     form.focus();
   }
 
@@ -317,7 +325,7 @@ export function initSnippets(host: SnippetsHost) {
     if (event.metaKey && event.key === "Backspace" && results[selected]) {
       event.preventDefault();
       const target = results[selected].snippet;
-      if (confirmDelete !== target.id) { confirmDelete = target.id; hints(["⌘⌫", `再按一次刪除「${target.name}」`], ["esc", "取消"]); return; }
+      if (confirmDelete !== target.id) { confirmDelete = target.id; hints(["⌘⌫", t("snippets.confirmDelete", { name: target.name })], ["esc", t("snippets.cancel")]); return; }
       store.remove(target.id).then(render).catch(host.notify);
     }
   });
@@ -325,6 +333,8 @@ export function initSnippets(host: SnippetsHost) {
   document.addEventListener("mousedown", (event) => { if (isOpen() && event.target instanceof Node && !palette.contains(event.target)) close(!(event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable]"))); }, true);
   window.addEventListener("blur", () => { if (isOpen() && !editing) close(false); });
   store.onChange(() => { if (isOpen() && !editing) render(); });
+  // 編輯器是開啟時才建立的，切換語言不重建（避免丟掉輸入中的內容）；其餘重套。
+  onLocaleChange(() => { applyStatic(); if (isOpen() && !editing) render(); });
 
   // ---- side-panel list ----
   const COLLAPSED_KEY = "snippet-collapsed";
@@ -333,13 +343,13 @@ export function initSnippets(host: SnippetsHost) {
   let panelQuery = "";
   function renderList(container: HTMLElement, selectedId?: string) {
     container.replaceChildren();
-    const search = el("input", "snippet-search"); search.placeholder = "搜尋片段…"; search.value = panelQuery; search.setAttribute("aria-label", "搜尋片段");
+    const search = el("input", "snippet-search"); search.placeholder = t("snippets.panelSearch"); search.value = panelQuery; search.setAttribute("aria-label", t("snippets.searchAria"));
     search.oninput = () => { panelQuery = search.value; renderList(container, selectedId); const again = container.querySelector<HTMLInputElement>(".snippet-search"); again?.focus(); again?.setSelectionRange(panelQuery.length, panelQuery.length); };
     container.append(search);
     const q = panelQuery.trim();
     const visible = q ? filterSnippets(items, q).map((match) => match.snippet) : items;
-    if (!items.length) { container.append(el("p", "help", "還沒有片段。按右上角 ＋ 新增，或在終端機按 ⌘⇧P 開啟面板。片段可綁定到目錄，在該目錄及其子目錄的終端機才會出現。")); return; }
-    if (!visible.length) container.append(el("p", "help", "沒有符合的片段"));
+    if (!items.length) { container.append(el("p", "help", t("snippets.panelEmpty"))); return; }
+    if (!visible.length) container.append(el("p", "help", t("snippets.emptyNoMatch")));
     const here = host.cwd();
     for (const group of groupByScope(visible)) {
       const open = q ? true : !collapsed.has(group.scope);
@@ -347,11 +357,11 @@ export function initSnippets(host: SnippetsHost) {
       const chevron = el("span", "group-chevron" + (open ? " expanded" : ""));
       chevron.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>';
       const label = el("span", "row-label", scopeLabel(group.scope, host.home()));
-      label.title = isGlobal(group.scope) ? "所有目錄" : group.scope;
+      label.title = isGlobal(group.scope) ? t("snippets.scopeAll") : group.scope;
       const count = el("span", "badge", String(group.items.length));
       const dot = here && !isGlobal(group.scope) && (here === group.scope || here.startsWith(group.scope + "/")) ? el("span", "snippet-here", "●") : undefined;
-      if (dot) dot.title = "目前終端機位於此目錄";
-      const addHere = el("button", "icon-btn row-action", "＋"); addHere.title = "在此範圍新增片段"; addHere.setAttribute("aria-label", "在此範圍新增片段");
+      if (dot) dot.title = t("snippets.cwdHere");
+      const addHere = el("button", "icon-btn row-action", "＋"); addHere.title = t("snippets.addHere"); addHere.setAttribute("aria-label", t("snippets.addHere"));
       addHere.onclick = (event) => { event.stopPropagation(); host.editInDrawer(undefined, group.scope); };
       header.append(chevron, label, ...(dot ? [dot] : []), count, addHere);
       header.onclick = () => {
@@ -367,7 +377,7 @@ export function initSnippets(host: SnippetsHost) {
         const text = el("span", "snippet-row-text");
         text.append(el("span", "snippet-row-name", item.name), el("span", "snippet-row-body mono", item.text.split("\n")[0]));
         text.title = item.text;
-        const insert = el("button", "icon-btn row-action", "↵"); insert.title = host.canInsert() ? "插入到終端機" : "目前沒有終端機"; insert.disabled = !host.canInsert();
+        const insert = el("button", "icon-btn row-action", "↵"); insert.title = host.canInsert() ? t("snippets.insertToTerminal") : t("snippets.noTerminal"); insert.disabled = !host.canInsert();
         insert.onclick = (event) => { event.stopPropagation(); store.insert(item).catch(host.notify); };
         row.append(text, insert);
         row.onclick = () => host.editInDrawer(item.id);

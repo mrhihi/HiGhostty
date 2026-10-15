@@ -4,7 +4,8 @@
 export const PROMPT_KINDS = ["menu", "yesno", "confirm", "press-enter", "password", "login", "trust", "input"] as const;
 export type PromptKind = (typeof PROMPT_KINDS)[number];
 export type Prompt = { kind: PromptKind; label: string; question: string; options: string[]; selected?: number; low?: boolean };
-export type Scope = "last" | "tail";
+export const SCOPES = ["last", "tail", "after-rule", "box-body", "above-box"] as const;
+export type Scope = (typeof SCOPES)[number];
 export type CompiledRule = {
   id: string;
   kind: PromptKind;
@@ -12,58 +13,72 @@ export type CompiledRule = {
   scope: Scope;
   low: boolean;
   re?: RegExp;
+  not?: RegExp[];
   layout?: "cursor-menu" | "confirm-menu";
   confirmText?: string;
 };
-export type CompiledRules = { agents: string[]; footers: RegExp[]; rules: CompiledRule[] };
-type Parsed = { agents: string[]; footers: string[]; disable: string[]; rules: CompiledRule[] };
+export type CompiledRules = { agents: string[]; footers: RegExp[]; working: RegExp[]; rules: CompiledRule[] };
+// 錯誤以結構化資料回傳（key＋參數），顯示時才翻譯（formatRuleError），避免驗證邏輯依賴 UI 語系。
+export type RuleErrorSource = "builtin" | "user";
+export type RuleError = { key: string; source: RuleErrorSource; params: Record<string, string | number> };
+export const formatRuleError = (e: RuleError, t: (key: string, params?: Record<string, string | number>) => string) =>
+  t(e.key, { ...e.params, source: t(`rules.source.${e.source}`) });
+const fail = (errors: RuleError[], source: RuleErrorSource, key: string, params: RuleError["params"] = {}) => { errors.push({ key: `rules.err.${key}`, source, params }); };
+type Parsed = { agents: string[]; footers: string[]; working: string[]; disable: string[]; rules: CompiledRule[] };
 
 // "\\d+\\.\\d+\\.\\d+": Claude Code's native binary is named after its version (e.g. 2.1.296).
 export const DEFAULT_AGENTS = ["claude", "codex", "gemini", "copilot", "aider", "opencode", "\\d+\\.\\d+\\.\\d+", "node", "python3?", "bun", "deno"];
 const LAYOUTS = ["cursor-menu", "confirm-menu"];
 
-function strings(value: unknown, field: string, errors: string[]): string[] {
+function strings(value: unknown, field: string, source: RuleErrorSource, errors: RuleError[]): string[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) { errors.push(`${field} 必須是字串陣列`); return []; }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) { fail(errors, source, "array", { field }); return []; }
   return value as string[];
 }
-function compileRegex(pattern: string, flags: string, where: string, errors: string[]): RegExp | undefined {
-  try { return new RegExp(pattern, flags); } catch (error) { errors.push(`${where}：正規表示式無法編譯（${(error as Error).message}）`); }
+function compileRegex(pattern: string, flags: string, source: RuleErrorSource, key: string, params: RuleError["params"], errors: RuleError[]): RegExp | undefined {
+  try { return new RegExp(pattern, flags); } catch (error) { fail(errors, source, key, { ...params, message: (error as Error).message }); }
 }
 // Validate one rules document (already JSON.parse'd). Every problem is collected.
-function parseDocument(doc: unknown, source: string, errors: string[]): Parsed {
-  const out: Parsed = { agents: [], footers: [], disable: [], rules: [] };
-  if (!doc || typeof doc !== "object" || Array.isArray(doc)) { errors.push(`${source}：最外層必須是物件`); return out; }
+function parseDocument(doc: unknown, source: RuleErrorSource, errors: RuleError[]): Parsed {
+  const out: Parsed = { agents: [], footers: [], working: [], disable: [], rules: [] };
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) { fail(errors, source, "root"); return out; }
   const file = doc as Record<string, unknown>;
-  out.agents = strings(file.agents, `${source} agents`, errors);
-  out.footers = strings(file.footers, `${source} footers`, errors);
-  out.disable = strings(file.disable, `${source} disable`, errors);
-  for (const [field, list] of [["agents", out.agents], ["footers", out.footers]] as const) {
-    for (const pattern of list) compileRegex(pattern, "i", `${source} ${field}「${pattern}」`, errors);
+  out.agents = strings(file.agents, "agents", source, errors);
+  out.footers = strings(file.footers, "footers", source, errors);
+  out.working = strings(file.working, "working", source, errors);
+  out.disable = strings(file.disable, "disable", source, errors);
+  for (const [field, list] of [["agents", out.agents], ["footers", out.footers], ["working", out.working]] as const) {
+    for (const pattern of list) compileRegex(pattern, "i", source, "regexField", { field, pattern }, errors);
   }
   const rules = file.rules === undefined ? [] : file.rules;
-  if (!Array.isArray(rules)) { errors.push(`${source} rules 必須是陣列`); return out; }
+  if (!Array.isArray(rules)) { fail(errors, source, "rulesArray"); return out; }
   const seen = new Set<string>();
   rules.forEach((raw, index) => {
     const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
     const id = typeof r.id === "string" && r.id ? r.id : "";
-    const where = `${source} 規則 #${index + 1}${id ? `（${id}）` : ""}`;
-    if (!id) { errors.push(`${where}：缺少 id`); return; }
-    if (seen.has(id)) { errors.push(`${where}：id 重複`); return; }
+    const at = { index: index + 1, id: id ? ` (${id})` : "" };
+    if (!id) { fail(errors, source, "noId", at); return; }
+    if (seen.has(id)) { fail(errors, source, "dupId", at); return; }
     seen.add(id);
-    if (!PROMPT_KINDS.includes(r.kind as PromptKind)) { errors.push(`${where}：kind 必須是 ${PROMPT_KINDS.join("／")}`); return; }
-    if (typeof r.label !== "string" || !r.label) { errors.push(`${where}：缺少 label`); return; }
+    if (!PROMPT_KINDS.includes(r.kind as PromptKind)) { fail(errors, source, "kind", { ...at, allowed: PROMPT_KINDS.join(" / ") }); return; }
+    if (typeof r.label !== "string" || !r.label) { fail(errors, source, "noLabel", at); return; }
     const scope = r.scope === undefined ? "last" : r.scope;
-    if (scope !== "last" && scope !== "tail") { errors.push(`${where}：scope 必須是 last 或 tail`); return; }
-    if (r.confidence !== undefined && r.confidence !== "low" && r.confidence !== "high") { errors.push(`${where}：confidence 必須是 low 或 high`); return; }
-    const rule: CompiledRule = { id, kind: r.kind as PromptKind, label: r.label, scope, low: r.confidence === "low" };
+    if (!SCOPES.includes(scope as Scope)) { fail(errors, source, "scope", { ...at, allowed: SCOPES.join(" / ") }); return; }
+    if (r.confidence !== undefined && r.confidence !== "low" && r.confidence !== "high") { fail(errors, source, "confidence", at); return; }
+    const rule: CompiledRule = { id, kind: r.kind as PromptKind, label: r.label, scope: scope as Scope, low: r.confidence === "low" };
+    if (r.not !== undefined) {
+      const patterns = strings(r.not, `rule #${index + 1}${at.id} not`, source, errors);
+      const compiled = patterns.map((pattern) => compileRegex(pattern, "i", source, "regexNot", { ...at, pattern }, errors));
+      if (compiled.some((re) => !re)) return;
+      rule.not = compiled as RegExp[];
+    }
     if (r.layout !== undefined) {
-      if (typeof r.layout !== "string" || !LAYOUTS.includes(r.layout)) { errors.push(`${where}：layout 必須是 ${LAYOUTS.join("／")}`); return; }
+      if (typeof r.layout !== "string" || !LAYOUTS.includes(r.layout)) { fail(errors, source, "layout", { ...at, allowed: LAYOUTS.join(" / ") }); return; }
       rule.layout = r.layout as CompiledRule["layout"];
       if (typeof r.confirmText === "string") rule.confirmText = r.confirmText.toLowerCase();
     } else {
-      if (typeof r.pattern !== "string" || !r.pattern) { errors.push(`${where}：需要 pattern 或 layout`); return; }
-      const re = compileRegex(r.pattern, typeof r.flags === "string" ? r.flags : "", where, errors);
+      if (typeof r.pattern !== "string" || !r.pattern) { fail(errors, source, "noPattern", at); return; }
+      const re = compileRegex(r.pattern, typeof r.flags === "string" ? r.flags : "", source, "regexRule", at, errors);
       if (!re) return;
       rule.re = re;
     }
@@ -71,9 +86,9 @@ function parseDocument(doc: unknown, source: string, errors: string[]): Parsed {
   });
   return out;
 }
-function parseText(text: string, source: string, errors: string[]): Parsed | undefined {
+function parseText(text: string, source: RuleErrorSource, errors: RuleError[]): Parsed | undefined {
   let doc: unknown;
-  try { doc = JSON.parse(text); } catch (error) { errors.push(`${source}：JSON 格式錯誤（${(error as Error).message}）`); return undefined; }
+  try { doc = JSON.parse(text); } catch (error) { fail(errors, source, "json", { message: (error as Error).message }); return undefined; }
   const before = errors.length;
   const parsed = parseDocument(doc, source, errors);
   return errors.length === before ? parsed : undefined;
@@ -82,16 +97,17 @@ const unique = (list: string[]) => [...new Set(list)];
 
 // builtinText is the shipped file; userText the optional override. A broken
 // user file is ignored as a whole (errors say why) so detection never goes dark.
-export function buildRules(builtinText: string, userText?: string): { rules: CompiledRules; errors: string[]; userRules: number } {
-  const errors: string[] = [];
-  const builtin = parseText(builtinText, "內建規則", errors) ?? { agents: DEFAULT_AGENTS, footers: [], disable: [], rules: [] };
-  const userErrors: string[] = [];
-  const user = userText && userText.trim() ? parseText(userText, "使用者規則", userErrors) : undefined;
+export function buildRules(builtinText: string, userText?: string): { rules: CompiledRules; errors: RuleError[]; userRules: number; userBroken: boolean } {
+  const errors: RuleError[] = [];
+  const builtin = parseText(builtinText, "builtin", errors) ?? { agents: DEFAULT_AGENTS, footers: [], working: [], disable: [], rules: [] };
+  const userErrors: RuleError[] = [];
+  const user = userText && userText.trim() ? parseText(userText, "user", userErrors) : undefined;
   errors.push(...userErrors);
   const disabled = new Set(user?.disable ?? []);
   const own = new Set((user?.rules ?? []).map((rule) => rule.id));
   const rules = [...(user?.rules ?? []), ...builtin.rules.filter((rule) => !disabled.has(rule.id) && !own.has(rule.id))];
   const agents = unique([...builtin.agents, ...(user?.agents ?? [])]);
   const footers = unique([...builtin.footers, ...(user?.footers ?? [])]).map((pattern) => new RegExp(pattern, "i"));
-  return { rules: { agents: agents.length ? agents : DEFAULT_AGENTS, footers, rules }, errors, userRules: user?.rules.length ?? 0 };
+  const working = unique([...builtin.working, ...(user?.working ?? [])]).map((pattern) => new RegExp(pattern, "i"));
+  return { rules: { agents: agents.length ? agents : DEFAULT_AGENTS, footers, working, rules }, errors, userRules: user?.rules.length ?? 0, userBroken: userErrors.length > 0 };
 }

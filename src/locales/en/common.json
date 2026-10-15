@@ -1,0 +1,4 @@
+{
+  "common.defaultGroup": "Group",
+  "common.invalidTmuxSession": "Invalid tmux session name"
+}

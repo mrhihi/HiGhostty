@@ -13,6 +13,7 @@
 - 「隱藏 tmux 狀態列」：啟動命令固定附 `\; set-option status on|off`；儲存設定時也會用 `tmux_set_status` 立即套用。
 - 收藏只存 `tmux` 旗標，不存 session 名稱，開啟收藏一律新建 session。
 - 找不到 tmux 時恢復會提示並略過。
+- 啟動命令附 `-e HIGHOSTTY_*=…`（tmux 3.2 起；`control_env` 檢查版本，過舊就不加），讓 pane 裡的程式能用 `highostty ctl`，見 `docs/agent-control.md`。`-A` 接上既有 session 時 tmux 忽略 `-e`。
 
 ## 驗收清單（debug 與 release 各一次）
 1. 頁籤啟用 tmux 並重新開啟，執行 `sleep 9999`；結束 app，`tmux ls` 仍有 `hg-*`。

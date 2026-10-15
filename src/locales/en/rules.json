@@ -1,0 +1,19 @@
+{
+  "rules.source.builtin": "built-in rules",
+  "rules.source.user": "user rules",
+  "rules.err.array": "{source}: {field} must be an array of strings",
+  "rules.err.regexField": "{source} {field} “{pattern}”: invalid regular expression ({message})",
+  "rules.err.regexRule": "{source} rule #{index}{id}: invalid regular expression ({message})",
+  "rules.err.regexNot": "{source} rule #{index}{id} not “{pattern}”: invalid regular expression ({message})",
+  "rules.err.root": "{source}: the top level must be an object",
+  "rules.err.rulesArray": "{source}: rules must be an array",
+  "rules.err.noId": "{source} rule #{index}: missing id",
+  "rules.err.dupId": "{source} rule #{index}{id}: duplicate id",
+  "rules.err.kind": "{source} rule #{index}{id}: kind must be one of {allowed}",
+  "rules.err.noLabel": "{source} rule #{index}{id}: missing label",
+  "rules.err.scope": "{source} rule #{index}{id}: scope must be one of {allowed}",
+  "rules.err.confidence": "{source} rule #{index}{id}: confidence must be low or high",
+  "rules.err.layout": "{source} rule #{index}{id}: layout must be one of {allowed}",
+  "rules.err.noPattern": "{source} rule #{index}{id}: needs a pattern or layout",
+  "rules.err.json": "{source}: invalid JSON ({message})"
+}

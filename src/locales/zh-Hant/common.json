@@ -1,0 +1,4 @@
+{
+  "common.defaultGroup": "群組",
+  "common.invalidTmuxSession": "無效的 tmux session 名稱"
+}

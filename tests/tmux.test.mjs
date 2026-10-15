@@ -1,3 +1,4 @@
+import { useLocale } from "./i18n-helper.mjs"; useLocale();
 import test from "node:test";
 import assert from "node:assert/strict";
 import { newSessionName, restorable, tmuxCommand, validSession } from "../src/tmux.ts";
@@ -34,4 +35,10 @@ test("restorable keeps only tmux tabs and drops invalid sessions", () => {
   assert.deepEqual(result[0].tmuxSessions, ["hg-abcd1234", undefined]);
   assert.deepEqual(result[1].tmuxSessions, []);
   assert.deepEqual(restorable("nope"), []);
+});
+
+test("tmuxCommand passes environment with -e, quoted, and drops unsafe keys", () => {
+  const command = tmuxCommand("hg-abcd1234", "/tmp", undefined, false, "tmux", { HIGHOSTTY_ENV: "1", HIGHOSTTY_CLI: "/Applications/Hi Ghostty/it's", "bad key": "x", lower: "x" });
+  assert.match(command, /new-session -A -s hg-abcd1234 -e 'HIGHOSTTY_ENV=1' -e 'HIGHOSTTY_CLI=\/Applications\/Hi Ghostty\/it'\\''s' -c '\/tmp'/);
+  assert.ok(!command.includes("bad key") && !command.includes("lower="));
 });

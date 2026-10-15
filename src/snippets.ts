@@ -1,4 +1,5 @@
 // Pure logic for the ⌘⇧P snippet palette; DOM lives in snippet-palette.ts.
+import { t } from "./i18n.ts";
 export type Snippet = {
   id: string;
   name: string;
@@ -73,7 +74,7 @@ export function expand(snippet: Snippet, cwd: string, home: string): string {
   return snippet.run ? text.replace(/\n+$/, "") + "\r" : text;
 }
 export function scopeLabel(scope: string, home: string): string {
-  if (isGlobal(scope)) return "全域";
+  if (isGlobal(scope)) return t("snippets.global");
   if (scope === home) return "~";
   return scope.startsWith(home + "/") ? "~" + scope.slice(home.length) : scope;
 }

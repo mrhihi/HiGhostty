@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { attachScreen, raise, clear, clearSource, prune, unreadCount, tabsWithAlerts, badgeText, emptyAttention, titleSpinnerStopped, recognizePrompt, promptKey, snapshot, idleStep, QUIET_MS } from "../src/attention.ts";
+import { sorted, attachScreen, raise, clear, clearSource, prune, unreadCount, tabsWithAlerts, badgeText, emptyAttention, titleSpinnerStopped, titleWorking, agentState, recognizePrompt, promptKey, snapshot, idleStep, QUIET_MS } from "../src/attention.ts";
 import { buildRules } from "../src/prompt-rules.ts";
 
 const { rules, errors } = buildRules(readFileSync(new URL("../src/prompt-rules.json", import.meta.url), "utf8"));
@@ -141,4 +141,68 @@ test("attachScreen stores the captured screen and ignores cleared alerts", () =>
   const merged = raise(withScreen, { surfaceId: "a", source: "signal", title: "響鈴", body: "", since: 2 });
   assert.equal(merged.get("a").screen, "❯ 1. Yes\n  2. No");
   assert.equal(merged.get("a").count, 2);
+});
+
+test("Claude's half-circle busy spinner counts as working", () => {
+  assert.ok(titleWorking("◐ Fix bug"));
+  assert.ok(titleWorking("◓ Fix bug"));
+  assert.ok(titleSpinnerStopped("◑ Fix bug", "✳ Fix bug"));
+  assert.ok(!titleWorking("✳ Fix bug"));
+});
+
+test("Claude blocking screens: select form, MCP elicitation, review, permission", () => {
+  const form = recognize(["Which option?", "❯ 1. Alpha", "  2. Beta", "Enter to select · ↑/↓ to navigate · Esc to cancel"]);
+  assert.equal(form.kind, "menu");
+  assert.deepEqual(form.options, ["1. Alpha", "2. Beta"]);
+  assert.equal(recognize(["Pick one", "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"]).label, "等待選擇");
+  assert.equal(recognize(['MCP server "files" requests your input', "Accept", "Decline", "Esc to cancel"]).label, "等待 MCP 輸入");
+  assert.equal(recognize(["Review your answers", "Ready to submit?", "Esc to cancel"]).label, "等待確認答案");
+  assert.equal(recognize(["Claude needs your permission", "Esc to cancel · Tab to amend"]).label, "等待核准");
+});
+
+test("rule-relative scopes follow the prompt box", () => {
+  const box = ["output above?", "────────", "> draft", "────────", "footer below"];
+  const make = (scope, pattern) => buildRules("{}", JSON.stringify({ rules: [{ id: "t", kind: "input", label: "T", scope, pattern }] })).rules;
+  const hit = (scope, pattern) => recognizePrompt(box, make(scope, pattern))?.label;
+  assert.equal(hit("after-rule", "footer"), "T");
+  assert.equal(hit("after-rule", "draft"), undefined);
+  assert.equal(hit("box-body", "draft"), "T");
+  assert.equal(hit("box-body", "footer"), undefined);
+  assert.equal(hit("above-box", "output"), "T");
+  assert.equal(hit("above-box", "draft"), undefined);
+  // Without a box: after-rule is the whole screen, box-body empty.
+  assert.equal(recognizePrompt(["plain text"], make("after-rule", "plain"))?.label, "T");
+  assert.equal(recognizePrompt(["plain text"], make("box-body", "plain")), null);
+  // A one-char dash is not a rule.
+  assert.equal(recognizePrompt(["old prompt?", "─ x", "new text"], make("after-rule", "old"))?.label, "T");
+});
+
+test("not drops a rule when any of its lines match", () => {
+  const { rules: custom, errors: problems } = buildRules("{}", JSON.stringify({ rules: [{ id: "t", kind: "input", label: "T", scope: "last", pattern: "ready\\?$", not: ["^idle box"] }] }));
+  assert.deepEqual(problems, []);
+  assert.equal(recognizePrompt(["Are you ready?"], custom)?.label, "T");
+  assert.equal(recognizePrompt(["idle box", "Are you ready?"], custom), null);
+});
+
+test("agentState: blocked, working, idle", () => {
+  const state = (text, title = "") => agentState(text, title, rules);
+  assert.equal(state("Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel"), "blocked");
+  assert.equal(state("thinking…\nesc to interrupt"), "working");
+  assert.equal(state("plain output\n❯ ", "⠂ Fix bug"), "working");
+  assert.equal(state("done\n❯ \n? for shortcuts"), "idle");
+  assert.equal(state("done\n❯ ", "✳ Fix bug"), "idle");
+  // Blocked wins over a stale spinner title.
+  assert.equal(state("Do you want to proceed?\n❯ 1. Yes\n  2. No", "⠂ x"), "blocked");
+});
+
+test("an agent's own alert outranks a detected prompt and survives prompt clearing", () => {
+  let s = raise(emptyAttention, a("1", "agent", "要你決定", "選哪個？"));
+  assert.equal(raise(s, a("1", "prompt", "等待選擇")), s);
+  assert.equal(raise(s, a("1", "signal", "響鈴")), s);
+  assert.equal(clearSource(s, "1", "prompt"), s);
+  assert.equal(clearSource(s, "1", "signal"), s);
+  assert.equal(unreadCount(clearSource(s, "1", "agent")), 0);
+  s = raise(emptyAttention, a("2", "prompt", "等待選擇"));
+  assert.equal(raise(s, a("2", "agent", "要你決定")).get("2").source, "agent");
+  assert.equal(sorted(raise(raise(emptyAttention, a("3", "prompt")), a("4", "agent"))).at(0).surfaceId, "4");
 });

@@ -10,7 +10,11 @@ use std::{
     },
 };
 use tauri::{Emitter, Manager};
+mod control;
 mod files;
+mod locales;
+mod preview;
+mod projects;
 mod snippets;
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
@@ -297,7 +301,9 @@ async fn native(window: tauri::WebviewWindow, mut request: Value) -> Result<Valu
             .and_then(Value::as_str)
             .ok_or("缺少目錄")?;
         request["path"] = Value::String(resolve_path(path.into(), None)?);
-        request["id"] = Value::String(uuid::Uuid::new_v4().to_string());
+        let id = uuid::Uuid::new_v4().to_string();
+        request["env"] = control::surface_env(window.app_handle(), &id)?;
+        request["id"] = Value::String(id);
     }
     call_native(window, request).await
 }
@@ -543,6 +549,19 @@ fn tmux_path() -> Option<String> {
     let path = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && path.starts_with('/')).then_some(path)
 }
+/// 給 tmux session 的 HIGHOSTTY_* 環境變數（new-session -e）；tmux 低於 3.2 不支援 -e，回傳空表。
+#[tauri::command]
+fn control_env(app: tauri::AppHandle, session: String) -> Result<std::collections::HashMap<String, String>, String> {
+    if !valid_tmux_session(&session) {
+        return Err("無效的 tmux session 名稱".into());
+    }
+    let Some(tmux) = tmux_path() else { return Ok(Default::default()) };
+    let version = std::process::Command::new(tmux).arg("-V").output().map_err(err)?;
+    if !control::tmux_supports_env(&String::from_utf8_lossy(&version.stdout)) {
+        return Ok(Default::default());
+    }
+    control::tmux_env(&app, &session)
+}
 #[tauri::command]
 fn tmux_available() -> bool {
     find_tmux().is_some() || std::process::Command::new("sh").args(["-lc", "command -v tmux"]).output().map(|o| o.status.success()).unwrap_or(false)
@@ -582,9 +601,21 @@ fn new_window(app: tauri::AppHandle, path: String, quick: bool) -> Result<String
         .map_err(err)?;
     Ok(label)
 }
+/// Windows that host terminals; the standalone preview windows are not among them.
+fn terminal_windows(app: &tauri::AppHandle) -> std::collections::HashMap<String, tauri::WebviewWindow> {
+    app.webview_windows()
+        .into_iter()
+        .filter(|(label, _)| !preview::is_preview_window(label))
+        .collect()
+}
 #[tauri::command]
 fn list_windows(app: tauri::AppHandle) -> Vec<String> {
-    let mut labels: Vec<_> = app.webview_windows().keys().cloned().collect();
+    let mut labels: Vec<_> = app
+        .webview_windows()
+        .keys()
+        .filter(|label| !preview::is_preview_window(label))
+        .cloned()
+        .collect();
     labels.sort();
     labels
 }
@@ -612,6 +643,11 @@ fn take_pending_open_paths() -> Vec<String> {
     std::mem::take(&mut *PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()))
 }
 fn main() {
+    // `highostty ctl …` is the agent-facing CLI: talk to the running app and exit, no GUI.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("ctl") {
+        std::process::exit(control::cli(args[1..].to_vec()));
+    }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let dir = std::env::temp_dir().join("highostty-diagnostics");
@@ -645,6 +681,7 @@ fn main() {
         .setup(|app| {
             let _ = APP.set(app.handle().clone());
             let _ = STARTED.set(std::time::Instant::now());
+            control::init(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 apply_startup_layout(&window);
             }
@@ -661,6 +698,28 @@ fn main() {
             files::list_files,
             files::dir_stamp,
             files::file_op,
+            preview::preview_stat,
+            preview::preview_read,
+            preview::preview_bytes,
+            preview::preview_print,
+            preview::preview_open_url,
+            preview::open_preview_window,
+            preview::preview_dock,
+            preview::preview_reveal,
+            locales::ui_language,
+            locales::set_ui_language,
+            locales::locales_list,
+            locales::locale_save,
+            locales::locale_delete,
+            locales::locale_read_file,
+            locales::locale_write_file,
+            projects::project_open,
+            projects::project_snapshot,
+            projects::project_commit,
+            projects::project_close,
+            projects::project_index_list,
+            projects::project_index_touch,
+            projects::project_index_remove,
             snippets::snippets,
             snippets::save_snippets,
             native,
@@ -676,6 +735,15 @@ fn main() {
             tmux_set_status,
             tmux_available,
             tmux_path,
+            control_env,
+            control::control_reply,
+            control::control_mode,
+            control::control_resolve_files,
+            control::skill_status,
+            control::skill_install,
+            control::skill_uninstall,
+            control::skill_text,
+            control::set_control_mode,
             new_window,
             list_windows,
             focus_window,
@@ -686,7 +754,7 @@ fn main() {
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 if !EXIT_APPROVED.load(Ordering::SeqCst) {
-                    let windows = app.webview_windows();
+                    let windows = terminal_windows(app);
                     if !windows.is_empty() {
                         api.prevent_exit();
                         let window = windows
@@ -704,7 +772,7 @@ fn main() {
                 let paths = open_directories(urls);
                 if !paths.is_empty() {
                     PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()).extend(paths);
-                    let windows = app.webview_windows();
+                    let windows = terminal_windows(app);
                     let window = windows
                         .values()
                         .find(|w| w.is_focused().unwrap_or(false))
@@ -717,7 +785,17 @@ fn main() {
                     }
                 }
             }
+            // Preview windows are only satellites of the terminal windows: when the
+            // last terminal window is gone they go too, instead of keeping the app alive.
+            if let tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Destroyed, label, .. } = &event {
+                if !preview::is_preview_window(label) && terminal_windows(app).is_empty() {
+                    for window in app.webview_windows().into_values() {
+                        let _ = window.destroy();
+                    }
+                }
+            }
             if let tauri::RunEvent::Exit = event {
+                control::shutdown();
                 unsafe {
                     hg_shutdown();
                 }

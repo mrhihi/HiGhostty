@@ -46,7 +46,7 @@
 - 判定邏輯只放 `src/attention.ts`，規則載入與合併只放 `src/prompt-rules.ts`，並補 `tests/attention.test.mjs`、`tests/prompt-rules.test.mjs`。沒有 hook 機制，只靠響鈴／通知／標題 spinner 與畫面辨識。
 - 比對用的字串（關鍵字、頁尾、agent 行程名）放在規則檔 `src/prompt-rules.json`（使用者可用資料目錄的 `prompt-rules.json` 覆蓋），不要寫死在程式裡；規則檔必須維持可通過 `buildRules`，新增規則要補測試案例。
 - 使用者規則檔有誤時整份退回內建規則並顯示原因，不可讓偵測失效。
-- 「待處理」面板在 drawer（HTML），不要做會被終端機 NSView 蓋住的浮層。
+- 「待處理」是頂部浮層（`src/attention-drop.ts`，HTML），靠 `overlay-cutout` 顯示，細節見 `docs/attention.md`；不要做會被終端機 NSView 蓋住的浮層。
 
 ## tmux 背景執行（`src/tmux.ts`、`src/main.ts` 的 `freezeSession`／`restoreSession`、`src-tauri/src/main.rs` 的 session 命令）
 
@@ -55,3 +55,47 @@
 - 命令與 session 名稱邏輯只放 `src/tmux.ts` 並補 `tests/tmux.test.mjs`；session 名稱一律經 `validSession` 驗證（會進 shell）。
 - 結束 app 不可 kill session（`keepTmux`），手動關閉才 kill；關閉流程要先 `freezeSession`，否則空狀態會覆寫 `session.json`。
 - 改完照 `docs/tmux.md` 的驗收清單實機操作。
+
+## agent 控制指令（`src/control.ts`、`src-tauri/src/control.rs`、`highostty ctl`）
+
+修改 socket、`ctl` CLI、`HIGHOSTTY_*` 環境變數注入或 `control-request` 轉送前，先讀 `docs/agent-control.md`。重點：
+
+- 指令名稱、參數解析、權限（`write` 指令只在「完整」模式可用）、回覆格式等純邏輯只放 `src/control.ts` 的 `OPS` 表並補 `tests/control.test.mjs`；Rust 與 CLI 不解析指令。
+- 新增會改動狀態或送輸入的指令一定要標 `write: true`；預設模式是唯讀。
+- 每個視窗都要回覆 `control-request`（claim 為 owner／part／none），Rust 靠數量判斷是否全部回覆；改 `handleControl` 時不可讓任何路徑漏回覆，否則其他視窗的請求會拖到逾時。
+- socket 只接受同一使用者（0600＋`getpeereid`），不放 token（會出現在 tmux 命令列）；不可放寬。
+- 環境變數經 `native` 的 `open` 注入（`bridge.m` 的 `env_vars`）；tmux 頁籤走 `tmuxCommand` 的 `-e`（tmux 3.2+）。改 `tmuxCommand` 時同步讀 `docs/tmux.md`。
+- 原生程式沿用 `@try/@catch`；新增 `key` 之類的輸入 op 前先讀 `docs/keyboard-input.md`。
+- 改完照 `docs/agent-control.md` 的驗收清單實機操作（`npm test` 與 `cargo test` 不涵蓋 socket 與原生環境變數）。
+
+## 檔案預覽窗（`src/preview.ts`、`src/preview-panel.ts`、`src-tauri/src/preview.rs`、`ctl preview`）
+
+修改預覽窗、`updateLayout()` 的版面切分或 `ctl preview` 前，先讀 `docs/preview.md`。重點：
+
+- 預覽窗靠 `updateLayout()` 把 `#terminals` 切成「終端機區＋預覽區」，原生終端機只佔終端機區；不用 cutout、不放進分割樹。不可對 `#terminals` 呼叫 `replaceChildren`（會清掉預覽窗），只移除 `.surface-outline`。
+- 幾何與狀態邏輯只放 `src/preview.ts` 並補 `tests/preview.test.mjs`。自動更新是對路徑輪詢 `preview_stat`，不要改成對檔案 watch（rename 存檔會失效）。
+- Markdown 一定要經 `DOMPurify.sanitize`；連結只處理 http(s) 與 `.md`，其餘忽略。
+- `tab.preview` 只存在記憶體，不寫進 session／收藏；`ctl preview *` 維持 `write: false`，並保持不搶焦點。
+- 改完照 `docs/preview.md` 的驗收清單實機操作。
+
+## 多國語系（`src/i18n.ts`、`src/i18n-runtime.ts`、`src/locales/`、`src-tauri/src/locales.rs`）
+
+新增或修改任何使用者看得到的字串、語系檔格式、設定頁「語言」或 `bridge.m` 的 `native.*` 字串前，先讀 `docs/i18n.md`。重點：
+
+- UI 字串一律走 `t()`（動態）或 `data-i18n*` 屬性（靜態 HTML），並同步補 `src/locales/en/*.json` 與 `zh-Hant/*.json`（key 與 `{參數}` 必須一致）；不要在模組載入時快取翻譯結果。
+- `src/i18n.ts` 保持 DOM-free，且不 import Vite／Tauri 專屬模組；被 node 測試載入的模組要寫 `from "./i18n.ts"`（含副檔名）。純邏輯模組的驗證錯誤回傳結構化資料，顯示時才翻譯。
+- 原生字串走 `bridge.m` 的 `L(key, fallback)`，key 以 `native.` 開頭並放在 locales 裡，fallback 用英文。
+- 不翻譯：Rust 錯誤、`highostty ctl` 回覆（給 agent 看）、程式碼註解。
+- 語系檔代碼會成為檔名；前端 `validLocaleCode` 與 Rust `valid_code` 規則必須一致，不可放寬。
+- 改完照 `docs/i18n.md` 的驗收清單實機操作（`npm test` 不涵蓋原生字串與跨視窗切換）。
+
+
+## 專案區（`src/projects.ts`、`src/project-*.ts`、`src-tauri/src/projects.rs`、`highostty ctl project`）
+
+修改專案狀態規則、journal 儲存、`project` 指令或專案畫面前，先讀 `docs/projects.md`（規格在 `docs/project-implementation.md`，不同處以後者為準）。重點：
+
+- 任務／成員／訊息規則只放 `src/projects.ts` 的 `decide`／`reduce` 並補 `tests/projects.test.mjs`；Rust 只負責 journal（revision CAS、actionId 去重、單一寫入者），不重做規則。
+- 原生輸入（貼 prompt）之前，`sending` 必須已寫入 journal；寫入後出錯標 `uncertain`，不自動重送。
+- 指令的輸入解析放 `src/project-control.ts`，`write` 指令一定標 `write: true`；prompt 只放標頭與 ID，不放訊息內文。
+- 專案畫面蓋住終端機的方式是 `terminalHidden()`＋空 rects，不要讓隱藏的終端機取得鍵盤焦點。
+- 改完照 `docs/projects.md` 的驗收清單實機操作。

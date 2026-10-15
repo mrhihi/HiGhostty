@@ -2,21 +2,31 @@
 // lives in files.ts; this module owns the DOM and talks to the native layer.
 import { invoke } from "@tauri-apps/api/core";
 import { popupMenu } from "./context-menu";
+import { t } from "./i18n";
+import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import {
+  clampColumnWidth,
   clampPreviewHeight,
   clampWidth,
+  columnChain,
+  columnRootFor,
+  DEFAULT_COLUMN_WIDTH,
   DEFAULT_PREVIEW_HEIGHT,
   DEFAULT_WIDTH,
   fileKindLabel,
   formatDate,
   formatSize,
   initialFiles,
+  sameSaved,
+  saveFiles,
   moveSelection,
   navigate,
   onCwd,
   parentOf,
   previewTarget,
+  pruneColumnWidths,
   pruneSelection,
+  rememberColumnWidth,
   returnToCwd,
   select,
   shellQuote,
@@ -44,9 +54,14 @@ export type FilesHost = {
   displayPath(path: string): string;
   openTerminal(path: string): Promise<void>;
   editInTerminal(directory: string, command: string): Promise<void>;
+  previewFile(path: string): void;
+  // Swaps the tab's preview pane to this file; does nothing when no preview pane is open.
+  followPreview(path: string): void;
   insertIntoTerminal(text: string): Promise<void>;
   focusTerminal(): void;
   layoutChanged(): void;
+  // The tab's panel was opened, closed, resized to full, moved or its folders expanded: remember it for next launch.
+  visibilityChanged(tab: FilesTab): void;
   notify(error: unknown): void;
   icons: Record<"folder" | "file" | "chevron" | "up" | "eye" | "close", string>;
 };
@@ -69,23 +84,24 @@ export function initFilesPanel(host: FilesHost) {
   const panel = document.getElementById("files")!;
   const resizer = document.getElementById("files-resizer")!;
   panel.innerHTML = `<div class="files-heading">
-<button id="files-up" class="icon-btn" title="上層（⌘↑）" aria-label="上層">${icons.up}</button>
-<nav id="files-crumbs" class="files-crumbs" aria-label="目前位置"></nav>
-<button id="files-follow" class="icon-btn" title="回到終端機目前目錄" aria-label="回到終端機目前目錄" hidden>${extraIcons.follow}</button>
-<div class="files-view-switch" role="group" aria-label="檢視模式"><button id="files-view-list" class="icon-btn" title="清單" aria-label="清單">${extraIcons.list}</button><button id="files-view-columns" class="icon-btn" title="三欄" aria-label="三欄">${extraIcons.columns}</button></div>
-<button id="files-hidden" class="icon-btn" title="顯示隱藏檔" aria-label="顯示隱藏檔" aria-pressed="false">${icons.eye}</button>
-<button id="files-full" class="icon-btn" title="滿版（⇧⌘F）" aria-label="滿版">${extraIcons.expand}</button>
-<button id="files-close" class="icon-btn" title="關閉（⌘O／⌘0）" aria-label="關閉檔案面板">${icons.close}</button>
+<button id="files-up" class="icon-btn" title="Enclosing Folder (⌘↑)" aria-label="Enclosing Folder" data-i18n-title="files.up.title" data-i18n-aria-label="files.up.label">${icons.up}</button>
+<nav id="files-crumbs" class="files-crumbs" aria-label="Current Location" data-i18n-aria-label="files.crumbs.label"></nav>
+<button id="files-follow" class="icon-btn" title="Return to Terminal's Directory" aria-label="Return to Terminal's Directory" data-i18n-title="files.follow" data-i18n-aria-label="files.follow" hidden>${extraIcons.follow}</button>
+<div class="files-view-switch" role="group" aria-label="View Mode" data-i18n-aria-label="files.viewMode"><button id="files-view-list" class="icon-btn" title="List" aria-label="List" data-i18n-title="files.viewList" data-i18n-aria-label="files.viewList">${extraIcons.list}</button><button id="files-view-columns" class="icon-btn" title="Columns" aria-label="Columns" data-i18n-title="files.viewColumns" data-i18n-aria-label="files.viewColumns">${extraIcons.columns}</button></div>
+<button id="files-hidden" class="icon-btn" title="Show Hidden Files" aria-label="Show Hidden Files" data-i18n-title="files.showHidden" data-i18n-aria-label="files.showHidden" aria-pressed="false">${icons.eye}</button>
+<button id="files-full" class="icon-btn" title="Full Width (⇧⌘F)" aria-label="Full Width">${extraIcons.expand}</button>
+<button id="files-close" class="icon-btn" title="Close (⌘O / ⌘0)" aria-label="Close Files Panel" data-i18n-title="files.close.title" data-i18n-aria-label="files.close.label">${icons.close}</button>
 </div>
-<div class="files-columns"><button data-sort="name">名稱</button><button data-sort="size">大小</button><button data-sort="modified">修改日期</button></div>
-<div id="files-split"><div id="files-body"><div class="col-parent" aria-label="上層"></div><div id="files-list" role="tree" tabindex="0" aria-label="檔案" aria-multiselectable="true"></div><div class="col-child" aria-label="資料夾內容"></div></div><div id="files-preview-resizer" role="separator" aria-orientation="horizontal" aria-label="調整預覽高度"></div><div class="col-preview" aria-label="預覽"></div></div>
+<div class="files-columns"><button data-sort="name" data-i18n="files.col.name">Name</button><button data-sort="size" data-i18n="files.col.size">Size</button><button data-sort="modified" data-i18n="files.col.modified">Date Modified</button></div>
+<div id="files-split"><div id="files-body"><div id="files-list" role="tree" tabindex="0" aria-label="Files" data-i18n-aria-label="files.list.label" aria-multiselectable="true"></div><div class="col-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Column" data-i18n-aria-label="files.resizeColumn"></div><div class="col-child" aria-label="Folder Contents" data-i18n-aria-label="files.folderContents"></div><div class="col-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Column" data-i18n-aria-label="files.resizeColumn"></div></div><div id="files-preview-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize Preview Height" data-i18n-aria-label="files.resizePreview"></div><div class="col-preview" aria-label="Preview" data-i18n-aria-label="files.preview"></div></div>
 <div id="files-status" role="status" hidden></div>`;
   const $ = (id: string) => document.getElementById(id)!;
   const list = $("files-list");
-  const parentColumn = panel.querySelector<HTMLElement>(".col-parent")!;
+  const body = $("files-body");
   const childColumn = panel.querySelector<HTMLElement>(".col-child")!;
   const previewColumn = panel.querySelector<HTMLElement>(".col-preview")!;
   const previewResizer = $("files-preview-resizer");
+  let columnWidths: Record<string, number> = {};
 
   let cache = new Map<string, FileEntry[]>();
   let entries = new Map<string, FileEntry>();
@@ -103,6 +119,8 @@ export function initFilesPanel(host: FilesHost) {
   let width = DEFAULT_WIDTH;
   let previewHeight = DEFAULT_PREVIEW_HEIGHT;
   let view: FilesView = "list";
+  // Last view the user picked; new tabs and tabs without a saved view start with it.
+  let defaultView: FilesView = "list";
   // Selected after the next load: a path, or "first" for the first row.
   let pendingSelect: string | undefined;
   let previewToken = 0;
@@ -113,17 +131,22 @@ export function initFilesPanel(host: FilesHost) {
   // Entries behind the read-only rows in the parent and child columns, for their context menus.
   const miniEntries = new WeakMap<Element, FileEntry>();
   try {
-    view = localStorage.getItem("files-view") === "columns" ? "columns" : "list";
+    view = defaultView = localStorage.getItem("files-view") === "columns" ? "columns" : "list";
     showHidden = localStorage.getItem("show-hidden") === "true";
     sort = { ...sort, ...JSON.parse(localStorage.getItem("files-sort") || "{}") };
     width = Number(localStorage.getItem("files-width")) || DEFAULT_WIDTH;
     previewHeight = Number(localStorage.getItem("files-preview-height")) || DEFAULT_PREVIEW_HEIGHT;
+    const saved = JSON.parse(localStorage.getItem("files-column-widths") || "{}");
+    if (saved && typeof saved === "object") columnWidths = saved;
   } catch {}
 
   const state = () => host.activeTab()?.files;
   const update = (next: FilesState) => {
     const tab = host.activeTab();
-    if (tab) tab.files = next;
+    if (!tab) return;
+    const before = tab.files;
+    tab.files = next;
+    if (!sameSaved(saveFiles(before), saveFiles(next))) host.visibilityChanged(tab);
   };
   const isOpen = () => !!state()?.open;
   const hasFocus = () => document.hasFocus() && panel.contains(document.activeElement);
@@ -152,7 +175,8 @@ export function initFilesPanel(host: FilesHost) {
     previewHeight = clampPreviewHeight(previewHeight, panel.clientHeight || window.innerHeight);
     panel.style.setProperty("--preview-height", previewHeight + "px");
     $("files-full").innerHTML = full ? extraIcons.shrink : extraIcons.expand;
-    $("files-full").title = full ? "結束滿版（⇧⌘F）" : "滿版（⇧⌘F）";
+    $("files-full").title = t(full ? "files.full.exitTitle" : "files.full.title");
+    $("files-full").setAttribute("aria-label", t("files.full.label"));
     panel.classList.toggle("view-columns", view === "columns");
     $("files-view-list").classList.toggle("active", view === "list");
     $("files-view-columns").classList.toggle("active", view === "columns");
@@ -181,11 +205,19 @@ export function initFilesPanel(host: FilesHost) {
     const token = ++generation;
     const next = new Map<string, FileEntry[]>();
     try {
-      const parentListing = view === "columns" && root !== "/"
-        ? invoke<FileEntry[]>("list_files", { path: parentOf(root), showHidden }).catch(() => [] as FileEntry[])
-        : undefined;
+      let chain: string[] = [];
+      if (view === "columns") {
+        update({ ...state()!, columnRoot: columnRootFor(state()!.columnRoot, root) });
+        chain = columnChain(state()!.columnRoot, root);
+      }
+      const ancestors = chain.map((dir) => invoke<FileEntry[]>("list_files", { path: dir, showHidden }).catch(() => undefined));
       next.set(root, await invoke<FileEntry[]>("list_files", { path: root, showHidden }));
-      if (parentListing) next.set(parentOf(root), await parentListing);
+      const listed = await Promise.all(ancestors);
+      listed.forEach((listing, index) => {
+        next.set(chain[index], listing || []);
+        if (!listing) forgetWidths(chain[index], undefined);
+      });
+      forgetWidths(root, next.get(root));
       // Columns mode never expands folders in place.
       const expanded = new Set(view === "columns" ? [] : state()!.expanded);
       // Breadth-first so only folders that are still visible get listed.
@@ -210,6 +242,7 @@ export function initFilesPanel(host: FilesHost) {
       pendingSelect = undefined;
     } catch (error) {
       if (token !== generation) return;
+      forgetWidths(root, undefined);
       cache = new Map();
       renderedPath = root;
       draw();
@@ -242,11 +275,11 @@ export function initFilesPanel(host: FilesHost) {
     walk(files.path, 0);
     selection = pruneSelection(selection, order);
     list.replaceChildren(fragment);
-    drawParent(files.path);
+    drawAncestors(files);
     if (!order.length) {
       const empty = document.createElement("p");
       empty.className = "files-empty";
-      empty.textContent = cache.has(files.path) ? "此資料夾是空的" : "";
+      empty.textContent = cache.has(files.path) ? t("files.empty") : "";
       list.append(empty);
     }
     syncSelection();
@@ -274,7 +307,7 @@ export function initFilesPanel(host: FilesHost) {
     if (entry.is_symlink) {
       const link = document.createElement("span");
       link.className = "file-link";
-      link.title = "替身／符號連結";
+      link.title = t("files.alias");
       link.innerHTML = extraIcons.link;
       nameCell.append(link);
     }
@@ -302,18 +335,60 @@ export function initFilesPanel(host: FilesHost) {
     element.querySelector(".file-name")!.textContent = entry.name;
     miniEntries.set(element, entry);
     // Keep the keyboard on the current column after clicking a side column.
-    element.onclick = () => { onClick(); list.focus(); };
+    element.onclick = (event) => {
+      // ⌘+click on a file: open the auto-updating preview window instead of selecting.
+      if (event.metaKey && !event.shiftKey && !entry.is_dir) { host.previewFile(entry.path); list.focus(); return; }
+      onClick(); list.focus();
+    };
     return element;
   }
-  function drawParent(path: string) {
-    if (view !== "columns") { parentColumn.replaceChildren(); return; }
-    const up = parentOf(path);
-    const fragment = document.createDocumentFragment();
-    if (path !== "/")
-      for (const entry of sortEntries(cache.get(up) || [], sort))
-        fragment.append(miniRow(entry, entry.path === path, () => (entry.is_dir ? go(entry.path) : go(up, entry.path))));
-    parentColumn.replaceChildren(fragment);
-    parentColumn.querySelector(".current")?.scrollIntoView({ block: "nearest" });
+  // One column per folder level left of the current one; each remembers its own width.
+  function drawAncestors(files: FilesState) {
+    for (const element of body.querySelectorAll(".col-ancestor, .col-ancestor + .col-resizer")) element.remove();
+    list.dataset.dir = files.path!;
+    if (view === "columns") {
+      const chain = columnChain(files.columnRoot, files.path!);
+      chain.forEach((dir, index) => {
+        const current = chain[index + 1] ?? files.path!;
+        const column = document.createElement("div");
+        column.className = "col-ancestor";
+        column.setAttribute("aria-label", t("files.up.label"));
+        column.dataset.dir = dir;
+        const fragment = document.createDocumentFragment();
+        for (const entry of sortEntries(cache.get(dir) || [], sort))
+          fragment.append(miniRow(entry, entry.path === current, () => (entry.is_dir ? go(entry.path) : go(dir, entry.path))));
+        column.append(fragment);
+        const handle = document.createElement("div");
+        handle.className = "col-resizer";
+        handle.setAttribute("role", "separator");
+        handle.setAttribute("aria-orientation", "vertical");
+        handle.setAttribute("aria-label", t("files.resizeColumn"));
+        list.before(column, handle);
+        column.querySelector(".current")?.scrollIntoView({ block: "nearest" });
+      });
+    }
+    applyColumnWidths();
+    revealColumns();
+  }
+  // Drops remembered widths of folders that no longer exist (see pruneColumnWidths).
+  function forgetWidths(dir: string, listing: FileEntry[] | undefined) {
+    const next = pruneColumnWidths(columnWidths, dir, listing, showHidden);
+    if (next === columnWidths) return;
+    columnWidths = next;
+    try { localStorage.setItem("files-column-widths", JSON.stringify(columnWidths)); } catch {}
+  }
+  function applyColumnWidths() {
+    for (const column of body.querySelectorAll<HTMLElement>(".col-ancestor, #files-list, .col-child"))
+      column.style.setProperty("--col-width", (columnWidths[column.dataset.dir || ""] ?? DEFAULT_COLUMN_WIDTH) + "px");
+  }
+  // Scroll sideways so the current column's left edge and the child column's right edge are visible.
+  function revealColumns() {
+    if (view !== "columns") return;
+    let left = body.scrollLeft;
+    const right = childColumn.offsetLeft + childColumn.offsetWidth;
+    if (right > left + body.clientWidth) left = right - body.clientWidth;
+    if (list.offsetLeft < left) left = list.offsetLeft;
+    body.scrollLeft = left;
   }
   function schedulePreview() {
     if (view !== "columns") return;
@@ -361,17 +436,17 @@ export function initFilesPanel(host: FilesHost) {
         box.append(image);
       }
       const rows: [string, string][] = [
-        ["種類", info.kind || fileKindLabel(entry.name, false)],
-        ["大小", formatSize(entry.size, false)],
-        ["修改日期", formatDate(entry.modified_ms)],
+        [t("files.kind"), info.kind || fileKindLabel(entry.name, false)],
+        [t("files.col.size"), formatSize(entry.size, false)],
+        [t("files.col.modified"), formatDate(entry.modified_ms)],
       ];
-      if (entry.is_symlink) rows.push(["", "替身／符號連結"]);
+      if (entry.is_symlink) rows.push(["", t("files.alias")]);
       addFacts(entry.name, rows);
       return true;
     };
     if (target.kind === "many") {
       box.className = "preview-note";
-      box.textContent = `已選取 ${target.count} 個項目`;
+      box.textContent = t("files.selected", { n: target.count });
     } else if (target.kind === "dir") {
       const dir = target.entry.path;
       let listing = previewCache.get(dir);
@@ -388,17 +463,18 @@ export function initFilesPanel(host: FilesHost) {
         child.append(miniRow(entry, entry.path === picked?.path, () => {
           if (entry.is_dir) { go(dir, entry.path); return; }
           childPick = entry;
+          followPreview();
           if (quickLook) previewSelection(true).catch(host.notify);
           drawPreview().catch(host.notify);
         }));
-      if (!listing.length && !child.textContent) { child.className = "preview-note"; child.textContent = "此資料夾是空的"; }
+      if (!listing.length && !child.textContent) { child.className = "preview-note"; child.textContent = t("files.empty"); }
       if (picked) { if (!(await showFile(picked))) return; }
       else {
         box.className = "preview-file";
         addFacts(target.entry.name, [
-          ["種類", "資料夾"],
-          ["項目", `${listing.length} 個`],
-          ["修改日期", formatDate(target.entry.modified_ms)],
+          [t("files.kind"), t("files.kind.folder")],
+          [t("files.items"), t("files.itemCount", { n: listing.length })],
+          [t("files.col.modified"), formatDate(target.entry.modified_ms)],
         ]);
       }
     } else if (target.kind === "file") {
@@ -407,12 +483,17 @@ export function initFilesPanel(host: FilesHost) {
     if (token === previewToken) {
       childColumn.replaceChildren(child);
       previewColumn.replaceChildren(box);
+      childColumn.dataset.dir = target.kind === "dir" ? target.entry.path : "";
+      applyColumnWidths();
+      revealColumns();
       childColumn.querySelector(".current")?.scrollIntoView({ block: "nearest" });
     }
   }
   function setView(next: FilesView) {
     if (view === next) return;
-    view = next;
+    view = defaultView = next;
+    const files = state();
+    if (files) update({ ...files, view: next });
     try { localStorage.setItem("files-view", view); } catch {}
     childColumn.replaceChildren();
     previewColumn.replaceChildren();
@@ -504,12 +585,12 @@ export function initFilesPanel(host: FilesHost) {
     await host.native({ op: "files-pasteboard-write", paths, cut });
     cutPaths = new Set(cut ? paths : []);
     for (const element of list.querySelectorAll<HTMLElement>(".file-row")) element.classList.toggle("cut", cutPaths.has(element.dataset.path!));
-    status(cut ? `已剪下 ${paths.length} 個項目，貼上時會搬移` : "", false);
+    status(cut ? t("files.cut", { n: paths.length }) : "", false);
   }
   async function paste(destination = targetDirectory()) {
     const board = await host.native<{ paths: string[]; cut: boolean }>({ op: "files-pasteboard-read" });
     if (!board.cut) cutPaths = new Set();
-    if (!board.paths.length) { status("剪貼簿沒有檔案"); return; }
+    if (!board.paths.length) { status(t("files.clipboardEmpty")); return; }
     let result: OpResult | undefined, error: unknown;
     try {
       result = await run({ op: board.cut ? "move" : "copy", sources: board.paths, destination });
@@ -553,7 +634,7 @@ export function initFilesPanel(host: FilesHost) {
     const directory = at || (view === "columns" ? targetDirectory() : targetDirectory(entry));
     let result: OpResult | undefined;
     try {
-      result = await run({ op: kind === "folder" ? "create-folder" : "create-file", directory, name: kind === "folder" ? "未命名檔案夾" : "未命名.txt" });
+      result = await run({ op: kind === "folder" ? "create-folder" : "create-file", directory, name: kind === "folder" ? t("files.newFolderName") : t("files.newFileName") });
     } catch (error) { report(undefined, error); return; }
     const files = state();
     if (view === "columns" && files && directory !== files.path) {
@@ -620,6 +701,13 @@ export function initFilesPanel(host: FilesHost) {
     // Run through sh so ${EDITOR} works the same under zsh, bash and fish.
     await host.editInTerminal(parentOf(entry.path), `sh -c '\${EDITOR:-vi} "$1"' sh ${shellQuote(entry.path)}`);
   }
+  // A user-driven pick moves an already open preview pane to that file (never opens one).
+  function followPreview() {
+    const picked = childPick && selection.paths.length === 1 && selection.paths[0] === parentOf(childPick.path) ? childPick.path : undefined;
+    if (picked) { host.followPreview(picked); return; }
+    const target = previewTarget(selection, entries);
+    if (target.kind === "file") host.followPreview(target.entry.path);
+  }
   async function previewSelection(updateOnly = false, targets?: string[]) {
     // A file picked in the child column is what the user is looking at, so preview that.
     const picked = childPick && selection.paths.length === 1 && selection.paths[0] === parentOf(childPick.path) ? childPick.path : undefined;
@@ -647,42 +735,43 @@ export function initFilesPanel(host: FilesHost) {
     if (!entry.is_dir && !many) {
       try { apps = (await invoke<{ apps: App[] }>("file_op", { request: { op: "open-with-apps", path: entry.path } })).apps; } catch {}
     }
-    const openWithItems: MenuEntry[] = apps.map((app) => ({ text: app.isDefault ? `${app.name}（預設）` : app.name, action: act(() => openWith(app.path, paths)) }));
+    const openWithItems: MenuEntry[] = apps.map((app) => ({ text: app.isDefault ? t("files.menu.defaultApp", { name: app.name }) : app.name, action: act(() => openWith(app.path, paths)) }));
     if (apps.length > 1 && apps[0].isDefault) openWithItems.splice(1, 0, sep);
     const items: MenuEntry[] = [
-      { text: entry.is_dir && !many ? "打開" : "用預設 App 打開", action: act(() => open(targets)) },
-      ...(openWithItems.length ? [{ text: "打開方式", items: openWithItems }] : []),
-      ...(!entry.is_dir && !many ? [{ text: "在終端機中編輯", action: act(() => editInTerminal(entry)) }] : []),
+      { text: entry.is_dir && !many ? t("files.menu.open") : t("files.menu.openDefault"), action: act(() => open(targets)) },
+      ...(openWithItems.length ? [{ text: t("files.menu.openWith"), items: openWithItems }] : []),
+      ...(!entry.is_dir && !many ? [{ text: t("files.menu.editInTerminal"), action: act(() => editInTerminal(entry)) }] : []),
+      ...(!entry.is_dir && !many ? [{ text: t("files.menu.openInPreview"), action: act(() => host.previewFile(entry.path)) }] : []),
       { text: "Quick Look", action: act(() => previewSelection(false, at ? paths : undefined)) },
       sep,
-      ...(entry.is_dir && !many ? [{ text: "在新頁籤開啟終端機", action: act(() => host.openTerminal(entry.path)) }] : []),
-      { text: "插入路徑到終端機", action: act(() => host.insertIntoTerminal(paths.map(shellQuote).join(" ") + " ")) },
-      { text: "拷貝路徑", action: act(() => host.native({ op: "files-pasteboard-text", text: paths.join("\n") })) },
+      ...(entry.is_dir && !many ? [{ text: t("files.menu.openTerminalNewTab"), action: act(() => host.openTerminal(entry.path)) }] : []),
+      { text: t("files.menu.insertPath"), action: act(() => host.insertIntoTerminal(paths.map(shellQuote).join(" ") + " ")) },
+      { text: t("files.menu.copyPath"), action: act(() => host.native({ op: "files-pasteboard-text", text: paths.join("\n") })) },
       sep,
-      { text: "剪下", action: act(() => copy(true, paths)) },
-      { text: "拷貝", action: act(() => copy(false, paths)) },
-      { text: entry.is_dir && !many ? "貼到此資料夾" : "貼上", action: act(() => paste(targetDirectory(many ? undefined : entry))) },
-      { text: "複製一份", action: act(() => duplicate(paths)) },
-      { text: "重新命名", enabled: !many, action: act(() => renameItem(entry.path)) },
+      { text: t("files.menu.cut"), action: act(() => copy(true, paths)) },
+      { text: t("files.menu.copy"), action: act(() => copy(false, paths)) },
+      { text: entry.is_dir && !many ? t("files.menu.pasteInto") : t("files.menu.paste"), action: act(() => paste(targetDirectory(many ? undefined : entry))) },
+      { text: t("files.menu.duplicate"), action: act(() => duplicate(paths)) },
+      { text: t("files.menu.rename"), enabled: !many, action: act(() => renameItem(entry.path)) },
       sep,
-      { text: "新增資料夾", action: act(() => create("folder", many ? undefined : entry, at)) },
-      { text: "新增檔案", action: act(() => create("file", many ? undefined : entry, at)) },
-      { text: "在 Finder 中顯示", action: act(() => host.native({ op: "files-reveal", paths })) },
+      { text: t("files.menu.newFolder"), action: act(() => create("folder", many ? undefined : entry, at)) },
+      { text: t("files.menu.newFile"), action: act(() => create("file", many ? undefined : entry, at)) },
+      { text: t("files.menu.reveal"), action: act(() => host.native({ op: "files-reveal", paths })) },
       sep,
-      { text: "丟到垃圾桶", action: act(() => trash(paths)) },
+      { text: t("files.menu.trash"), action: act(() => trash(paths)) },
     ];
     await popup(items);
   }
   async function backgroundMenu(dir = targetDirectory()) {
     const at = dir === state()?.path ? undefined : dir;
     await popup([
-      { text: "新增資料夾", action: act(() => create("folder", undefined, at)) },
-      { text: "新增檔案", action: act(() => create("file", undefined, at)) },
-      { text: "貼上", action: act(() => paste(dir)) },
+      { text: t("files.menu.newFolder"), action: act(() => create("folder", undefined, at)) },
+      { text: t("files.menu.newFile"), action: act(() => create("file", undefined, at)) },
+      { text: t("files.menu.paste"), action: act(() => paste(dir)) },
       { item: "Separator" },
-      { text: "在新頁籤開啟終端機", action: act(() => host.openTerminal(dir)) },
-      { text: "在 Finder 中打開", action: act(() => host.native({ op: "files-open", paths: [dir] })) },
-      { text: "重新整理", action: act(load) },
+      { text: t("files.menu.openTerminalNewTab"), action: act(() => host.openTerminal(dir)) },
+      { text: t("files.menu.openInFinder"), action: act(() => host.native({ op: "files-open", paths: [dir] })) },
+      { text: t("files.menu.refresh"), action: act(load) },
     ]);
   }
 
@@ -700,7 +789,15 @@ export function initFilesPanel(host: FilesHost) {
     }
     // The second click of a double-click keeps the selection it is about to open.
     if (event.detail > 1) return;
+    // ⌘+click on a file opens it in the auto-updating preview window (same as the context menu entry).
+    const clicked = entries.get(path);
+    if (event.metaKey && !event.shiftKey && clicked && !clicked.is_dir) {
+      setSelection({ paths: [path], anchor: path }, false);
+      host.previewFile(path);
+      return;
+    }
     setSelection(select(selection, path, order, { toggle: event.metaKey, range: event.shiftKey }), false);
+    followPreview();
   });
   list.addEventListener("dblclick", (event) => {
     const element = (event.target as Element).closest<HTMLElement>(".file-row");
@@ -719,8 +816,8 @@ export function initFilesPanel(host: FilesHost) {
     const key = event.key, meta = event.metaKey, single = selectedEntries().length === 1 ? selectedEntries()[0] : undefined;
     const handled = () => event.preventDefault();
     const commands: Record<string, () => unknown> = {
-      ArrowDown: () => (meta ? open() : setSelection(moveSelection(selection, order, 1, event.shiftKey))),
-      ArrowUp: () => (meta ? goUp() : setSelection(moveSelection(selection, order, -1, event.shiftKey))),
+      ArrowDown: () => (meta ? open() : (setSelection(moveSelection(selection, order, 1, event.shiftKey)), followPreview())),
+      ArrowUp: () => (meta ? goUp() : (setSelection(moveSelection(selection, order, -1, event.shiftKey)), followPreview())),
       // Columns: → enters the selected folder and ← returns to the parent.
       ArrowRight: () => single?.is_dir && (view === "columns" ? go(single.path, "first") : setExpanded(single.path, true)),
       ArrowLeft: () => {
@@ -776,10 +873,10 @@ export function initFilesPanel(host: FilesHost) {
     const dir = folder();
     if (dir) backgroundMenu(dir).catch((error) => status(String(error)));
   }
-  parentColumn.addEventListener("contextmenu", (event) => sideMenu(event, () => {
-    const path = state()?.path;
-    return path && path !== "/" ? parentOf(path) : undefined;
-  }));
+  body.addEventListener("contextmenu", (event) => {
+    const column = (event.target as Element).closest<HTMLElement>(".col-ancestor");
+    if (column) sideMenu(event, () => column.dataset.dir);
+  });
   childColumn.addEventListener("contextmenu", (event) => sideMenu(event, () => {
     const target = previewTarget(selection, entries);
     return target.kind === "dir" ? target.entry.path : undefined;
@@ -835,12 +932,46 @@ export function initFilesPanel(host: FilesHost) {
     previewResizer.addEventListener("pointerup", up, { once: true });
     previewResizer.addEventListener("pointercancel", up, { once: true });
   });
+  // Each column's width is remembered per folder; double-click a handle to reset it.
+  body.addEventListener("pointerdown", (event) => {
+    const handle = (event.target as Element).closest<HTMLElement>(".col-resizer");
+    const column = handle?.previousElementSibling as HTMLElement | null;
+    if (!handle || !column || event.button !== 0) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add("dragging");
+    const startX = event.clientX, startWidth = column.offsetWidth;
+    let width = startWidth;
+    const move = (e: PointerEvent) => {
+      width = clampColumnWidth(startWidth + e.clientX - startX);
+      column.style.setProperty("--col-width", width + "px");
+    };
+    const up = () => {
+      handle.classList.remove("dragging");
+      handle.removeEventListener("pointermove", move);
+      const dir = column.dataset.dir;
+      if (!dir || width === startWidth) return;
+      columnWidths = rememberColumnWidth(columnWidths, dir, width);
+      try { localStorage.setItem("files-column-widths", JSON.stringify(columnWidths)); } catch {}
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up, { once: true });
+    handle.addEventListener("pointercancel", up, { once: true });
+  });
+  body.addEventListener("dblclick", (event) => {
+    const handle = (event.target as Element).closest<HTMLElement>(".col-resizer");
+    const dir = (handle?.previousElementSibling as HTMLElement | null)?.dataset.dir;
+    if (!dir) return;
+    columnWidths = rememberColumnWidth(columnWidths, dir, DEFAULT_COLUMN_WIDTH);
+    try { localStorage.setItem("files-column-widths", JSON.stringify(columnWidths)); } catch {}
+    applyColumnWidths();
+  });
   window.addEventListener("focus", () => { if (isOpen()) load().catch(host.notify); });
   // Pick up changes made elsewhere (for example by commands in the terminal).
   setInterval(async () => {
     const files = state();
     if (!files?.open || !files.path || renaming || document.visibilityState !== "visible") return;
-    const dirs = view === "columns" ? [files.path, parentOf(files.path)] : [files.path, ...files.expanded];
+    const dirs = view === "columns" ? [files.path, ...columnChain(files.columnRoot, files.path)] : [files.path, ...files.expanded];
     const stamps = await Promise.all(dirs.map((dir) => invoke<number>("dir_stamp", { path: dir }).catch(() => 0)));
     const key = stamps.join(",");
     if (stampKey && key !== stampKey) load().catch(host.notify);
@@ -856,7 +987,7 @@ export function initFilesPanel(host: FilesHost) {
   async function openPanel(focus: boolean) {
     const tab = host.activeTab();
     if (!tab) return;
-    tab.files = { ...(tab.files || initialFiles()), open: true };
+    update({ ...(tab.files || initialFiles()), open: true });
     applyLayout();
     await load();
     if (focus) await focusList();
@@ -878,6 +1009,11 @@ export function initFilesPanel(host: FilesHost) {
     else host.focusTerminal();
     if (renderedPath !== state()!.path) load().catch(host.notify);
   }
+  onLocaleChange(() => {
+    applyI18n(panel);
+    applyLayout(false);
+    if (isOpen()) { draw(); drawPreview().catch(host.notify); }
+  });
   return {
     // ⌘O: open and focus, focus if already open, close when already focused.
     async toggle() {
@@ -893,6 +1029,8 @@ export function initFilesPanel(host: FilesHost) {
     },
     toggleFull: toggleFullMode,
     isFull: () => !!state()?.open && !!state()?.full,
+    // A tab's saved panel state was applied after it became active: show it on the next sync.
+    invalidate() { shownTab = undefined; },
     // Called before every terminal layout: when the active tab changed, show
     // that tab's panel. Classes apply synchronously so the layout sees them.
     sync() {
@@ -900,6 +1038,10 @@ export function initFilesPanel(host: FilesHost) {
       if (tab === shownTab) return;
       shownTab = tab;
       if (quickLook) toggleQuickLook().catch(host.notify);
+      // Each tab remembers its own view; tabs that never chose one use the last choice.
+      view = state()?.view ?? defaultView;
+      childColumn.replaceChildren();
+      previewColumn.replaceChildren();
       applyLayout(false);
       if (isOpen()) {
         const cwd = host.cwd();
@@ -919,7 +1061,10 @@ export function initFilesPanel(host: FilesHost) {
     },
     handleEvent(event: { type: string; key?: string; shift?: boolean }) {
       if (event.type === "quicklook-closed") quickLook = false;
-      if (event.type === "quicklook-key" && event.key) setSelection(moveSelection(selection, order, event.key === "ArrowDown" ? 1 : -1, !!event.shift));
+      if (event.type === "quicklook-key" && event.key) {
+        setSelection(moveSelection(selection, order, event.key === "ArrowDown" ? 1 : -1, !!event.shift));
+        followPreview();
+      }
     },
     // Finder drops: copy into the folder under the pointer, or the panel's folder.
     dropTarget(element: Element | null): string | undefined {

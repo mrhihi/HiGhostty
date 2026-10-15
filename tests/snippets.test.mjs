@@ -1,4 +1,5 @@
 import test from "node:test";
+import { useLocale } from "./i18n-helper.mjs";
 import assert from "node:assert/strict";
 import {
   applicable,
@@ -10,6 +11,7 @@ import {
   scopeChoices,
   scopeLabel,
 } from "../src/snippets.ts";
+useLocale();
 
 const make = (id, name, scope, extra = {}) => ({ id, name, text: extra.text || name, scope, createdAt: 0, ...extra });
 

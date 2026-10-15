@@ -1,3 +1,6 @@
+import { applyI18n, onLocaleChange } from "./i18n-runtime";
+import { t } from "./i18n";
+
 // 待處理浮層：和 ⌘⇧P 片段面板一樣從工作區頂部落下，靠 overlay-cutout 蓋在終端機 NSView 之上。
 // 開關／遮罩／焦點的規則見 docs/snippet-palette.md 與 docs/attention.md。
 export type AttentionDropHost = {
@@ -13,21 +16,25 @@ export function initAttentionDrop(host: AttentionDropHost) {
   const drop = document.createElement("div");
   drop.id = "attention-drop";
   drop.setAttribute("role", "dialog");
-  drop.setAttribute("aria-label", "待處理");
+  drop.setAttribute("aria-label", "Attention");
   drop.tabIndex = -1;
   drop.hidden = true;
   const bar = document.createElement("div");
   bar.className = "attention-bar";
   const title = document.createElement("strong");
-  title.textContent = "待處理";
+  title.dataset.i18n = "attention.title";
+  title.textContent = "Attention";
   const clearAll = document.createElement("button");
   clearAll.className = "ghost-btn";
-  clearAll.textContent = "全部清除";
+  clearAll.dataset.i18n = "attention.clearAll";
+  clearAll.textContent = "Clear all";
   clearAll.onclick = () => host.clearAll();
   const closeBtn = document.createElement("button");
   closeBtn.className = "icon-btn";
-  closeBtn.title = "關閉（Esc）";
-  closeBtn.setAttribute("aria-label", "關閉");
+  closeBtn.setAttribute("data-i18n-title", "attention.closeTitle");
+  closeBtn.setAttribute("data-i18n-aria-label", "attention.close");
+  closeBtn.title = "Close (Esc)";
+  closeBtn.setAttribute("aria-label", "Close");
   closeBtn.innerHTML = host.closeIcon;
   closeBtn.onclick = () => close();
   const spacer = document.createElement("span");
@@ -37,8 +44,12 @@ export function initAttentionDrop(host: AttentionDropHost) {
   list.id = "attention-list";
   const foot = document.createElement("div");
   foot.className = "palette-foot";
-  foot.innerHTML = "<span><kbd>↑</kbd><kbd>↓</kbd> 選擇</span><span><kbd>↵</kbd> 前往</span><span><kbd>⌫</kbd> 忽略</span><span><kbd>Esc</kbd> 關閉</span>";
+  foot.innerHTML = `<span><kbd>↑</kbd><kbd>↓</kbd> <i data-i18n="attention.hintSelect">Select</i></span><span><kbd>↵</kbd> <i data-i18n="attention.hintGo">Go</i></span><span><kbd>⌫</kbd> <i data-i18n="attention.hintDismiss">Dismiss</i></span><span><kbd>Esc</kbd> <i data-i18n="attention.hintClose">Close</i></span>`;
   drop.append(bar, list, foot);
+  const labelRoot = () => { applyI18n(drop); drop.setAttribute("aria-label", t("attention.title")); };
+  labelRoot();
+  // 語言切換：靜態文字重套，開著時重畫卡片（卡片內容由 host.render 產生）。
+  onLocaleChange(() => { labelRoot(); if (!drop.hidden) host.render(); });
 
   let observer: ResizeObserver | undefined;
   let selected = 0;

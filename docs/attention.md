@@ -16,6 +16,8 @@
 
 使用中且視窗聚焦的頁籤不產生提示；切到頁籤或視窗取得焦點會清除。
 
+**agent 自己發的提示**：`highostty ctl alert raise`（`docs/agent-control.md`）產生來源 `agent` 的 alert，優先度最高（`signal` < `prompt` < `agent`）。畫面偵測不會覆蓋或清除它（`clearSource` 只清自己的來源）；「忽略」agent 提示不會寫入 `dismissed`（那是畫面偵測的去重記錄）。
+
 ## 辨識規則（資料，可維護）
 - 內建：`src/prompt-rules.json`（隨 App 打包）。
 - 使用者覆蓋：資料目錄下的 `prompt-rules.json`（`HIGHOSTTY_DATA_DIR` 可隔離）。設定頁「提示辨識規則」可「開啟規則檔」（不存在時寫入範本）與「重新載入」。
@@ -25,13 +27,28 @@
 檔案欄位：
 - `agents`：agent 行程名（regex 片段，比對行程名開頭）。Claude Code 原生版的行程名是版本號（如 `2.1.296`），所以內建含版本號樣式。tmux 頁籤改問 tmux 窗格的前景指令（`tmux_panes`），因為原生終端機只看得到 tmux client。
 - `footers`：最後一行命中就不提示（正常執行頁尾，例如 `esc to interrupt`）。regex，不分大小寫。
+- `working`：最後 12 行任一行命中，`agentState` 視為執行中（內建 `esc to interrupt`）。與 `footers` 分開，因為 `? for shortcuts` 這類頁尾 idle 時也會出現。regex，不分大小寫，使用者檔追加。
 - `rules`：依序比對，第一個命中者勝出。每條：
   - `id`（唯一）、`kind`（`menu`／`yesno`／`confirm`／`press-enter`／`password`／`login`／`trust`／`input`）、`label`（顯示文字）
-  - regex 規則：`scope`（`last` 最後一行，預設；`tail` 最後 12 行）、`pattern`、`flags`
+  - regex 規則：`scope`、`pattern`、`flags`。`scope` 決定看畫面哪一塊：
+    - `last` 最後一行（預設）、`tail` 最後 12 行
+    - `after-rule` 最後一條 `─` 水平線之後；沒有水平線時為整個畫面
+    - `box-body` 最後兩條水平線之間（輸入框內容）；少於兩條時為空
+    - `above-box` 輸入框上方（倒數第二條水平線之前，取最後 12 行）；沒有輸入框時為整個畫面的最後 12 行
+    - 水平線：`─` 開頭，且連續 3 個以上，或整行只有 `─`
+  - `not`：regex 陣列（不分大小寫）。範圍內任一行命中就整條規則不成立；`scope` 為 `last` 時看最後 12 行。用來排除互斥畫面。
   - layout 規則：`layout` 為 `cursor-menu`（游標＋編號選項）或 `confirm-menu`（`confirmText` 頁尾加游標清單），解析選項與選取項的程式在 `recognizePrompt`
   - `confidence: "low"`：低信心，頁籤與卡片以「等待？」樣式顯示
 
 任何規則命中時，若畫面上有游標＋編號選項，會一併帶出問題、選項與選取項。
+
+## agent 狀態（`agentState`）
+`agentState(text, title, rules)` 回傳 `blocked`／`working`／`idle`，判定只放在 `src/attention.ts`：
+1. `recognizePrompt` 有結果 → `blocked`（低信心也算，避免對未知提問送輸入）
+2. 標題 spinner（點字元或半圓 ◐◑◒◓）或 `working` 規則命中 → `working`
+3. 其餘 → `idle`
+
+標題 spinner 除了點字元，也認 Claude Code 2.1.228 起使用的半圓字元。
 
 新增或調整規則時：補 `tests/attention.test.mjs` 案例，並確認內建檔通過 `tests/prompt-rules.test.mjs`。
 
@@ -53,4 +70,4 @@
 - 與片段面板共用單一 `cutoutRequests[label]`，不可同時開：開一個前先 `close(false)` 另一個（見 `toggleAttention`、`toggle-palette`）。
 - 鍵盤：↑↓ 選卡片、Enter 前往、⌫ 忽略、Esc 關閉；輸入法組字中不處理。字體刻意放大（標題 16px／內文 14px），改 CSS 時別縮回去。
 - 驗收：兩個鈴鐺皆可開關、浮層不被終端機蓋住且可點、關閉後終端機整面可點並取回焦點、與 ⌘⇧P 互斥。
-- 重繪（`renderAttention`）會每 1.5 秒被掃描觸發：內容沒變就不重建（簽章比對，含問題與選項），重建時要保留清單與各卡片 `.alert-body` 的捲動位置；重建後把焦點拉回浮層（被按的按鈕已消失），最後一張被忽略時自動關閉浮層。⌘⇧P 在浮層開著時只關浮層。
+- 重繪（`renderAttention`）會每 1.5 秒被掃描觸發：內容沒變就不重建（簽章比對，含問題與選項），重建時要保留清單與各卡片 `.alert-body` 的捲動位置與「畫面內容」`<details>` 的展開狀態（預設收合，記在 `expandedBodies`）；重建後把焦點拉回浮層（被按的按鈕已消失），最後一張被忽略時自動關閉浮層。⌘⇧P 在浮層開著時只關浮層。

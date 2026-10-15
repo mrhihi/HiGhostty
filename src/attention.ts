@@ -1,8 +1,9 @@
 // Pure state for "this terminal wants attention": bell, desktop notification,
 // title spinner stop, or an agent TUI sitting at a recognised prompt. DOM-free
 // so it can be tested directly; main.ts renders the result.
-import type { CompiledRules, Prompt } from "./prompt-rules";
-export type AlertSource = "signal" | "prompt";
+import type { CompiledRules, Prompt, Scope } from "./prompt-rules";
+// "agent": the program itself asked for attention through `highostty ctl alert raise`.
+export type AlertSource = "signal" | "prompt" | "agent";
 export type Alert = {
   surfaceId: string;
   source: AlertSource;
@@ -18,7 +19,7 @@ export type Alert = {
 };
 export type AttentionState = ReadonlyMap<string, Alert>;
 
-const RANK: Record<AlertSource, number> = { signal: 1, prompt: 2 };
+const RANK: Record<AlertSource, number> = { signal: 1, prompt: 2, agent: 3 };
 
 export const emptyAttention: AttentionState = new Map();
 
@@ -74,7 +75,8 @@ export function badgeText(count: number): string {
 
 // Agents (Claude Code, Codex, Gemini, Copilot …) put a spinner glyph in the
 // terminal title while working and drop it when they stop to ask something.
-const BRAILLE = /^[⠀-⣿]/;
+// Braille dots, plus the half circles Claude Code 2.1.228+ uses as its busy spinner.
+const BRAILLE = /^[⠀-⣿◐-◓]/;
 export function titleWorking(title: string): boolean {
   return BRAILLE.test(title.trimStart());
 }
@@ -117,6 +119,27 @@ function confirmMenu(lines: string[], confirmText: string): Menu | undefined {
 }
 const nonEmpty = (lines: string[]) => lines.map((line) => line.trim()).filter(Boolean);
 
+// Horizontal rule an agent TUI draws around its prompt box: three or more ─, or
+// a line that is only ─.
+function isRule(line: string): boolean {
+  const trimmed = line.trim();
+  const run = trimmed.match(/^─+/)?.[0].length ?? 0;
+  return run > 0 && (run >= 3 || trimmed.slice(run).trim() === "");
+}
+// The lines a rule looks at. The rule-relative scopes follow the prompt box:
+// after-rule is below the last rule, box-body is between the last two rules,
+// above-box is what was printed above the box (capped to the tail).
+function scopeLines(all: string[], scope: Scope): string[] {
+  const rules = all.flatMap((line, index) => (isRule(line) ? [index] : []));
+  switch (scope) {
+    case "last": return all.slice(-1);
+    case "tail": return all.slice(-TAIL_LINES);
+    case "after-rule": return all.slice((rules.at(-1) ?? -1) + 1);
+    case "box-body": return rules.length < 2 ? [] : all.slice(rules.at(-2)! + 1, rules.at(-1));
+    case "above-box": return (rules.length < 2 ? all : all.slice(0, rules.at(-2))).slice(-TAIL_LINES);
+  }
+}
+
 // The first matching rule wins; null when the screen shows a normal running
 // footer or nothing recognisable.
 export function recognizePrompt(lines: string[], rules: CompiledRules): Prompt | null {
@@ -125,6 +148,10 @@ export function recognizePrompt(lines: string[], rules: CompiledRules): Prompt |
   if (!last || rules.footers.some((footer) => footer.test(last))) return null;
   const tail = all.slice(-TAIL_LINES);
   for (const rule of rules.rules) {
+    const region = scopeLines(all, rule.scope);
+    // `not` looks at the same lines; for the one-line "last" scope it looks at the tail.
+    const notLines = rule.scope === "last" ? tail : region;
+    if (rule.not?.some((re) => notLines.some((line) => re.test(line)))) continue;
     let prompt: Prompt | undefined;
     if (rule.layout === "cursor-menu") {
       const menu = numberedMenu(all);
@@ -133,7 +160,7 @@ export function recognizePrompt(lines: string[], rules: CompiledRules): Prompt |
       const menu = confirmMenu(all, rule.confirmText ?? "enter to confirm");
       if (menu) prompt = { kind: rule.kind, label: rule.label, ...menu };
     } else if (rule.re) {
-      const hit = rule.scope === "last" ? (rule.re.test(last) ? last : undefined) : tail.findLast((line) => rule.re!.test(line));
+      const hit = region.findLast((line) => rule.re!.test(line));
       if (hit !== undefined) {
         const menu = numberedMenu(all);
         prompt = { kind: rule.kind, label: rule.label, question: menu?.question || hit, options: menu?.options ?? [], selected: menu?.selected };
@@ -142,6 +169,16 @@ export function recognizePrompt(lines: string[], rules: CompiledRules): Prompt |
     if (prompt) return rule.low ? { ...prompt, low: true } : prompt;
   }
   return null;
+}
+// Coarse state of an agent screen: blocked on a prompt (a low-confidence guess
+// counts, so nothing is typed into an unknown question), working (spinner in the
+// title or a `working` footer such as "esc to interrupt"), otherwise idle.
+export type AgentState = "blocked" | "working" | "idle";
+export function agentState(text: string, title: string, rules: CompiledRules): AgentState {
+  const lines = text.split("\n");
+  if (recognizePrompt(lines, rules)) return "blocked";
+  if (titleWorking(title)) return "working";
+  return nonEmpty(lines).slice(-TAIL_LINES).some((line) => rules.working.some((re) => re.test(line))) ? "working" : "idle";
 }
 // Identity of a prompt, so a repeat scan of the same question is not a new alert.
 export function promptKey(prompt: Prompt | undefined): string {

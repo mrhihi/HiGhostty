@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildRules, DEFAULT_AGENTS } from "../src/prompt-rules.ts";
+import { buildRules, DEFAULT_AGENTS, formatRuleError } from "../src/prompt-rules.ts";
+import { createTranslator } from "../src/i18n.ts";
+import { loadBuiltin } from "./i18n-helper.mjs";
 import { recognizePrompt } from "../src/attention.ts";
 
 const builtin = readFileSync(new URL("../src/prompt-rules.json", import.meta.url), "utf8");
@@ -60,4 +62,35 @@ test("blank or missing user file is fine; a broken built-in falls back", () => {
   const broken = buildRules("{oops");
   assert.ok(broken.errors.length > 0);
   assert.deepEqual(broken.rules.agents, DEFAULT_AGENTS);
+});
+
+test("scope, not and working are validated; bad values fall back", () => {
+  const bad = (rule) => buildRules(builtin, JSON.stringify({ rules: [{ id: "x", kind: "input", label: "X", pattern: "a", ...rule }] }));
+  assert.ok(bad({ scope: "nowhere" }).errors.length > 0);
+  assert.ok(bad({ not: "a" }).errors.length > 0);
+  assert.ok(bad({ not: ["("] }).errors.length > 0);
+  assert.equal(bad({ scope: "after-rule", not: ["b"] }).errors.length, 0);
+  assert.ok(buildRules(builtin, JSON.stringify({ working: ["["] })).errors.length > 0);
+  const merged = buildRules(builtin, JSON.stringify({ working: ["building"] }));
+  assert.equal(merged.errors.length, 0);
+  assert.ok(merged.rules.working.length >= 2);
+});
+
+test("rule errors are structured, flag a broken user file, and format per language", () => {
+  const ok = buildRules(builtin, JSON.stringify({ rules: [] }));
+  assert.equal(ok.userBroken, false);
+  const broken = buildRules(builtin, JSON.stringify({ rules: [{ id: "x", kind: "nope", label: "l", pattern: "a" }] }));
+  assert.equal(broken.userBroken, true);
+  assert.equal(broken.errors.length, 1);
+  const [error] = broken.errors;
+  assert.equal(error.source, "user");
+  assert.equal(error.key, "rules.err.kind");
+  assert.equal(error.params.index, 1);
+  const en = loadBuiltin("en");
+  const zh = loadBuiltin("zh-Hant");
+  assert.match(formatRuleError(error, createTranslator(en, en, "en")), /^user rules rule #1 \(x\): kind must be one of/);
+  assert.match(formatRuleError(error, createTranslator(zh, en, "zh-Hant")), /^使用者規則 規則 #1 \(x\)：kind 必須是/);
+  assert.equal(buildRules("{bad").userBroken, false);
+  assert.equal(buildRules("{bad").errors[0].source, "builtin");
+  assert.equal(buildRules(builtin, "{bad").userBroken, true);
 });

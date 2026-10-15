@@ -1,3 +1,4 @@
+import { t } from "./i18n.ts";
 // Pure state for the per-tab files panel; main.ts owns the DOM.
 export type FileEntry = {
   name: string;
@@ -8,8 +9,9 @@ export type FileEntry = {
   modified_ms: number;
   has_children: boolean;
 };
-export type FilesState = { open: boolean; full: boolean; path?: string; follow: boolean; expanded: string[] };
-// "list" is a tree with size/date columns; "columns" shows parent | current | preview.
+// columnRoot: leftmost folder shown in columns view (memory only).
+export type FilesState = { open: boolean; full: boolean; path?: string; follow: boolean; expanded: string[]; columnRoot?: string; view?: FilesView };
+// "list" is a tree with size/date columns; "columns" is a row of columns, one per folder level.
 export type FilesView = "list" | "columns";
 export type SortKey = "name" | "size" | "modified";
 export type Sort = { key: SortKey; descending: boolean };
@@ -20,6 +22,22 @@ export const DEFAULT_WIDTH = 360;
 export function initialFiles(): FilesState {
   return { open: false, full: false, follow: true, expanded: [] };
 }
+// What survives a restart: panel visibility, where it was browsing and which folders were open.
+export type SavedFiles = { open: true; full: boolean; path?: string; follow?: boolean; expanded?: string[]; columnRoot?: string; view?: FilesView };
+export function saveFiles(state: FilesState | undefined): SavedFiles | undefined {
+  if (!state?.open) return undefined;
+  return { open: true, full: state.full, path: state.path, follow: state.follow, expanded: state.expanded.length ? state.expanded : undefined, columnRoot: state.columnRoot, view: state.view };
+}
+// Saved data may be old or hand-edited: keep only well-formed fields.
+export function restoreFiles(saved: Partial<SavedFiles> | undefined): FilesState | undefined {
+  if (!saved?.open) return undefined;
+  const path = typeof saved.path === "string" && saved.path.startsWith("/") ? saved.path : undefined;
+  const expanded = path && Array.isArray(saved.expanded) ? saved.expanded.filter((item): item is string => typeof item === "string" && item.startsWith(path)) : [];
+  const columnRoot = path && typeof saved.columnRoot === "string" && path.startsWith(saved.columnRoot) ? saved.columnRoot : undefined;
+  const view = saved.view === "list" || saved.view === "columns" ? saved.view : undefined;
+  return { open: true, full: !!saved.full, path, follow: path ? saved.follow !== false : true, expanded, columnRoot, view };
+}
+export const sameSaved = (a: SavedFiles | undefined, b: SavedFiles | undefined): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 export function toggleOpen(state: FilesState): FilesState {
   return state.open ? { ...state, open: false, full: false } : { ...state, open: true };
 }
@@ -139,8 +157,8 @@ export function formatDate(ms: number, now = Date.now()) {
   const date = new Date(ms), today = new Date(now);
   const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-  if (ms >= startOfToday) return `今天 ${time}`;
-  if (ms >= startOfToday - 86400000) return `昨天 ${time}`;
+  if (ms >= startOfToday) return t("files.date.today", { time });
+  if (ms >= startOfToday - 86400000) return t("files.date.yesterday", { time });
   if (date.getFullYear() === today.getFullYear()) return `${date.getMonth() + 1}/${date.getDate()}`;
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
 }
@@ -165,7 +183,59 @@ export function previewTarget(selection: Selection, entries: Map<string, FileEnt
 }
 // Fallback when the system has no localized type description.
 export function fileKindLabel(name: string, isDir: boolean) {
-  if (isDir) return "資料夾";
+  if (isDir) return t("files.kind.folder");
   const dot = name.lastIndexOf(".");
-  return dot > 0 && dot < name.length - 1 ? `${name.slice(dot + 1).toUpperCase()} 檔案` : "檔案";
+  return dot > 0 && dot < name.length - 1 ? t("files.kind.ext", { ext: name.slice(dot + 1).toUpperCase() }) : t("files.kind.file");
+}
+
+// Leftmost column folder: kept while the path stays below it, otherwise the
+// parent of the path (parent | current | child at the start).
+export function columnRootFor(root: string | undefined, path: string) {
+  if (root && root !== path && path.startsWith(root === "/" ? "/" : root + "/")) return root;
+  return parentOf(path);
+}
+// Folders listed in the columns left of the current one, leftmost first.
+export function columnChain(root: string | undefined, path: string) {
+  if (path === "/") return [];
+  const top = columnRootFor(root, path);
+  const chain: string[] = [];
+  for (let dir = parentOf(path); ; dir = parentOf(dir)) {
+    chain.unshift(dir);
+    if (dir === top || dir === "/") break;
+  }
+  return chain;
+}
+export const DEFAULT_COLUMN_WIDTH = 200;
+const MIN_COLUMN_WIDTH = 120, MAX_COLUMN_WIDTH = 800;
+export function clampColumnWidth(width: number) {
+  return Math.round(Math.max(MIN_COLUMN_WIDTH, Math.min(width, MAX_COLUMN_WIDTH)));
+}
+// Remembered width per folder; the default width is not stored, and the
+// oldest entries go once the map passes `limit`.
+export function rememberColumnWidth(widths: Record<string, number>, path: string, width: number, limit = 300) {
+  const next = { ...widths };
+  delete next[path];
+  const clamped = clampColumnWidth(width);
+  if (clamped !== DEFAULT_COLUMN_WIDTH) next[path] = clamped;
+  const keys = Object.keys(next);
+  for (const key of keys.slice(0, Math.max(0, keys.length - limit))) delete next[key];
+  return next;
+}
+// Forgets widths of folders that are gone. `listing` is the folder's entries,
+// or undefined when it could not be read (then it and everything below it goes).
+// Hidden folders are kept while hidden files are not listed.
+export function pruneColumnWidths(widths: Record<string, number>, dir: string, listing: FileEntry[] | undefined, showHidden: boolean) {
+  const prefix = dir === "/" ? "/" : dir + "/";
+  const names = new Set((listing || []).map((entry) => entry.path));
+  const gone = (path: string) => {
+    if (!listing) return path === dir || path.startsWith(prefix);
+    if (!path.startsWith(prefix)) return false;
+    const child = prefix + path.slice(prefix.length).split("/")[0];
+    return !names.has(child) && (showHidden || !child.slice(prefix.length).startsWith("."));
+  };
+  const keys = Object.keys(widths).filter(gone);
+  if (!keys.length) return widths;
+  const next = { ...widths };
+  for (const key of keys) delete next[key];
+  return next;
 }

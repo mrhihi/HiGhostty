@@ -104,6 +104,9 @@ static void applyWindow(NSWindow *window);
 static void configureGlobalKeys(void);
 static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_action_s action);
 
+// UI 字串由前端 (i18n) 透過 set-strings 推入；沒有就用英文 fallback。
+static NSDictionary<NSString *,NSString *> *uiStrings;
+static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];return v.length?v:fallback;}
 @interface HGSurface : NSView <NSTextInputClient>
 @property ghostty_surface_t surface;
 
@@ -153,8 +156,8 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 - (BOOL)isAccessibilityElement { return !self.hidden; }
 - (NSString *)accessibilityRole { return NSAccessibilityTextAreaRole; }
-- (NSString *)accessibilityLabel { return @"Ghostty 終端機"; }
-- (NSString *)accessibilityHelp { return self.cwd ?: @"原生終端內容"; }
+- (NSString *)accessibilityLabel { return L(@"native.terminalLabel",@"Ghostty terminal"); }
+- (NSString *)accessibilityHelp { return self.cwd ?: L(@"native.terminalHelp",@"Native terminal content"); }
 - (BOOL)isAccessibilityFocused { return self.window.firstResponder==self; }
 - (void)setAccessibilityFocused:(BOOL)focused { if(focused)[self.window makeFirstResponder:self]; }
 - (id)accessibilityValue {
@@ -187,7 +190,7 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
     NSString *markdown=[NSString stringWithFormat:@"%@\n\n%@\n%@\n",fence,text,fence];
     NSSavePanel *panel=[NSSavePanel savePanel];UTType *markdownType=[UTType typeWithFilenameExtension:@"md"] ?: UTTypePlainText;panel.allowedContentTypes=@[markdownType];panel.nameFieldStringValue=[[self exportBaseName] stringByAppendingPathExtension:@"md"];
     if([panel runModal]!=NSModalResponseOK||!panel.URL)return;
-    NSError *error=nil;if(![markdown writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error]){NSAlert *alert=[NSAlert new];alert.messageText=@"無法匯出 Markdown";alert.informativeText=error.localizedDescription ?: @"寫入檔案失敗";[alert runModal];}
+    NSError *error=nil;if(![markdown writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error]){NSAlert *alert=[NSAlert new];alert.messageText=L(@"native.exportMarkdownFailed",@"Could not export Markdown");alert.informativeText=error.localizedDescription ?: L(@"native.writeFailed",@"Failed to write file");[alert runModal];}
 }
 - (void)exportAsPDF:(id)sender {
     NSString *text=[self exportText];if(!text)return;
@@ -200,17 +203,17 @@ static bool nativeAction(ghostty_app_t app, ghostty_target_s target, ghostty_act
     CGFloat contentHeight=MAX(1,NSMaxY([view.layoutManager usedRectForTextContainer:view.textContainer]));view.frame=NSMakeRect(0,0,contentWidth,contentHeight);
     NSData *pdf=[NSMutableData data];NSPrintOperation *operation=[NSPrintOperation PDFOperationWithView:view insideRect:view.bounds toData:(NSMutableData *)pdf printInfo:info];
     NSError *error=nil;BOOL printed=operation&&[operation runOperation];
-    if(!printed||![pdf writeToURL:panel.URL options:NSDataWritingAtomic error:&error]){NSAlert *alert=[NSAlert new];alert.messageText=@"無法匯出 PDF";alert.informativeText=error.localizedDescription ?: @"產生 PDF 失敗";[alert runModal];}
+    if(!printed||![pdf writeToURL:panel.URL options:NSDataWritingAtomic error:&error]){NSAlert *alert=[NSAlert new];alert.messageText=L(@"native.exportPdfFailed",@"Could not export PDF");alert.informativeText=error.localizedDescription ?: L(@"native.pdfFailed",@"Failed to generate PDF");[alert runModal];}
 }
 - (NSMenu *)menuForEvent:(NSEvent *)event {
     if(!_surface)return nil;
     [self.window makeFirstResponder:self];
     NSMenu *menu=[NSMenu new];menu.autoenablesItems=NO;
-    for(NSArray *entry in @[@[@"複製",NSStringFromSelector(@selector(copy:))],@[@"貼上",NSStringFromSelector(@selector(paste:))],@[@"全選",NSStringFromSelector(@selector(selectAll:))],@[@"清除畫面",NSStringFromSelector(@selector(clearScreen:))]]){
+    for(NSArray *entry in @[@[L(@"native.copy",@"Copy"),NSStringFromSelector(@selector(copy:))],@[L(@"native.paste",@"Paste"),NSStringFromSelector(@selector(paste:))],@[L(@"native.selectAll",@"Select All"),NSStringFromSelector(@selector(selectAll:))],@[L(@"native.clearScreen",@"Clear Screen"),NSStringFromSelector(@selector(clearScreen:))]]){
         NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:entry[0] action:NSSelectorFromString(entry[1]) keyEquivalent:@""];item.target=self;[menu addItem:item];
     }
     [menu addItem:NSMenuItem.separatorItem];
-    NSMenuItem *export=[[NSMenuItem alloc] initWithTitle:@"匯出內容" action:nil keyEquivalent:@""];
+    NSMenuItem *export=[[NSMenuItem alloc] initWithTitle:L(@"native.export",@"Export Contents") action:nil keyEquivalent:@""];
     NSMenu *submenu=[NSMenu new];NSMenuItem *markdown=[[NSMenuItem alloc] initWithTitle:@"Markdown…" action:@selector(exportAsMarkdown:) keyEquivalent:@""];markdown.target=self;[submenu addItem:markdown];NSMenuItem *pdf=[[NSMenuItem alloc] initWithTitle:@"PDF…" action:@selector(exportAsPDF:) keyEquivalent:@""];pdf.target=self;[submenu addItem:pdf];export.submenu=submenu;[menu addItem:export];
     return menu;
 }
@@ -539,13 +542,13 @@ static bool readClipboard(void *data, ghostty_clipboard_e clipboard, void *state
 }
 static void confirmClipboard(void *data,const char *text,void *state,ghostty_clipboard_request_e request) {
     HGSurface *surface=(__bridge HGSurface *)data;
-    NSAlert *alert=[NSAlert new];alert.messageText=@"允許終端機存取剪貼簿？";alert.informativeText=@"執行中的程式要求存取剪貼簿內容。";
-    [alert addButtonWithTitle:@"允許"];[alert addButtonWithTitle:@"取消"];
+    NSAlert *alert=[NSAlert new];alert.messageText=L(@"native.clipboardReadTitle",@"Allow the terminal to access the clipboard?");alert.informativeText=L(@"native.clipboardReadBody",@"A running program is requesting the clipboard contents.");
+    [alert addButtonWithTitle:L(@"native.allow",@"Allow")];[alert addButtonWithTitle:L(@"native.cancel",@"Cancel")];
     if([alert runModal]==NSAlertFirstButtonReturn&&surface.surface)ghostty_surface_complete_clipboard_request(surface.surface,text,state,true);
 }
 static void writeClipboard(void *data,ghostty_clipboard_e clipboard,const ghostty_clipboard_content_s *contents,size_t count,bool confirm) {
     HGSurface *surface=(__bridge HGSurface *)data;
-    if(confirm){NSAlert *alert=[NSAlert new];alert.messageText=@"允許終端機寫入剪貼簿？";[alert addButtonWithTitle:@"允許"];[alert addButtonWithTitle:@"取消"];if([alert runModal]!=NSAlertFirstButtonReturn)return;}
+    if(confirm){NSAlert *alert=[NSAlert new];alert.messageText=L(@"native.clipboardWriteTitle",@"Allow the terminal to write to the clipboard?");[alert addButtonWithTitle:L(@"native.allow",@"Allow")];[alert addButtonWithTitle:L(@"native.cancel",@"Cancel")];if([alert runModal]!=NSAlertFirstButtonReturn)return;}
     for(size_t i=0;i<count;i++)if(strcmp(contents[i].mime,"text/plain")==0){[NSPasteboard.generalPasteboard clearContents];[NSPasteboard.generalPasteboard setString:str(contents[i].data) forType:NSPasteboardTypeString];break;}
     (void)surface;
 }
@@ -811,6 +814,37 @@ static NSDictionary *scanSurfaces(NSArray *ids,NSArray *agents) {
     }
     return @{@"screens":out};
 }
+// 終端機文字（agent 控制指令的 surface read／wait）：目前畫面，或含捲動緩衝的全部。過長時只留尾端，避免一次傳數 MB。
+static NSDictionary *readSurface(HGSurface *s,BOOL scrollback) {
+    if(!s||!s.surface||s.closing)return @{@"error":@"找不到終端機"};
+    ghostty_point_tag_e tag=scrollback?GHOSTTY_POINT_SCREEN:GHOSTTY_POINT_VIEWPORT;
+    ghostty_selection_s selection={.top_left={.tag=tag,.coord=GHOSTTY_POINT_COORD_TOP_LEFT},.bottom_right={.tag=tag,.coord=GHOSTTY_POINT_COORD_BOTTOM_RIGHT}};
+    ghostty_text_s raw={0};NSString *text=@"";
+    if(ghostty_surface_read_text(s.surface,selection,&raw)){text=[[NSString alloc] initWithBytes:raw.text length:raw.text_len encoding:NSUTF8StringEncoding] ?: @"";ghostty_surface_free_text(s.surface,&raw);}
+    const NSUInteger limit=1<<21;
+    if(text.length>limit){NSUInteger start=[text rangeOfComposedCharacterSequenceAtIndex:text.length-limit].location;text=[text substringFromIndex:start];}
+    return @{@"text":text};
+}
+// agent 控制指令的 key op：以邏輯鍵名直接組出 Ghostty 按鍵事件（按下＋放開），不經 NSEvent／輸入法路徑，
+// 所以與 HGSurface 的輸入方法（docs/keyboard-input.md）互不影響。keycode 為 macOS 虛擬鍵碼。
+static NSDictionary *sendNamedKey(HGSurface *s,NSString *name) {
+    if(!s||!s.surface||s.closing)return @{@"error":@"找不到終端機"};
+    static NSDictionary<NSString *,NSArray<NSNumber *> *> *table;
+    static dispatch_once_t once;
+    dispatch_once(&once,^{
+        NSMutableDictionary *t=[@{@"enter":@[@36,@13],@"tab":@[@48,@9],@"esc":@[@53,@27],@"backspace":@[@51,@127],@"up":@[@126,@0xF700],@"down":@[@125,@0xF701],@"left":@[@123,@0xF702],@"right":@[@124,@0xF703]} mutableCopy];
+        NSDictionary<NSString *,NSNumber *> *ansi=@{@"a":@0,@"b":@11,@"c":@8,@"d":@2,@"e":@14,@"f":@3,@"g":@5,@"h":@4,@"i":@34,@"j":@38,@"k":@40,@"l":@37,@"m":@46,@"n":@45,@"o":@31,@"p":@35,@"q":@12,@"r":@15,@"s":@1,@"t":@17,@"u":@32,@"v":@9,@"w":@13,@"x":@7,@"y":@16,@"z":@6};
+        for(NSString *letter in ansi)t[[@"ctrl+" stringByAppendingString:letter]]=@[ansi[letter],@([letter characterAtIndex:0])];
+        table=t;
+    });
+    NSArray<NSNumber *> *entry=table[name];
+    if(!entry)return @{@"error":[NSString stringWithFormat:@"不支援的按鍵：%@",name]};
+    ghostty_input_key_s key={.action=GHOSTTY_ACTION_PRESS,.mods=[name hasPrefix:@"ctrl+"]?GHOSTTY_MODS_CTRL:GHOSTTY_MODS_NONE,.consumed_mods=GHOSTTY_MODS_NONE,.keycode=entry[0].unsignedIntValue,.text=NULL,.unshifted_codepoint=entry[1].unsignedIntValue,.composing=false};
+    ghostty_surface_key(s.surface,key);
+    key.action=GHOSTTY_ACTION_RELEASE;
+    ghostty_surface_key(s.surface,key);
+    return @{};
+}
 static NSDictionary *destroySurface(HGSurface *surface,BOOL force) {
     NSDictionary *info=processInfo(surface);NSArray *running=info[@"running"];
     // tmux 窗格的前景行程只是 tmux client；終止它不會結束 session（session 由前端另外決定是否 kill）。
@@ -860,7 +894,23 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
         if([op isEqualToString:@"init"])result=initialize(window,label,str(resources));
         else if(!engine)result=@{@"error":@"原生 Ghostty 尚未初始化"};
         else if([op isEqualToString:@"pick-directory"]){
-            NSOpenPanel *panel=[NSOpenPanel openPanel];panel.canChooseDirectories=YES;panel.canChooseFiles=NO;panel.allowsMultipleSelection=NO;panel.canCreateDirectories=YES;panel.prompt=@"選擇目錄";panel.directoryURL=[NSURL fileURLWithPath:req[@"path"]];
+            NSOpenPanel *panel=[NSOpenPanel openPanel];panel.canChooseDirectories=YES;panel.canChooseFiles=NO;panel.allowsMultipleSelection=NO;panel.canCreateDirectories=YES;panel.prompt=L(@"native.chooseDirectory",@"Choose");panel.directoryURL=[NSURL fileURLWithPath:req[@"path"]];
+            __block BOOL done=NO;__block NSString *picked=nil;
+            [panel beginSheetModalForWindow:window completionHandler:^(NSModalResponse response){if(response==NSModalResponseOK)picked=panel.URL.path;done=YES;}];
+            while(!done)[NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+            result=@{@"path":picked ?: (id)NSNull.null};
+        }
+        else if([op isEqualToString:@"set-strings"]){
+            NSDictionary *strings=req[@"strings"];
+            if([strings isKindOfClass:NSDictionary.class]){NSMutableDictionary *clean=[NSMutableDictionary dictionary];[strings enumerateKeysAndObjectsUsingBlock:^(id k,id v,BOOL *stop){if([k isKindOfClass:NSString.class]&&[v isKindOfClass:NSString.class])clean[k]=[v copy];}];uiStrings=[clean copy];}
+            result=@{@"ok":@YES};
+        }
+        else if([op isEqualToString:@"preferred-languages"])result=@{@"languages":NSLocale.preferredLanguages ?: @[]};
+        else if([op isEqualToString:@"pick-file"]||[op isEqualToString:@"save-file"]){
+            BOOL saving=[op isEqualToString:@"save-file"];NSSavePanel *panel=saving?[NSSavePanel savePanel]:[NSOpenPanel openPanel];
+            UTType *json=[UTType typeWithFilenameExtension:@"json"];if(json)panel.allowedContentTypes=@[json];
+            if(saving){NSString *name=req[@"name"];if([name isKindOfClass:NSString.class])panel.nameFieldStringValue=name;}
+            else{NSOpenPanel *open=(NSOpenPanel *)panel;open.canChooseFiles=YES;open.canChooseDirectories=NO;open.allowsMultipleSelection=NO;}
             __block BOOL done=NO;__block NSString *picked=nil;
             [panel beginSheetModalForWindow:window completionHandler:^(NSModalResponse response){if(response==NSModalResponseOK)picked=panel.URL.path;done=YES;}];
             while(!done)[NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
@@ -883,7 +933,13 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
             BOOL commandInShell=[req[@"commandInShell"] boolValue]&&command.length;
             options.platform_tag=GHOSTTY_PLATFORM_MACOS;options.platform.macos.nsview=(__bridge void *)view;options.userdata=(__bridge void *)view;options.working_directory=path.UTF8String;options.scale_factor=window.backingScaleFactor;
             if(command.length&&!commandInShell)options.command=command.UTF8String;
+            // 環境變數（HIGHOSTTY_*）：libghostty 會複製字串，所以呼叫期間有效即可。
+            NSDictionary *env=[req[@"env"] isKindOfClass:NSDictionary.class]?req[@"env"]:nil;
+            ghostty_env_var_s *envVars=env.count?calloc(env.count,sizeof(ghostty_env_var_s)):NULL;size_t envCount=0;
+            for(id key in env){id value=env[key];if(![key isKindOfClass:NSString.class]||![value isKindOfClass:NSString.class])continue;envVars[envCount].key=strdup([key UTF8String]);envVars[envCount].value=strdup([value UTF8String]);envCount++;}
+            options.env_vars=envVars;options.env_var_count=envCount;
             view.surface=ghostty_surface_new(engine,&options);
+            for(size_t i=0;i<envCount;i++){free((void *)envVars[i].key);free((void *)envVars[i].value);}free(envVars);
             view.wantsLayer=YES;view.layer.backgroundColor=[backgroundColor() colorWithAlphaComponent:numberConfig("background-opacity",1)].CGColor;
             if(!view.surface){[view removeFromSuperview];[surfaces removeObjectForKey:identifier];result=@{@"error":@"建立原生 Ghostty surface 失敗"};}else{
                 [view syncSize];
@@ -915,6 +971,11 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
         }else if([op isEqualToString:@"focus"]){HGSurface *s=surfaces[req[@"id"]];if(s&&!s.hidden&&window.firstResponder!=s)[window makeFirstResponder:s];}
         else if([op isEqualToString:@"focus-web"]){NSView *web=findWebView(window.contentView);if(web)[window makeFirstResponder:web];}
         else if([op isEqualToString:@"scan"]){result=scanSurfaces(req[@"ids"],req[@"agents"]);}
+        else if([op isEqualToString:@"read"]){result=readSurface(surfaces[req[@"id"]],[req[@"scrollback"] boolValue]);}
+        else if([op isEqualToString:@"key"]){
+            @try{result=sendNamedKey(surfaces[req[@"id"]],[req[@"key"] isKindOfClass:NSString.class]?req[@"key"]:@"");}
+            @catch(NSException *exception){result=@{@"error":[NSString stringWithFormat:@"送出按鍵失敗：%@ %@",exception.name,exception.reason]};}
+        }
         else if([op isEqualToString:@"info"]){HGSurface *s=surfaces[req[@"id"]];result=s?processInfo(s):@{@"error":@"找不到終端機"};}
         else if([op isEqualToString:@"close"]){HGSurface *s=surfaces[req[@"id"]];result=s?destroySurface(s,[req[@"force"] boolValue]):@{@"closed":@YES};}
         else if([op isEqualToString:@"binding"]){HGSurface *s=surfaces[req[@"id"]];NSString *binding=req[@"action"];if(!s||!ghostty_surface_binding_action(s.surface,binding.UTF8String,[binding lengthOfBytesUsingEncoding:NSUTF8StringEncoding]))result=@{@"error":@"Ghostty 無法執行這個動作"};}

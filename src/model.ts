@@ -1,3 +1,4 @@
+import { t } from "./i18n.ts";
 export type Leaf = { kind: "leaf"; id: string };
 export type Branch = {
   kind: "branch";
@@ -231,7 +232,7 @@ export function migrateFavorites<T extends { paths: string[]; title?: string }>(
     else if (item.kind === "tab") favorites.push(item);
     else if (item.kind === "group") {
       migrated = true;
-      const name = item.name || item.group?.name || "群組";
+      const name = item.name || item.group?.name || t("common.defaultGroup");
       folders.push({ id: item.id, kind: "folder", name, color: item.group?.color || "#77dfc0" });
       for (const saved of item.tabs || []) {
         const tab = { ...saved } as T & { groupId?: string; favoriteId?: string };

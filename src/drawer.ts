@@ -7,7 +7,9 @@ export type Detail =
   // Without favoriteId the editor creates a favorite, optionally inside groupId.
   | { kind: "edit-favorite"; favoriteId?: string; groupId?: string; tabId?: string }
   // Without snippetId the editor creates a snippet, optionally preset to a scope/content.
-  | { kind: "edit-snippet"; snippetId?: string; scope?: string; text?: string };
+  | { kind: "edit-snippet"; snippetId?: string; scope?: string; text?: string }
+  // Without code the editor creates a new language.
+  | { kind: "edit-locale"; code?: string };
 export type DrawerState = { panel: Panel | null; lastPanel: Panel; detailStack: Detail[] };
 
 export function togglePanel(state: DrawerState, panel: Panel): DrawerState {

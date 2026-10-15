@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  clampColumnWidth,
   clampPreviewHeight,
+  columnChain,
+  columnRootFor,
+  DEFAULT_COLUMN_WIDTH,
+  pruneColumnWidths,
+  rememberColumnWidth,
   clampWidth,
   fileKindLabel,
   parentOf,
@@ -22,6 +28,8 @@ import {
   toggleOpen,
   topLevelPaths,
 } from "../src/files.ts";
+import { useLocale } from "./i18n-helper.mjs";
+useLocale();
 
 test("closing the panel also leaves full mode", () => {
   const state = toggleFull(initialFiles());
@@ -106,4 +114,64 @@ test("parent paths and preview targets", () => {
   assert.equal(fileKindLabel("main.ts", false), "TS 檔案");
   assert.equal(fileKindLabel(".env", false), "檔案");
   assert.equal(fileKindLabel("x", true), "資料夾");
+});
+
+test("column root stays while going deeper and moves up past the left edge", () => {
+  assert.equal(columnRootFor(undefined, "/a/b"), "/a");
+  assert.equal(columnRootFor("/a", "/a/b"), "/a");
+  assert.equal(columnRootFor("/a", "/a/b/c/d"), "/a");
+  assert.equal(columnRootFor("/a", "/a"), "/");
+  assert.equal(columnRootFor("/a/b", "/a/b"), "/a");
+  assert.equal(columnRootFor("/a", "/x/y"), "/x");
+  assert.equal(columnRootFor("/ab", "/abc/d"), "/abc");
+  assert.equal(columnRootFor("/", "/a"), "/");
+  assert.equal(columnRootFor("/", "/"), "/");
+});
+
+test("column chain runs from the root to the parent of the path", () => {
+  assert.deepEqual(columnChain(undefined, "/a/b"), ["/a"]);
+  assert.deepEqual(columnChain("/a", "/a/b/c/d"), ["/a", "/a/b", "/a/b/c"]);
+  assert.deepEqual(columnChain("/a", "/a"), ["/"]);
+  assert.deepEqual(columnChain("/x", "/a/b"), ["/a"]);
+  assert.deepEqual(columnChain("/", "/a/b"), ["/", "/a"]);
+  assert.deepEqual(columnChain("/", "/"), []);
+  assert.deepEqual(columnChain(undefined, "/a"), ["/"]);
+});
+
+test("column widths clamp, skip the default and cap the memory", () => {
+  assert.equal(clampColumnWidth(10), 120);
+  assert.equal(clampColumnWidth(5000), 800);
+  assert.deepEqual(rememberColumnWidth({}, "/a", 300), { "/a": 300 });
+  assert.deepEqual(rememberColumnWidth({ "/a": 300 }, "/a", DEFAULT_COLUMN_WIDTH), {});
+  const full = rememberColumnWidth({ "/a": 300, "/b": 310 }, "/a", 320, 2);
+  assert.deepEqual(Object.keys(full), ["/b", "/a"]);
+  assert.deepEqual(Object.keys(rememberColumnWidth(full, "/c", 330, 2)), ["/a", "/c"]);
+});
+
+test("pruning forgets widths of folders missing from the listing", () => {
+  const dir = (path) => ({ name: path.split("/").pop(), path, is_dir: true });
+  const widths = { "/a": 300, "/a/b": 310, "/a/b/c": 320, "/a/gone": 330, "/a/gone/x": 340, "/a/.hid": 350, "/other": 360 };
+  const listing = [dir("/a/b")];
+  assert.deepEqual(Object.keys(pruneColumnWidths(widths, "/a", listing, false)), ["/a", "/a/b", "/a/b/c", "/a/.hid", "/other"]);
+  assert.deepEqual(Object.keys(pruneColumnWidths(widths, "/a", listing, true)), ["/a", "/a/b", "/a/b/c", "/other"]);
+  assert.deepEqual(Object.keys(pruneColumnWidths(widths, "/a/gone", undefined, false)), ["/a", "/a/b", "/a/b/c", "/a/.hid", "/other"]);
+  assert.equal(pruneColumnWidths(widths, "/other", [], false), widths);
+});
+
+test("saveFiles and restoreFiles keep path and expanded folders", async () => {
+  const { saveFiles, restoreFiles, initialFiles, sameSaved } = await import("../src/files.ts");
+  assert.equal(saveFiles(initialFiles()), undefined);
+  const state = { open: true, full: true, path: "/a/b", follow: false, expanded: ["/a/b/c", "/a/b/c/d"], columnRoot: "/a", view: "columns" };
+  const saved = saveFiles(state);
+  assert.deepEqual(restoreFiles(JSON.parse(JSON.stringify(saved))), state);
+  assert.ok(sameSaved(saved, saveFiles({ ...state })));
+  assert.ok(!sameSaved(saved, saveFiles({ ...state, expanded: [] })));
+});
+
+test("restoreFiles drops malformed fields and old open/full-only data", async () => {
+  const { restoreFiles } = await import("../src/files.ts");
+  assert.equal(restoreFiles(undefined), undefined);
+  assert.deepEqual(restoreFiles({ open: true, full: false }), { open: true, full: false, path: undefined, follow: true, expanded: [], columnRoot: undefined, view: undefined });
+  assert.deepEqual(restoreFiles({ open: true, full: false, path: "/a", expanded: ["/a/x", "/other", 5] }).expanded, ["/a/x"]);
+  assert.equal(restoreFiles({ open: true, path: "rel" }).path, undefined);
 });
