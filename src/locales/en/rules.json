@@ -15,5 +15,6 @@
   "rules.err.confidence": "{source} rule #{index}{id}: confidence must be low or high",
   "rules.err.layout": "{source} rule #{index}{id}: layout must be one of {allowed}",
   "rules.err.noPattern": "{source} rule #{index}{id}: needs a pattern or layout",
-  "rules.err.json": "{source}: invalid JSON ({message})"
+  "rules.err.json": "{source}: invalid JSON ({message})",
+  "rules.err.idle": "{source} idle rule #{index}: needs a name (string) and optional args (array of non-empty strings); idle itself must be an array"
 }

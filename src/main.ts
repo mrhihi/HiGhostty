@@ -36,6 +36,7 @@ import { openPreview, previewKind, splitBox, togglePreviewSide, type PreviewSide
 import { restoreFiles, sameSaved, saveFiles, setDetached, toggleOpen, type FilesState, type SavedFiles } from "./files";
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
+import { initUsageBar } from "./usage-bar";
 import { enableRowDrag } from "./row-drag";
 import { icons } from "./icons";
 import { AI_TOOLS, composeLaunch, joinCommand, parseLaunch, splitCommand, type Launch } from "./launch";
@@ -248,9 +249,16 @@ const attentionDrop = initAttentionDrop({
   clearAll: () => setAttention(emptyAttention),
   closeIcon: icons.close,
 });
+const usageBar = initUsageBar({
+  native,
+  focusTerminal: () => { if (active && !terminalHidden()) native({ op: "focus", id: active.focused }).catch(notify); },
+  notify,
+  closeOthers: () => { snippets.close(false); attentionDrop.close(false); },
+});
 function toggleAttention() {
   if (attentionDrop.isOpen()) { attentionDrop.close(); return; }
   snippets.close(false);
+  usageBar.close(false);
   lastAttentionSig = undefined;
   attentionDrop.open().catch(notify);
 }
@@ -919,6 +927,7 @@ async function loadPromptRules() {
   try { userText = await invoke<string>("prompt_rules_read"); } catch (error) { notify(error); }
   const built = buildRules(builtinRules, userText);
   promptRules = built.rules;
+  void native({ op: "idle-rules", rules: built.rules.idle });
   $("rules-summary").textContent = [
     built.userRules ? t("app.rulesCountWithUser", { n: built.rules.rules.length, user: built.userRules }) : t("app.rulesCount", { n: built.rules.rules.length }),
     ...built.errors.map((error) => `⚠ ${formatRuleError(error, t)}`),
@@ -1468,9 +1477,10 @@ async function newSurface(path: string, source?: string, direction?: number, opt
   const tmuxProgramPath = tmuxSession && program && !program.includes("/") ? await invoke<string | null>("program_path", { name: program }).catch(() => null) : null;
   let tmuxEnv = tmuxSession ? await invoke<Record<string, string>>("control_env", { session: tmuxSession }).catch(() => ({})) : undefined;
   // control_env 為空表代表 tmux 不支援 -e；支援時一併帶入登入 shell 的 PATH，pane 內的程式才找得到 Homebrew 等工具。
+  let tmuxLoginPath: string | null = null;
   if (tmuxEnv && Object.keys(tmuxEnv).length) {
-    const loginPath = await invoke<string | null>("login_path").catch(() => null);
-    if (loginPath) tmuxEnv = { ...tmuxEnv, PATH: loginPath };
+    tmuxLoginPath = await invoke<string | null>("login_path").catch(() => null);
+    if (tmuxLoginPath) tmuxEnv = { ...tmuxEnv, PATH: tmuxLoginPath };
   }
   const normalized = await invoke<string>("resolve_path", {
     path,
@@ -1484,7 +1494,7 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       path: normalized,
       source,
       split: direction !== undefined,
-      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramDir(withProgramPath(command, tmuxProgramPath), tmuxProgramPath), hideStatus, tmuxBin, tmuxEnv) : command,
+      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramDir(withProgramPath(command, tmuxProgramPath), tmuxProgramPath, tmuxLoginPath), hideStatus, tmuxBin, tmuxEnv) : command,
       commandInShell: tmuxSession ? false : commandInShell,
       tmux: !!tmuxSession,
     });
@@ -2144,7 +2154,7 @@ async function handleEvent(event: NativeEvent) {
     case "toggle-palette":
       // 待處理浮層開著時，⌘⇧P 只負責關掉它。
       if (attentionDrop.isOpen()) attentionDrop.close();
-      else snippets.toggle();
+      else { usageBar.close(false); snippets.toggle(); }
       break;
     case "toggle-sidebar":
       toggleDrawerPanel(drawerState.panel || drawerState.lastPanel);
@@ -2460,7 +2470,8 @@ async function start() {
       toggleDrawerPanel(panel);
     };
   }
-  $("workspace").append(snippets.element, attentionDrop.element);
+  $("workspace").append(snippets.element, attentionDrop.element, usageBar.element);
+  document.querySelector("footer")!.append(usageBar.button);
   $("rail-attention").onclick = toggleAttention;
   $("snippet-add").onclick = () => snippets.newScoped(currentSurface()?.cwd || "global");
   snippets.store.onChange(() => { refreshSnippetList(); renderDetailIfSnippet(); });

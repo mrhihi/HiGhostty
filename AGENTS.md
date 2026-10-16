@@ -88,3 +88,12 @@
 - 不翻譯：Rust 錯誤、`highostty ctl` 回覆（給 agent 看）、程式碼註解。
 - 語系檔代碼會成為檔名；前端 `validLocaleCode` 與 Rust `valid_code` 規則必須一致，不可放寬。
 - 改完照 `docs/i18n.md` 的驗收清單實機操作（`npm test` 不涵蓋原生字串與跨視窗切換）。
+
+## 用量指示（`src/usage.ts`、`src/usage-bar.ts`、`src-tauri/src/usage.rs`）
+
+修改 footer 右側的 Claude Code／Codex 用量、鑰匙圈讀取或其細節浮層前，先讀 `docs/usage.md`。重點：
+
+- 門檻、解析、格式化等純邏輯只放 `src/usage.ts` 並補 `tests/usage.test.mjs`；Rust 只回原始數值與錯誤代碼（前端翻譯）。
+- Claude 的 OAuth token 只留在記憶體：經 stdin 傳給 curl、不寫檔、不進錯誤訊息或日誌；使用者可在細節浮層關閉 Claude 用量（關閉時不讀鑰匙圈）。
+- 細節浮層靠 `overlay-cutout` 顯示，與 ⌘⇧P 面板、待處理浮層共用單一遮罩，開啟前必須關掉其他浮層。
+- 改完照 `docs/usage.md` 的驗收清單實機操作（`npm test` 不涵蓋原生遮罩與鑰匙圈）。

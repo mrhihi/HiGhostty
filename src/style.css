@@ -493,3 +493,37 @@ body.row-dragging, body.row-dragging * { cursor: grabbing !important; }
 body.files-window #workspace { position: fixed; inset: 0; display: flex; }
 body.files-window #files { flex: 1 1 auto; }
 .field[hidden], .launch-preview[hidden], #drawer-detail input[hidden] { display: none; }
+
+/* Footer usage indicator (Claude Code / Codex) and its popover; see docs/usage.md. */
+.usage-btn { margin-left: auto; display: flex; align-items: center; gap: 10px; height: 22px; padding: 0 8px; border-radius: var(--radius-row); color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-btn:hover, .usage-btn[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.usage-group { display: inline-flex; align-items: center; gap: 6px; }
+.usage-name { color: var(--text-faint); }
+.usage-label { color: var(--text-faint); }
+.usage-sep { color: var(--text-faint); }
+.usage-div { width: 1px; height: 12px; background: var(--pressed); }
+.usage-num[data-level="warn"], .usage-pct[data-level="warn"] { color: var(--attention); font-weight: 700; }
+.usage-num[data-level="danger"], .usage-pct[data-level="danger"] { color: var(--danger); font-weight: 700; }
+.usage-num[data-level="warn"] .usage-label, .usage-num[data-level="danger"] .usage-label { color: inherit; }
+#usage-pop { position: absolute; right: 6px; bottom: 6px; width: min(340px, calc(100% - 12px)); max-height: 80%; z-index: 30; display: flex; flex-direction: column; border-radius: var(--radius-panel); background: var(--surface-2); box-shadow: 0 8px 28px #000a, 0 0 0 1px var(--pressed); overflow: hidden; outline: none; font-size: 14px; }
+#usage-pop[hidden] { display: none; }
+.usage-pop-bar { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--pressed); }
+.usage-spacer { flex: 1; }
+.usage-sections { display: flex; flex-direction: column; gap: 14px; padding: 12px 14px; overflow: auto; min-height: 0; }
+.usage-section { display: flex; flex-direction: column; gap: 8px; }
+.usage-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.usage-plan { color: var(--text-faint); font-size: 12px; }
+.usage-row { display: flex; flex-direction: column; gap: 4px; }
+.usage-row-head { display: flex; justify-content: space-between; color: var(--text-muted); }
+.usage-pct { color: var(--text); font-variant-numeric: tabular-nums; }
+.usage-track { height: 6px; border-radius: 3px; background: var(--surface-input); overflow: hidden; }
+.usage-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+.usage-fill[data-level="warn"] { background: var(--attention); }
+.usage-fill[data-level="danger"] { background: var(--danger); }
+.usage-reset { color: var(--text-faint); font-size: 12px; }
+.usage-error { color: var(--danger); font-size: 13px; }
+.usage-foot { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--pressed); }
+.usage-toggle { display: flex; align-items: flex-start; gap: 6px; color: var(--text-muted); font-size: 12px; }
+.usage-seg { display: inline-flex; margin-right: 4px; border-radius: var(--radius-row); background: var(--surface-input); padding: 2px; }
+.usage-seg-btn { min-height: 24px; padding: 0 8px; border-radius: 6px; color: var(--text-muted); font-size: 12px; }
+.usage-seg-btn[aria-pressed="true"] { background: var(--selected); color: var(--text); }

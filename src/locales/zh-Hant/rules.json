@@ -15,5 +15,6 @@
   "rules.err.confidence": "{source} 規則 #{index}{id}：confidence 必須是 low 或 high",
   "rules.err.layout": "{source} 規則 #{index}{id}：layout 必須是 {allowed}",
   "rules.err.noPattern": "{source} 規則 #{index}{id}：需要 pattern 或 layout",
-  "rules.err.json": "{source}：JSON 格式錯誤（{message}）"
+  "rules.err.json": "{source}：JSON 格式錯誤（{message}）",
+  "rules.err.idle": "{source} idle 規則 #{index}：需要 name（字串），args 若有則為非空字串陣列；idle 本身必須是陣列"
 }

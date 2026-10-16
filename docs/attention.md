@@ -38,6 +38,8 @@
 - `agents`：agent 行程名（regex 片段，比對行程名開頭）。Claude Code 原生版的行程名是版本號（如 `2.1.296`），所以內建含版本號樣式。tmux 頁籤改問 tmux 窗格的前景指令（`tmux_panes`），因為原生終端機只看得到 tmux client。
 - `footers`：最後一行命中就不提示（正常執行頁尾，例如 `esc to interrupt`）。regex，不分大小寫。
 - `working`：最後 12 行任一行命中，`agentState` 視為執行中（內建 `esc to interrupt`）。與 `footers` 分開，因為 `? for shortcuts` 這類頁尾 idle 時也會出現。regex，不分大小寫，使用者檔追加。
+- `idle`：關閉確認時「閒置、不算仍在執行」的行程，陣列元素 `{ "name": 行程名（完全相符）, "args": [命令列必須全部包含的字串] }`，`args` 可省略。內建含 dotnet 建置伺服器（`VBCSCompiler`、MSBuild node reuse、Razor server）；使用者檔追加。載入規則後前端送 `idle-rules` op 給原生，`bridge.m` 的 `processInfo` 用它從「仍在執行」清單剔除行程；這些行程仍留在 `pids`，強制關閉時一樣會被終止。命令列用 `sysctl KERN_PROCARGS2` 讀取，只在 `name` 相符時才讀。
+  - 驗收（**`npm test` 不涵蓋**）：(1) 終端機跑一次 `dotnet build`，關頁籤不跳確認，`VBCSCompiler` 與 MSBuild node 隨頁籤結束；(2) 同頁籤跑 `dotnet watch` 或 `sleep 100`，關頁籤仍跳確認；(3) 在使用者規則檔 `idle` 加 `{"name":"sleep"}` 後重新載入，`sleep 100` 不再跳確認；(4) 規則檔 `idle` 寫錯（如 `{}`）時設定頁顯示原因並退回內建。
 - `rules`：依序比對，第一個命中者勝出。每條：
   - `id`（唯一）、`kind`（`menu`／`yesno`／`confirm`／`press-enter`／`password`／`login`／`trust`／`input`）、`label`（顯示文字）
   - regex 規則：`scope`、`pattern`、`flags`。`scope` 決定看畫面哪一塊：

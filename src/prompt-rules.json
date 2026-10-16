@@ -3,6 +3,12 @@
   "agents": ["claude", "codex", "gemini", "copilot", "aider", "opencode", "\\d+\\.\\d+\\.\\d+", "node", "python3?", "bun", "deno"],
   "footers": ["esc to interrupt", "shift\\+tab to cycle", "bypass permissions on", "\\? for shortcuts", "context left"],
   "working": ["esc to interrupt"],
+  "idle": [
+    { "name": "VBCSCompiler" },
+    { "name": "dotnet", "args": ["VBCSCompiler"] },
+    { "name": "dotnet", "args": ["MSBuild", "nodeReuse:true"] },
+    { "name": "dotnet", "args": ["rzc.dll", "server"] }
+  ],
   "disable": [],
   "rules": [
     { "id": "layout-confirm-menu", "kind": "confirm", "label": "等待確認", "layout": "confirm-menu", "confirmText": "enter to confirm" },

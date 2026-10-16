@@ -15,6 +15,7 @@ mod files;
 mod locales;
 mod preview;
 mod snippets;
+mod usage;
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
 static PENDING_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -49,10 +50,11 @@ extern "C" fn native_event(label: *const libc::c_char, event: *const libc::c_cha
     });
 }
 const PROMPT_RULES_TEMPLATE: &str = r#"{
-  "_readme": "提示辨識規則（使用者覆蓋檔）。規則排在內建規則前面；id 與內建相同即取代；disable 可停用內建規則。內建規則見專案 src/prompt-rules.json 與 docs/attention.md。",
+  "_readme": "提示辨識規則（使用者覆蓋檔）。規則排在內建規則前面；id 與內建相同即取代；disable 可停用內建規則；idle 追加「閒置不算仍在執行」的行程（{\"name\": 行程名, \"args\": [命令列須包含的字串]}）。內建規則見專案 src/prompt-rules.json 與 docs/attention.md。",
   "version": 1,
   "agents": [],
   "footers": [],
+  "idle": [],
   "disable": [],
   "rules": []
 }
@@ -588,12 +590,12 @@ async fn login_path() -> Option<String> {
     let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let out = std::process::Command::new(&shell).args(["-lic", "printf '\\n%s\\n' \"$PATH\""]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+        let out = std::process::Command::new(&shell).args(["-lic", "printf '\\n__HG_PATH__%s\\n' \"$PATH\""]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
         let _ = tx.send(out);
     });
     let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(5)) else { return None };
-    // rc 檔可能印出其他文字：只取最後一個像 PATH 的行。
-    let path = String::from_utf8_lossy(&out.stdout).lines().map(str::trim).rev().find(|l| l.starts_with('/') && !l.contains(char::is_whitespace)).map(String::from)?;
+    // rc 檔可能印出其他文字，PATH 也可能含空白（如 "Local Workspace"）：靠標記前綴取最後一行。
+    let path = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.trim().strip_prefix("__HG_PATH__")).filter(|p| p.starts_with('/')).map(String::from)?;
     Some(CACHE.get_or_init(|| path).clone())
 }
 #[tauri::command]
@@ -750,6 +752,8 @@ fn main() {
             locales::locale_read_file,
             locales::locale_write_file,
             snippets::snippets,
+            usage::usage_codex,
+            usage::usage_claude,
             snippets::save_snippets,
             native,
             take_pending_open_paths,

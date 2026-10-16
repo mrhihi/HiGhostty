@@ -59,4 +59,9 @@ test("withProgramDir puts the program's folder on PATH for scripts that need nod
   assert.equal(withProgramDir("claude", null), "claude");
   assert.equal(withProgramDir(undefined, "/a/b"), undefined);
   assert.equal(withProgramDir("x", '/we"ird/$d/x'), `PATH="/we\\"ird/\\$d:$PATH" x`);
+  // 有登入 shell PATH 時直接寫進命令（含空白），且程式在系統資料夾或查不到時也要設定
+  assert.equal(withProgramDir("claude", "/u/bin/claude", "/a b:/c"), `PATH="/u/bin:/a b:/c" claude`);
+  assert.equal(withProgramDir("ls", "/usr/bin/ls", "/a b:/c"), `PATH="/a b:/c" ls`);
+  assert.equal(withProgramDir("claude", null, "/a:/c"), `PATH="/a:/c" claude`);
+  assert.equal(withProgramDir("claude", null, null), "claude");
 });

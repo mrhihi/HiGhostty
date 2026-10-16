@@ -94,3 +94,21 @@ test("rule errors are structured, flag a broken user file, and format per langua
   assert.equal(buildRules("{bad").errors[0].source, "builtin");
   assert.equal(buildRules(builtin, "{bad").userBroken, true);
 });
+
+test("idle process rules: built-in ships dotnet build servers, user rules append, bad ones are reported", () => {
+  const base = buildRules(builtin);
+  assert.deepEqual(base.errors, []);
+  assert.ok(base.rules.idle.some((item) => item.name === "VBCSCompiler"));
+  assert.ok(base.rules.idle.some((item) => item.name === "dotnet" && item.args?.includes("nodeReuse:true")));
+  const user = JSON.stringify({ idle: [{ name: "gradle", args: ["GradleDaemon"] }, { name: "VBCSCompiler" }] });
+  const merged = buildRules(builtin, user);
+  assert.deepEqual(merged.errors, []);
+  assert.equal(merged.rules.idle.length, base.rules.idle.length + 1);
+  assert.ok(merged.rules.idle.some((item) => item.name === "gradle"));
+  for (const bad of [{ idle: {} }, { idle: [{}] }, { idle: [{ name: "x", args: [1] }] }, { idle: [{ name: "x", args: [""] }] }]) {
+    const result = buildRules(builtin, JSON.stringify(bad));
+    assert.equal(result.userBroken, true);
+    assert.equal(result.errors[0].key, "rules.err.idle");
+    assert.deepEqual(result.rules.idle, base.rules.idle);
+  }
+});

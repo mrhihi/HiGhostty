@@ -54,9 +54,15 @@ export function restorable<T extends TmuxSaved>(tabs: unknown): T[] {
 // Programs installed as scripts (`#!/usr/bin/env node`) need their own folder on PATH, which a tmux
 // pane started without the user's shell does not have: prefix PATH with the program's folder.
 // Standard system folders are already on every PATH and are left alone.
-export function withProgramDir(command: string | undefined, path: string | null | undefined): string | undefined {
-  if (!command?.trim() || !path || !path.startsWith("/")) return command;
-  const dir = path.slice(0, path.lastIndexOf("/"));
-  if (!dir || dir === "/usr/bin" || dir === "/bin") return command;
-  return `PATH="${dir.replace(/["$`\\]/g, "\\$&")}:$PATH" ${command}`;
+// basePath：登入 shell 的 PATH。new-session -e PATH 不會套用到第一個 pane 的啟動命令（tmux 沿用 client 的 PATH），
+// 所以直接寫進命令；沒給就沿用 $PATH。
+export function withProgramDir(command: string | undefined, path: string | null | undefined, basePath?: string | null): string | undefined {
+  if (!command?.trim()) return command;
+  const hasPath = !!path && path.startsWith("/");
+  if (!hasPath && !basePath?.startsWith("/")) return command;
+  const escape = (value: string) => value.replace(/["$`\\]/g, "\\$&");
+  const base = basePath?.startsWith("/") ? escape(basePath) : "$PATH";
+  const dir = hasPath ? path.slice(0, path.lastIndexOf("/")) : "";
+  if (!dir || dir === "/usr/bin" || dir === "/bin") return base === "$PATH" ? command : `PATH="${base}" ${command}`;
+  return `PATH="${escape(dir)}:${base}" ${command}`;
 }

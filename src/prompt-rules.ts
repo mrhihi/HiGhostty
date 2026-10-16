@@ -19,14 +19,16 @@ export type CompiledRule = {
   layout?: "cursor-menu" | "confirm-menu";
   confirmText?: string;
 };
-export type CompiledRules = { agents: string[]; footers: RegExp[]; working: RegExp[]; rules: CompiledRule[] };
+// 閒置的背景行程（例如 dotnet 建置伺服器）：不算「仍在執行」。name 為行程名（完全相符），args 為命令列必須全部包含的字串。
+export type IdleProcess = { name: string; args?: string[] };
+export type CompiledRules = { agents: string[]; footers: RegExp[]; working: RegExp[]; idle: IdleProcess[]; rules: CompiledRule[] };
 // 錯誤以結構化資料回傳（key＋參數），顯示時才翻譯（formatRuleError），避免驗證邏輯依賴 UI 語系。
 export type RuleErrorSource = "builtin" | "user";
 export type RuleError = { key: string; source: RuleErrorSource; params: Record<string, string | number> };
 export const formatRuleError = (e: RuleError, t: (key: string, params?: Record<string, string | number>) => string) =>
   t(e.key, { ...e.params, source: t(`rules.source.${e.source}`) });
 const fail = (errors: RuleError[], source: RuleErrorSource, key: string, params: RuleError["params"] = {}) => { errors.push({ key: `rules.err.${key}`, source, params }); };
-type Parsed = { agents: string[]; footers: string[]; working: string[]; disable: string[]; rules: CompiledRule[] };
+type Parsed = { agents: string[]; footers: string[]; working: string[]; idle: IdleProcess[]; disable: string[]; rules: CompiledRule[] };
 
 // "\\d+\\.\\d+\\.\\d+": Claude Code's native binary is named after its version (e.g. 2.1.296).
 export const DEFAULT_AGENTS = ["claude", "codex", "gemini", "copilot", "aider", "opencode", "\\d+\\.\\d+\\.\\d+", "node", "python3?", "bun", "deno"];
@@ -40,15 +42,28 @@ function strings(value: unknown, field: string, source: RuleErrorSource, errors:
 function compileRegex(pattern: string, flags: string, source: RuleErrorSource, key: string, params: RuleError["params"], errors: RuleError[]): RegExp | undefined {
   try { return new RegExp(pattern, flags); } catch (error) { fail(errors, source, key, { ...params, message: (error as Error).message }); }
 }
+function idleProcesses(value: unknown, source: RuleErrorSource, errors: RuleError[]): IdleProcess[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) { fail(errors, source, "idle", { index: 0 }); return []; }
+  const out: IdleProcess[] = [];
+  value.forEach((raw, index) => {
+    const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+    const args = r.args === undefined ? [] : r.args;
+    if (typeof r.name !== "string" || !r.name || !Array.isArray(args) || args.some((arg) => typeof arg !== "string" || !arg)) { fail(errors, source, "idle", { index: index + 1 }); return; }
+    out.push(args.length ? { name: r.name, args: args as string[] } : { name: r.name });
+  });
+  return out;
+}
 // Validate one rules document (already JSON.parse'd). Every problem is collected.
 function parseDocument(doc: unknown, source: RuleErrorSource, errors: RuleError[]): Parsed {
-  const out: Parsed = { agents: [], footers: [], working: [], disable: [], rules: [] };
+  const out: Parsed = { agents: [], footers: [], working: [], idle: [], disable: [], rules: [] };
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) { fail(errors, source, "root"); return out; }
   const file = doc as Record<string, unknown>;
   out.agents = strings(file.agents, "agents", source, errors);
   out.footers = strings(file.footers, "footers", source, errors);
   out.working = strings(file.working, "working", source, errors);
   out.disable = strings(file.disable, "disable", source, errors);
+  out.idle = idleProcesses(file.idle, source, errors);
   for (const [field, list] of [["agents", out.agents], ["footers", out.footers], ["working", out.working]] as const) {
     for (const pattern of list) compileRegex(pattern, "i", source, "regexField", { field, pattern }, errors);
   }
@@ -101,7 +116,7 @@ const unique = (list: string[]) => [...new Set(list)];
 // user file is ignored as a whole (errors say why) so detection never goes dark.
 export function buildRules(builtinText: string, userText?: string): { rules: CompiledRules; errors: RuleError[]; userRules: number; userBroken: boolean } {
   const errors: RuleError[] = [];
-  const builtin = parseText(builtinText, "builtin", errors) ?? { agents: DEFAULT_AGENTS, footers: [], working: [], disable: [], rules: [] };
+  const builtin = parseText(builtinText, "builtin", errors) ?? { agents: DEFAULT_AGENTS, footers: [], working: [], idle: [], disable: [], rules: [] };
   const userErrors: RuleError[] = [];
   const user = userText && userText.trim() ? parseText(userText, "user", userErrors) : undefined;
   errors.push(...userErrors);
@@ -111,5 +126,7 @@ export function buildRules(builtinText: string, userText?: string): { rules: Com
   const agents = unique([...builtin.agents, ...(user?.agents ?? [])]);
   const footers = unique([...builtin.footers, ...(user?.footers ?? [])]).map((pattern) => new RegExp(pattern, "i"));
   const working = unique([...builtin.working, ...(user?.working ?? [])]).map((pattern) => new RegExp(pattern, "i"));
-  return { rules: { agents: agents.length ? agents : DEFAULT_AGENTS, footers, working, rules }, errors, userRules: user?.rules.length ?? 0, userBroken: userErrors.length > 0 };
+  const idleSeen = new Set<string>();
+  const idle = [...builtin.idle, ...(user?.idle ?? [])].filter((item) => { const key = JSON.stringify(item); return idleSeen.has(key) ? false : (idleSeen.add(key), true); });
+  return { rules: { agents: agents.length ? agents : DEFAULT_AGENTS, footers, working, idle, rules }, errors, userRules: user?.rules.length ?? 0, userBroken: userErrors.length > 0 };
 }

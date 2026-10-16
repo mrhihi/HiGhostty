@@ -35,6 +35,8 @@ const USAGE: &str = "\
   release  <X.Y.Z|patch|minor|major>          升版 → 建置 → dmg → commit → push → tag → GitHub Release
            [--install] [-y | --yes]
 
+build／publish／release 會自動用鑰匙圈裡的 Apple Development 簽章；
+可用 HIGHOSTTY_SIGN_IDENTITY 指定身分（`-` 為 ad-hoc）。找不到時退回 ad-hoc。
 Cargo 輸出目錄預設為 /private/tmp/highostty-target，可用 CARGO_TARGET_DIR 覆寫。";
 
 fn main() -> ExitCode {
@@ -120,6 +122,16 @@ fn build(debug: bool) -> Result<PathBuf> {
     if debug {
         cmd.arg("--debug");
     }
+    // 固定簽章身分，TCC（本地網路、鑰匙圈等）授權才不會因 ad-hoc 簽章每次重建而失效。
+    match signing_identity()? {
+        Some(identity) => {
+            println!("簽章身分：{identity}");
+            cmd.env("APPLE_SIGNING_IDENTITY", identity);
+        }
+        None => println!(
+            "⚠ 找不到可用的程式碼簽章身分，改用 ad-hoc 簽章（重建後 macOS 的本地網路等授權會失效）"
+        ),
+    }
     run(cmd.current_dir(&root).env("CARGO_TARGET_DIR", target_dir()))?;
 
     let app = app_path(debug);
@@ -128,6 +140,29 @@ fn build(debug: bool) -> Result<PathBuf> {
     }
     println!("✓ {}", app.display());
     Ok(app)
+}
+
+/// 簽章身分：`HIGHOSTTY_SIGN_IDENTITY` 優先（設成 `-` 強制 ad-hoc），否則取鑰匙圈第一個有效的
+/// Apple Development 身分。
+fn signing_identity() -> Result<Option<String>> {
+    if let Ok(identity) = env::var("HIGHOSTTY_SIGN_IDENTITY") {
+        let identity = identity.trim().to_string();
+        return Ok(if identity.is_empty() || identity == "-" { None } else { Some(identity) });
+    }
+    let listing = output(Command::new("security").args(["find-identity", "-v", "-p", "codesigning"]))?;
+    Ok(pick_identity(&listing))
+}
+
+/// 從 `security find-identity -v` 的輸出挑出第一個 Apple Development 身分（回傳其 SHA-1，
+/// 同名多張憑證時不會歧義）。
+fn pick_identity(listing: &str) -> Option<String> {
+    listing.lines().find_map(|line| {
+        if !line.contains("\"Apple Development:") || line.contains("CSSMERR_") {
+            return None;
+        }
+        let hash = line.split_whitespace().nth(1)?;
+        (hash.len() == 40 && hash.chars().all(|c| c.is_ascii_hexdigit())).then(|| hash.to_string())
+    })
 }
 
 /// 建置前檢查並補齊相依：npm 套件（含 tauri CLI）與 Ghostty 原生函式庫。
@@ -711,6 +746,15 @@ mod tests {
         assert!(!is_removable(Path::new("/Users/me"), root));
         assert!(!is_removable(root, root));
         assert!(!is_removable(Path::new("relative"), root));
+    }
+
+    #[test]
+    fn picks_apple_development_identity() {
+        let listing = "  1) 0CDAEC741E96E7EA6B07E9765FA7831FA7D5805A \"Apple Development: a@b.c (U86DPM475P)\"\n     1 valid identities found";
+        assert_eq!(pick_identity(listing).as_deref(), Some("0CDAEC741E96E7EA6B07E9765FA7831FA7D5805A"));
+        assert_eq!(pick_identity("     0 valid identities found"), None);
+        let other = "  1) 0CDAEC741E96E7EA6B07E9765FA7831FA7D5805A \"Developer ID Application: X\"";
+        assert_eq!(pick_identity(other), None);
     }
 
     #[test]

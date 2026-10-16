@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <sys/proc.h>
+#include <sys/sysctl.h>
 #include <unistd.h>
 #include "ghostty.h"
 #include "bridge.h"
@@ -507,6 +508,31 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
 @end
 
 static NSString *processName(struct proc_bsdinfo info) { return str(info.pbi_name[0]?info.pbi_name:info.pbi_comm); }
+// Idle background processes (e.g. dotnet build servers) outlive their command
+// on purpose. They are not user jobs, so they must not trigger the close
+// confirmation; they stay in `pids` and are still killed. The rules come from
+// src/prompt-rules.json via the "idle-rules" op: {name, args?} where name is the
+// exact process name and every arg must appear in the command line.
+static NSArray<NSDictionary *> *idleRules = nil;
+static NSString *processArgs(int pid) {
+    int mib[3]={CTL_KERN,KERN_PROCARGS2,pid};size_t size=0;
+    if(sysctl(mib,3,NULL,&size,NULL,0)!=0||size<=sizeof(int))return @"";
+    char *buffer=malloc(size);if(!buffer)return @"";
+    NSString *args=@"";
+    if(sysctl(mib,3,buffer,&size,NULL,0)==0)args=[[NSString alloc] initWithBytes:buffer+sizeof(int) length:size-sizeof(int) encoding:NSUTF8StringEncoding]?:@"";
+    free(buffer);return args;
+}
+static BOOL idleProcess(int pid, NSString *name) {
+    NSString *args=nil;
+    for(NSDictionary *rule in idleRules){
+        if(![rule[@"name"] isEqualToString:name])continue;
+        NSArray *need=rule[@"args"];if(![need isKindOfClass:[NSArray class]]||!need.count)return YES;
+        if(!args)args=processArgs(pid);
+        BOOL all=YES;for(id item in need)if(![item isKindOfClass:[NSString class]]||![args containsString:item]){all=NO;break;}
+        if(all)return YES;
+    }
+    return NO;
+}
 static int32_t shellPid(HGSurface *surface) {
     if(!surface.surface)return 0;
     int32_t pid=highostty_surface_pid(surface.surface);struct proc_bsdinfo root={0};
@@ -781,7 +807,7 @@ static NSDictionary *processInfo(HGSurface *surface) {
         for(NSDictionary *r in records)if([family containsObject:r[@"pid"]]&&[r[@"pid"] intValue]!=pid&&[r[@"status"] intValue]!=SZOMB){
             [pids addObject:r];
             BOOL primary=[r[@"pid"] intValue]==primaryShellPid||[r[@"pid"] intValue]==treeShellPid||([r[@"pid"] intValue]==surface.primaryPid&&[r[@"start"] unsignedLongLongValue]==surface.primaryStart);
-            if(!primary)[names addObject:[NSString stringWithFormat:@"%@ (%@)",r[@"name"],r[@"pid"]]];
+            if(!primary&&!idleProcess([r[@"pid"] intValue],r[@"name"]))[names addObject:[NSString stringWithFormat:@"%@ (%@)",r[@"name"],r[@"pid"]]];
         }
         // cwd fallback when shell integration is disabled. This is a direct syscall.
         struct proc_vnodepathinfo cwd={0};if(proc_pidinfo(shellPid(surface),PROC_PIDVNODEPATHINFO,0,&cwd,sizeof(cwd))==sizeof(cwd)){NSString *path=str(cwd.pvi_cdir.vip_path);if(path.length&&![path isEqualToString:surface.cwd]){surface.cwd=path;emit(surface.owner,@{@"type":@"cwd",@"id":surface.identifier,@"path":path});}}
@@ -918,6 +944,7 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
             result=@{@"path":picked ?: (id)NSNull.null};
         }
         else if([op isEqualToString:@"cwd"]){HGSurface *s=surfaces[req[@"id"]];if(s){int pid=shellPid(s);struct proc_vnodepathinfo cwd={0};if(pid>0&&proc_pidinfo(pid,PROC_PIDVNODEPATHINFO,0,&cwd,sizeof(cwd))==sizeof(cwd)){NSString *p=str(cwd.pvi_cdir.vip_path);if(p.length&&![p isEqualToString:s.cwd]){s.cwd=p;emit(s.owner,@{@"type":@"cwd",@"id":s.identifier,@"path":p});}}result=@{@"cwd":s.cwd ?: @"",@"exited":@(ghostty_surface_process_exited(s.surface))};}}
+        else if([op isEqualToString:@"idle-rules"]){NSMutableArray *list=[NSMutableArray array];id given=req[@"rules"];if([given isKindOfClass:[NSArray class]])for(id item in given)if([item isKindOfClass:[NSDictionary class]]&&[item[@"name"] isKindOfClass:[NSString class]])[list addObject:item];idleRules=list;}
         else if([op isEqualToString:@"all-info"]){NSMutableArray *running=[NSMutableArray array];BOOL confirm=NO;for(HGSurface *s in surfaces.allValues){if(s.tmux)continue;NSDictionary *info=processInfo(s);[running addObjectsFromArray:info[@"running"]];confirm|=[info[@"needsConfirm"] boolValue];}result=@{@"running":running,@"needsConfirm":@(confirm)};}
         else if([op isEqualToString:@"close-all"]){for(HGSurface *s in [surfaces.allValues copy]){NSDictionary *r=destroySurface(s,[req[@"force"] boolValue]);if(r[@"error"]){result=r;break;}}}
         else if([op isEqualToString:@"config"])result=configurationInfo();
