@@ -31,3 +31,4 @@ target/
 .env.*
 *.log
 npm-debug.log*
+*.cer
