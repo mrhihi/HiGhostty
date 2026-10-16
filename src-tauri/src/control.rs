@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn stdin_is_read_only_when_asked_and_is_bounded() {
         let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert!(wants_stdin(&args(&["project", "hello", "p", "--json-stdin"])));
+        assert!(wants_stdin(&args(&["agent", "prompt", "p", "--json-stdin"])));
         assert!(!wants_stdin(&args(&["surface", "run", "x", "--", "cat", "--json-stdin"])));
         assert!(!wants_stdin(&args(&["ping"])));
         assert_eq!(read_input("{\"a\":1}".as_bytes()).unwrap(), "{\"a\":1}");

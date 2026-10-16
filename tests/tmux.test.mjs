@@ -13,14 +13,14 @@ test("session names are valid and distinct", () => {
 });
 
 test("tmuxCommand attaches or creates, quoting cwd and command", () => {
-  assert.equal(tmuxCommand("hg-abcd1234", "/tmp/a b"), "tmux new-session -A -s hg-abcd1234 -c '/tmp/a b' \\; set-option status on");
+  assert.equal(tmuxCommand("hg-abcd1234", "/tmp/a b"), "tmux start-server \\; set-option -s extended-keys on \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/tmp/a b' \\; set-option status on");
   assert.ok(tmuxCommand("hg-abcd1234", "/", undefined, true).endsWith("\\; set-option status off"));
-  assert.equal(tmuxCommand("hg-abcd1234", "/it's", "npm run dev"), "tmux new-session -A -s hg-abcd1234 -c '/it'\\''s' 'npm run dev' \\; set-option status on");
+  assert.equal(tmuxCommand("hg-abcd1234", "/it's", "npm run dev"), "tmux start-server \\; set-option -s extended-keys on \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/it'\\''s' 'npm run dev' \\; set-option status on");
   assert.throws(() => tmuxCommand("x; rm", "/"));
 });
 
 test("tmuxCommand uses a quoted absolute binary", () => {
-  assert.ok(tmuxCommand("hg-abcd1234", "/", undefined, false, "/opt/homebrew/bin/tmux").startsWith("'/opt/homebrew/bin/tmux' new-session -A -s hg-abcd1234"));
+  assert.ok(tmuxCommand("hg-abcd1234", "/", undefined, false, "/opt/homebrew/bin/tmux").startsWith("'/opt/homebrew/bin/tmux' start-server"));
 });
 
 test("restorable keeps only tmux tabs and drops invalid sessions", () => {
@@ -50,4 +50,13 @@ test("withProgramPath replaces only a bare program name", () => {
   assert.equal(withProgramPath("claude", null), "claude");
   assert.equal(withProgramPath("claude", "/u/it's/claude"), "'/u/it'\\''s/claude'");
   assert.equal(withProgramPath(undefined, "/a"), undefined);
+});
+
+import { withProgramDir } from "../src/tmux.ts";
+test("withProgramDir puts the program's folder on PATH for scripts that need node", () => {
+  assert.equal(withProgramDir("'/u/.nvm/bin/claude' --resume", "/u/.nvm/bin/claude"), `PATH="/u/.nvm/bin:$PATH" '/u/.nvm/bin/claude' --resume`);
+  assert.equal(withProgramDir("ls", "/usr/bin/ls"), "ls");
+  assert.equal(withProgramDir("claude", null), "claude");
+  assert.equal(withProgramDir(undefined, "/a/b"), undefined);
+  assert.equal(withProgramDir("x", '/we"ird/$d/x'), `PATH="/we\\"ird/\\$d:$PATH" x`);
 });

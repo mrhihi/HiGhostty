@@ -10,7 +10,10 @@ export type FileEntry = {
   has_children: boolean;
 };
 // columnRoot: leftmost folder shown in columns view (memory only).
-export type FilesState = { open: boolean; full: boolean; path?: string; follow: boolean; expanded: string[]; columnRoot?: string; view?: FilesView };
+// detached: the panel lives in its own window (open stays true); the tab's own panel stays hidden.
+export type FilesState = { open: boolean; full: boolean; path?: string; follow: boolean; expanded: string[]; columnRoot?: string; view?: FilesView; detached?: boolean };
+// The panel is showing inside the tab (not closed, not popped out).
+export const shownInTab = (state: FilesState | undefined): boolean => !!state?.open && !state.detached;
 // "list" is a tree with size/date columns; "columns" is a row of columns, one per folder level.
 export type FilesView = "list" | "columns";
 export type SortKey = "name" | "size" | "modified";
@@ -23,10 +26,10 @@ export function initialFiles(): FilesState {
   return { open: false, full: false, follow: true, expanded: [] };
 }
 // What survives a restart: panel visibility, where it was browsing and which folders were open.
-export type SavedFiles = { open: true; full: boolean; path?: string; follow?: boolean; expanded?: string[]; columnRoot?: string; view?: FilesView };
+export type SavedFiles = { open: true; full: boolean; path?: string; follow?: boolean; expanded?: string[]; columnRoot?: string; view?: FilesView; detached?: true };
 export function saveFiles(state: FilesState | undefined): SavedFiles | undefined {
   if (!state?.open) return undefined;
-  return { open: true, full: state.full, path: state.path, follow: state.follow, expanded: state.expanded.length ? state.expanded : undefined, columnRoot: state.columnRoot, view: state.view };
+  return { open: true, full: state.full, path: state.path, follow: state.follow, expanded: state.expanded.length ? state.expanded : undefined, columnRoot: state.columnRoot, view: state.view, ...(state.detached ? { detached: true as const } : {}) };
 }
 // Saved data may be old or hand-edited: keep only well-formed fields.
 export function restoreFiles(saved: Partial<SavedFiles> | undefined): FilesState | undefined {
@@ -35,11 +38,16 @@ export function restoreFiles(saved: Partial<SavedFiles> | undefined): FilesState
   const expanded = path && Array.isArray(saved.expanded) ? saved.expanded.filter((item): item is string => typeof item === "string" && item.startsWith(path)) : [];
   const columnRoot = path && typeof saved.columnRoot === "string" && path.startsWith(saved.columnRoot) ? saved.columnRoot : undefined;
   const view = saved.view === "list" || saved.view === "columns" ? saved.view : undefined;
-  return { open: true, full: !!saved.full, path, follow: path ? saved.follow !== false : true, expanded, columnRoot, view };
+  return { open: true, full: !!saved.full, path, follow: path ? saved.follow !== false : true, expanded, columnRoot, view, ...(saved.detached === true ? { detached: true } : {}) };
 }
 export const sameSaved = (a: SavedFiles | undefined, b: SavedFiles | undefined): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 export function toggleOpen(state: FilesState): FilesState {
-  return state.open ? { ...state, open: false, full: false } : { ...state, open: true };
+  return state.open ? withoutDetached({ ...state, open: false, full: false }) : { ...state, open: true };
+}
+// Pop the panel out into its own window, or bring it back into the tab.
+const withoutDetached = (state: FilesState): FilesState => { const { detached: _detached, ...rest } = state; return rest; };
+export function setDetached(state: FilesState, detached: boolean): FilesState {
+  return detached ? { ...state, open: true, full: false, detached: true } : withoutDetached({ ...state, open: true, full: false });
 }
 export function toggleFull(state: FilesState): FilesState {
   return { ...state, open: true, full: !state.full };

@@ -27,3 +27,10 @@
 ## 啟動命令的路徑解析
 
 tmux 以非互動 shell 執行啟動命令，`~/.zshrc` 加的 PATH（如 `~/.local/bin`）不生效，裸命令（`claude`）會找不到而讓 session 立刻結束。`newSurface` 開 tmux 頁籤前用 `program_path`（登入 shell 查詢）把第一個字換成絕對路徑（`withProgramPath`，`tab.command` 本身不改）；查不到就原樣執行。tmux 頁籤 5 秒內結束會顯示 `app.tmuxExitedEarly` 提示再關閉。
+
+## 啟動命令的 AI 工具選單
+
+頁籤／收藏編輯頁的「啟動方式」可選 Claude Code、Codex CLI、GitHub Copilot CLI、Gemini CLI（只列出登入 shell 找得到的；已選的工具即使找不到也保留），再選模型與填額外參數。資料仍只存一條 `command` 字串；`src/launch.ts` 的 `composeLaunch`／`parseLaunch` 負責組合與讀回，不認得的命令一律當自訂命令。模型名稱只收一般識別字（`validModel`），因為會進 shell。
+
+- tmux 頁籤不經使用者的 shell，PATH 很小：`withProgramPath` 把程式換成絕對路徑，`withProgramDir`（`src/tmux.ts`）再把該程式所在資料夾放到 `PATH` 前面，讓 `#!/usr/bin/env node` 的腳本找得到 node（`/usr/bin`、`/bin` 不加）。另外 `login_path`（Rust，登入 shell 的 `$PATH`，快取到 App 結束）會經 `new-session -e PATH=…` 帶進 session，讓 agent 在 pane 內再呼叫的 Homebrew 等工具也找得到；只在 tmux 支援 `-e`（3.2+）時生效，且只對新建的 session 有效，既有 session 要重開頁籤。
+- 程式位置由 Rust `program_path` 用登入 shell 查，最多等 5 秒；編輯頁打開時背景偵測一次，結果快取到 App 結束。

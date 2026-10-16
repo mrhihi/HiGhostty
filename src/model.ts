@@ -23,15 +23,18 @@ export function orderGroupedItems<T extends GroupedItem>(items: T[], groupIds: s
     ...groupIds.flatMap((id) => items.filter((item) => item.groupId === id)),
   ];
 }
-// Ungrouped tabs keep their own order; a grouped tab sits where its favorite
-// sits in `favorites`, so opening or closing a terminal never moves a row.
+// Tabs without a favorite keep their own order; a favorite's tab sits where its favorite
+// sits in `favorites` (ungrouped favorites first, then each group), so opening or closing
+// a terminal never moves a row.
 export function orderTabsByFavorites<T extends { id: string; favoriteId?: string }>(tabs: T[], favorites: GroupedItem[], groupIds: string[]): T[] {
   const known = new Set(groupIds);
   const favoriteById = new Map(favorites.map((item) => [item.id, item]));
-  const groupOf = (tab: T) => { const id = tab.favoriteId ? favoriteById.get(tab.favoriteId)?.groupId : undefined; return id && known.has(id) ? id : undefined; };
+  const ungroupedFavorites = favorites.filter((item) => !(item.groupId && known.has(item.groupId)));
+  const tabsOf = (item: GroupedItem) => tabs.filter((tab) => tab.favoriteId === item.id);
   return [
-    ...tabs.filter((tab) => !groupOf(tab)),
-    ...groupIds.flatMap((id) => favorites.filter((item) => item.groupId === id).flatMap((item) => tabs.filter((tab) => tab.favoriteId === item.id && groupOf(tab) === id))),
+    ...tabs.filter((tab) => !tab.favoriteId || !favoriteById.has(tab.favoriteId)),
+    ...ungroupedFavorites.flatMap(tabsOf),
+    ...groupIds.flatMap((id) => favorites.filter((item) => item.groupId === id).flatMap(tabsOf)),
   ];
 }
 // Sub-tabs (one level only) sit right after their root tab; a sub-tab whose

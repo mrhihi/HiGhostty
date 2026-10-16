@@ -157,3 +157,14 @@ AppKit 相關的操作走 `hg_command` 的 `files-*` op（主執行緒）：`fil
 - [ ] 在終端機 `touch x`，2 秒內出現在面板。
 - [ ] 焦點在列表時，⌘C／⌘V／⌘A／空白鍵不會被 WebView 預設行為（捲動、全選文字）搶走。
 - [ ] 離開面板後打字直接進終端機（含中文輸入法，照 `docs/keyboard-input.md` 抽測）；`docs/window-drag.md` 清單重跑。
+
+## 彈出成獨立視窗
+
+標題列的「彈出」按鈕（`#files-popout`）把目前頁籤的檔案面板移到獨立視窗；視窗裡同一個按鈕變成「放回頁籤」。
+
+- 視窗是 `files.html`（入口 `src/files-window.ts`），Rust 的 `open_files_window`／`close_files_window`（`src-tauri/src/preview.rs`）建立與關閉。label 為 `preview-files-<tabId>`，每個頁籤一個；沿用 `preview-` 前綴，所以不算終端機視窗，最後一個終端機視窗關閉時會一併關掉。
+- 視窗內跑的是同一份 `initFilesPanel`（host 的 `standalone: true`）。需要終端機的動作（在新頁籤開啟終端機、在終端機中編輯、插入路徑、預覽）用 `emitTo(origin, "files-request", …)` 送回原視窗處理；面板狀態用 `files-state` 回報，原頁籤的 `tab.files` 因此保持最新並照常存檔。終端機換目錄時，原視窗用 `files-cwd` 通知視窗跟隨。
+- 狀態：`FilesState.detached`（`SavedFiles.detached`）為真表示彈出中，此時 `open` 仍為真，但頁籤內的面板不顯示（`shownInTab`）。重啟後 `restoreSnapshot` 會重新開出視窗。⌘O／右上角按鈕在彈出中只會把視窗帶到前面。
+- 放回：視窗送 `files-dock`，頁籤取回狀態並顯示面板。直接關閉視窗等於放回並關閉面板（`close: true`）；結束 App 時視窗是被銷毀的，不會改動 `detached`，所以下次啟動仍會彈出。關閉頁籤會一併關掉它的視窗。
+- 視窗大小在調整後 300ms 存進 `localStorage("files-window-size")`，下次彈出沿用（所有頁籤共用）。視窗位置沒有記。
+- 視窗是獨立 WebView，Quick Look 與檔案操作走 `native` 的 `files-*` op，依視窗 label 回報事件（`native-event` 由視窗自己監聽）。

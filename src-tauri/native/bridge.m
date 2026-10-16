@@ -353,7 +353,6 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
     @catch(NSException *exception) { [self reportInputException:exception]; }
 }
 - (void)handleFlagsChanged:(NSEvent *)event {
-    if(self.hasMarkedText)return;
     ghostty_input_mods_e mod=0;
     switch(event.keyCode){
         case 0x39:mod=GHOSTTY_MODS_CAPS;break;
@@ -376,6 +375,8 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
         }
         if(sidePressed)action=GHOSTTY_ACTION_PRESS;
     }
+    // While composing, swallow presses but still forward releases so Ghostty never keeps a stuck modifier.
+    if(self.hasMarkedText&&action==GHOSTTY_ACTION_PRESS)return;
     [self sendKey:event action:action text:nil composing:NO translationFlags:event.modifierFlags];
 }
 - (BOOL)performKeyEquivalent:(NSEvent *)event {

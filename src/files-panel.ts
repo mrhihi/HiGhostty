@@ -29,6 +29,7 @@ import {
   rememberColumnWidth,
   returnToCwd,
   select,
+  shownInTab,
   shellQuote,
   sortEntries,
   stemLength,
@@ -63,6 +64,16 @@ export type FilesHost = {
   // The tab's panel was opened, closed, resized to full, moved or its folders expanded: remember it for next launch.
   visibilityChanged(tab: FilesTab): void;
   notify(error: unknown): void;
+  // The panel runs in its own window (files-window.ts) instead of beside a terminal.
+  standalone?: boolean;
+  // Pop the panel out into its own window, or (standalone) back into its tab.
+  popOut?(): void;
+  // The tab's panel is popped out: bring that window forward.
+  focusDetached?(): void;
+  // Standalone close button.
+  closeWindow?(): void;
+  // The tab's terminal changed directory while the panel is popped out.
+  detachedCwd?(cwd: string): void;
   icons: Record<"folder" | "file" | "chevron" | "up" | "eye" | "close", string>;
 };
 type OpResult = { paths: string[]; errors: string[] };
@@ -72,6 +83,8 @@ type MenuEntry = { text: string; action?: () => unknown; enabled?: boolean; item
 const extraIcons = {
   follow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
   expand: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>',
+  popOut: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>',
+  dock: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 20H4v-6M4 20l9-9M6 10V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-4"/></svg>',
   shrink: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7"/></svg>',
   list: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>',
   columns: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></svg>',
@@ -89,6 +102,7 @@ export function initFilesPanel(host: FilesHost) {
 <button id="files-follow" class="icon-btn" title="Return to Terminal's Directory" aria-label="Return to Terminal's Directory" data-i18n-title="files.follow" data-i18n-aria-label="files.follow" hidden>${extraIcons.follow}</button>
 <div class="files-view-switch" role="group" aria-label="View Mode" data-i18n-aria-label="files.viewMode"><button id="files-view-list" class="icon-btn" title="List" aria-label="List" data-i18n-title="files.viewList" data-i18n-aria-label="files.viewList">${extraIcons.list}</button><button id="files-view-columns" class="icon-btn" title="Columns" aria-label="Columns" data-i18n-title="files.viewColumns" data-i18n-aria-label="files.viewColumns">${extraIcons.columns}</button></div>
 <button id="files-hidden" class="icon-btn" title="Show Hidden Files" aria-label="Show Hidden Files" data-i18n-title="files.showHidden" data-i18n-aria-label="files.showHidden" aria-pressed="false">${icons.eye}</button>
+<button id="files-popout" class="icon-btn" title="Open in Window" aria-label="Open in Window" data-i18n-title="files.popOut" data-i18n-aria-label="files.popOut">${extraIcons.popOut}</button>
 <button id="files-full" class="icon-btn" title="Full Width (⇧⌘F)" aria-label="Full Width">${extraIcons.expand}</button>
 <button id="files-close" class="icon-btn" title="Close (⌘O / ⌘0)" aria-label="Close Files Panel" data-i18n-title="files.close.title" data-i18n-aria-label="files.close.label">${icons.close}</button>
 </div>
@@ -148,7 +162,7 @@ export function initFilesPanel(host: FilesHost) {
     tab.files = next;
     if (!sameSaved(saveFiles(before), saveFiles(next))) host.visibilityChanged(tab);
   };
-  const isOpen = () => !!state()?.open;
+  const isOpen = () => shownInTab(state());
   const hasFocus = () => document.hasFocus() && panel.contains(document.activeElement);
 
   function status(text: string, error = true) {
@@ -165,7 +179,7 @@ export function initFilesPanel(host: FilesHost) {
 
   function applyLayout(notifyHost = true) {
     const files = state();
-    const open = !!files?.open, full = open && !!files?.full;
+    const open = shownInTab(files), full = open && !!files?.full;
     workspace.classList.toggle("files-open", open);
     workspace.classList.toggle("files-full", full);
     panel.hidden = !open;
@@ -174,6 +188,10 @@ export function initFilesPanel(host: FilesHost) {
     workspace.style.setProperty("--files-width", width + "px");
     previewHeight = clampPreviewHeight(previewHeight, panel.clientHeight || window.innerHeight);
     panel.style.setProperty("--preview-height", previewHeight + "px");
+    $("files-popout").innerHTML = host.standalone ? extraIcons.dock : extraIcons.popOut;
+    $("files-popout").title = t(host.standalone ? "files.dock" : "files.popOut");
+    $("files-popout").setAttribute("aria-label", t(host.standalone ? "files.dock" : "files.popOut"));
+    $("files-full").hidden = !!host.standalone;
     $("files-full").innerHTML = full ? extraIcons.shrink : extraIcons.expand;
     $("files-full").title = t(full ? "files.full.exitTitle" : "files.full.title");
     $("files-full").setAttribute("aria-label", t("files.full.label"));
@@ -196,7 +214,7 @@ export function initFilesPanel(host: FilesHost) {
   // Re-read the root folder and every expanded folder, then redraw.
   async function load() {
     const files = state();
-    if (!files?.open) return;
+    if (!files || !shownInTab(files)) return;
     if (!files.path) {
       const cwd = host.cwd() || host.home();
       update(returnToCwd(files, cwd));
@@ -252,7 +270,7 @@ export function initFilesPanel(host: FilesHost) {
 
   function draw() {
     const files = state();
-    if (!files?.open || !files.path || renaming) return;
+    if (!files || !shownInTab(files) || !files.path || renaming) return;
     renderCrumbs(files.path);
     $("files-follow").hidden = files.follow;
     for (const button of panel.querySelectorAll<HTMLElement>(".files-columns button")) {
@@ -896,7 +914,8 @@ export function initFilesPanel(host: FilesHost) {
     load().catch(host.notify);
   };
   $("files-full").onclick = () => toggleFullMode();
-  $("files-close").onclick = () => close();
+  $("files-popout").onclick = () => host.popOut?.();
+  $("files-close").onclick = () => (host.standalone ? host.closeWindow?.() : close());
   resizer.addEventListener("pointerdown", (event) => {
     resizer.setPointerCapture(event.pointerId);
     resizer.classList.add("dragging");
@@ -970,7 +989,7 @@ export function initFilesPanel(host: FilesHost) {
   // Pick up changes made elsewhere (for example by commands in the terminal).
   setInterval(async () => {
     const files = state();
-    if (!files?.open || !files.path || renaming || document.visibilityState !== "visible") return;
+    if (!files || !shownInTab(files) || !files.path || renaming || document.visibilityState !== "visible") return;
     const dirs = view === "columns" ? [files.path, ...columnChain(files.columnRoot, files.path)] : [files.path, ...files.expanded];
     const stamps = await Promise.all(dirs.map((dir) => invoke<number>("dir_stamp", { path: dir }).catch(() => 0)));
     const key = stamps.join(",");
@@ -987,6 +1006,7 @@ export function initFilesPanel(host: FilesHost) {
   async function openPanel(focus: boolean) {
     const tab = host.activeTab();
     if (!tab) return;
+    if (tab.files?.detached) { host.focusDetached?.(); return; }
     update({ ...(tab.files || initialFiles()), open: true });
     applyLayout();
     await load();
@@ -1002,7 +1022,7 @@ export function initFilesPanel(host: FilesHost) {
   }
   function toggleFullMode() {
     const files = state();
-    if (!files) return;
+    if (!files || files.detached) return;
     update(toggleFull(files));
     applyLayout();
     if (state()!.full) focusList().catch(host.notify);
@@ -1018,13 +1038,15 @@ export function initFilesPanel(host: FilesHost) {
     // ⌘O: open and focus, focus if already open, close when already focused.
     async toggle() {
       if (!host.activeTab()) return;
+      if (state()?.detached) { host.focusDetached?.(); return; }
       if (!isOpen()) await openPanel(true);
       else if (hasFocus()) close();
       else await focusList();
     },
     // Header button: a plain open/close switch (the click itself moves focus).
     async toggleOpen() {
-      if (isOpen()) close();
+      if (state()?.detached) host.focusDetached?.();
+      else if (isOpen()) close();
       else await openPanel(true);
     },
     toggleFull: toggleFullMode,
@@ -1054,6 +1076,7 @@ export function initFilesPanel(host: FilesHost) {
     async cwdChanged(cwd: string) {
       const files = state();
       if (!files) return;
+      if (files.detached) { host.detachedCwd?.(cwd); return; }
       const next = onCwd(files, cwd);
       if (next === files) return;
       update(next);

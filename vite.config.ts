@@ -1,11 +1,11 @@
 import { defineConfig } from "vite";
 import { resolve } from "node:path";
 
-// Two pages: the app itself and the standalone preview window.
+// Three pages: the app itself, the standalone preview window and the popped-out files panel.
 export default defineConfig({
   build: {
     rollupOptions: {
-      input: { main: resolve(__dirname, "index.html"), preview: resolve(__dirname, "preview.html") },
+      input: { main: resolve(__dirname, "index.html"), preview: resolve(__dirname, "preview.html"), files: resolve(__dirname, "files.html") },
     },
   },
 });

@@ -18,15 +18,6 @@
 
 **agent 自己發的提示**：`highostty ctl alert raise`（`docs/agent-control.md`）產生來源 `agent` 的 alert，優先度最高（`signal` < `prompt` < `agent`）。畫面偵測不會覆蓋或清除它（`clearSource` 只清自己的來源）；「忽略」agent 提示不會寫入 `dismissed`（那是畫面偵測的去重記錄）。
 
-## 專案待辦（`src/project-attention.ts`、`src/project-attention-cards.ts`）
-鈴鐺與浮層也顯示專案需要使用者的事：計畫待開始、worker 提問、指定由使用者驗收的成果、派送結果不確定。
-- 清單由 `actionItems(state)` 從 journal 推導（DOM-free，`tests/project-attention.test.mjs`）；卡片在浮層最上方，可直接開始計畫、回答、通過／退回、核對。
-- 「忽略」只標已讀（`projectMarks`，存 localStorage `project-attention-seen` 並用 `storage` 事件跨視窗同步）、讓徽章不計；卡片留著，來源在 journal 解決後才消失。
-- **單行提示**（`#project-banner`）：有未看過的專案待辦且待處理浮層沒開時，終端機上方顯示一行（最優先的一項＋「另有 N 項」），按「處理」才開浮層，× 把目前這些標為已看；不自動展開、不搶焦點。純邏輯是 `bannerOf`。
-  - 版面：`#workspace` 的子元素改為 `#terminal-column`（直向：提示列＋`#terminals`）｜分隔線｜檔案面板。提示列是 `#terminals` 的兄弟、不蓋在終端機上，`#terminals` 變矮時既有的 `ResizeObserver` 會重算原生矩形與預覽窗；檔案面板全螢幕與專案畫面開著時整個 `#terminal-column` 隱藏。
-  - 驗收（debug 與 release 各一次）：(1) 有待辦時終端機被推下約 30px，`stty size` 的列數減少、沒有被蓋住；(2) 處理後提示消失、列數恢復；(3) 同時開檔案面板（含全螢幕）、預覽窗（右側與下方）、⌘⇧P 片段面板、待處理浮層，版面與焦點都正常，開浮層時提示列會收起；(4) 拖曳視窗標題列、視窗縮放、分割與 zoom 正常；(5) 輸入法組字中提示出現／消失不打斷輸入。
-- 「稍後」：卡片的「稍後」讓該項 30 分鐘不計入徽章與單行提示（localStorage `project-attention-snoozed`，跨視窗同步，過期自動清掉），卡片仍在清單。
-
 ## 在卡片上直接選選項
 畫面辨識出的單選選單會在卡片上列出選項按鈕（`menuAnswerable`）。條件很嚴：提示必須是 `exact`（`numberedMenu` 的 `exactBlock`）——選項是游標所在的**連續編號區塊、編號 1..n 遞增、只有一列有游標**，選項不是核取方塊（含 `1. [ ]` 這種帶編號的）、沒有「Type something／Chat about this」之類要打字的選項；另外種類須是 `menu`／`confirm`／`trust`、非低信心、2～9 個選項。畫面上別處的編號清單、回聲的 `> 1. …`、每列都有圓點的單選清單、選項間夾說明行的清單，一律不給按鈕。`confirmMenu`（「Enter to confirm」頁尾、無編號）不會是 `exact`，所以從不給按鈕。
 點選＝游標移到該列再 Enter，只用既有的 `key` op（↑／↓／Enter，每鍵間隔 60ms），**沒有改 `bridge.m`／`HGSurface`**（`docs/keyboard-input.md` 的規則不受影響）。

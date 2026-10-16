@@ -286,6 +286,58 @@ pub fn open_preview_window(
     Ok(label)
 }
 
+fn files_label(tab: &str) -> Result<String, String> {
+    if tab.is_empty() || !tab.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("頁籤代號格式不正確".into());
+    }
+    Ok(format!("{WINDOW_PREFIX}files-{tab}"))
+}
+
+/// The files panel popped out of a tab into its own window. One window per tab: asking
+/// again brings it to the front. `init` is handed to the page as `__HIGHOSTTY_FILES__`.
+#[tauri::command]
+pub fn open_files_window(
+    app: tauri::AppHandle,
+    tab: String,
+    title: String,
+    focus: bool,
+    size: Option<(f64, f64)>,
+    init: serde_json::Value,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let label = files_label(&tab)?;
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        if focus {
+            let _ = window.set_focus();
+        }
+        return Ok(label);
+    }
+    let (width, height) = size
+        .map(|(w, h)| (w.clamp(420.0, 4000.0), h.clamp(320.0, 4000.0)))
+        .unwrap_or((760.0, 640.0));
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("files.html".into()))
+        .title(title)
+        .inner_size(width, height)
+        .min_inner_size(420.0, 320.0)
+        .focused(focus)
+        .initialization_script(format!("window.__HIGHOSTTY_FILES__={};", init))
+        .build()
+        .map_err(err)?;
+    Ok(label)
+}
+
+/// Closes a tab's popped-out files window, if it is open.
+#[tauri::command]
+pub fn close_files_window(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window(&files_label(&tab)?) {
+        window.destroy().map_err(err)?;
+    }
+    Ok(())
+}
+
 /// Opens the macOS print sheet for the calling window; its PDF menu saves as PDF. The front
 /// end has already swapped in a print-only copy of the rendered document.
 #[tauri::command]
@@ -372,6 +424,14 @@ mod tests {
         assert_ne!(a, window_label(std::path::Path::new("/tmp/b.md")));
         assert!(is_preview_window(&a));
         assert!(!is_preview_window("main") && !is_preview_window("window-1") && !is_preview_window("quick-1"));
+    }
+
+    #[test]
+    fn files_window_labels_are_checked_and_treated_as_satellites() {
+        let label = files_label("1a2b-3c").unwrap();
+        assert!(is_preview_window(&label));
+        assert!(files_label("").is_err());
+        assert!(files_label("../x").is_err());
     }
 
     #[test]

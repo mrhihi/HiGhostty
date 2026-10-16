@@ -14,7 +14,6 @@ mod control;
 mod files;
 mod locales;
 mod preview;
-mod projects;
 mod snippets;
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
@@ -579,39 +578,23 @@ async fn program_path(name: String) -> Option<String> {
     let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(5)) else { return None };
     String::from_utf8_lossy(&out.stdout).lines().map(str::trim).find(|l| l.starts_with('/') && !l.contains(char::is_whitespace)).map(String::from)
 }
-/// 用登入 shell 的 `where`（非 zsh 用 `command -v`）解析啟動命令的第一個字，回傳可能的程式名（路徑的檔名、
-/// symlink 實際檔名、別名指向的程式），供前端判斷是哪一種 agent。名稱不合法或查不到回空陣列。
+/// 登入 shell 的 PATH（tmux 頁籤不經使用者的 shell，要靠 new-session -e 帶進去）；查不到回 None，成功的結果快取到 App 結束。
 #[tauri::command]
-async fn resolve_program(name: String) -> Vec<String> {
-    let valid = !name.is_empty() && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._+-/~".contains(c));
-    if !valid {
-        return vec![];
+async fn login_path() -> Option<String> {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(path) = CACHE.get() {
+        return Some(path.clone());
     }
     let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
-    let lookup = if shell.ends_with("/zsh") { format!("where {name}") } else { format!("command -v {name}") };
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let out = std::process::Command::new(&shell).args(["-lic", &lookup]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+        let out = std::process::Command::new(&shell).args(["-lic", "printf '\\n%s\\n' \"$PATH\""]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
         let _ = tx.send(out);
     });
-    let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(5)) else { return vec![] };
-    let base = |p: &str| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned());
-    let mut names: Vec<String> = vec![];
-    let mut push = |n: Option<String>| if let Some(n) = n { if !names.contains(&n) { names.push(n) } };
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let line = line.trim();
-        let target = match line.split_once(": aliased to ") {
-            Some((_, rest)) => rest.split_whitespace().next().unwrap_or(""),
-            None => line,
-        };
-        if target.starts_with('/') && !target.contains(char::is_whitespace) {
-            push(base(target));
-            push(std::fs::canonicalize(target).ok().and_then(|p| base(&p.to_string_lossy())));
-        } else if line.contains(": aliased to ") && !target.is_empty() {
-            push(base(target));
-        }
-    }
-    names
+    let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(5)) else { return None };
+    // rc 檔可能印出其他文字：只取最後一個像 PATH 的行。
+    let path = String::from_utf8_lossy(&out.stdout).lines().map(str::trim).rev().find(|l| l.starts_with('/') && !l.contains(char::is_whitespace)).map(String::from)?;
+    Some(CACHE.get_or_init(|| path).clone())
 }
 #[tauri::command]
 fn tmux_available() -> bool {
@@ -756,6 +739,8 @@ fn main() {
             preview::preview_open_url,
             preview::open_preview_window,
             preview::preview_dock,
+            preview::open_files_window,
+            preview::close_files_window,
             preview::preview_reveal,
             locales::ui_language,
             locales::set_ui_language,
@@ -764,13 +749,6 @@ fn main() {
             locales::locale_delete,
             locales::locale_read_file,
             locales::locale_write_file,
-            projects::project_open,
-            projects::project_snapshot,
-            projects::project_commit,
-            projects::project_close,
-            projects::project_index_list,
-            projects::project_index_touch,
-            projects::project_index_remove,
             snippets::snippets,
             snippets::save_snippets,
             native,
@@ -786,8 +764,8 @@ fn main() {
             tmux_set_status,
             tmux_available,
             tmux_path,
-            resolve_program,
             program_path,
+            login_path,
             control_env,
             control::control_reply,
             control::control_mode,

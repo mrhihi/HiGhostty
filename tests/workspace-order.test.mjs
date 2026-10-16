@@ -64,3 +64,16 @@ test("grouped tabs follow favorite order regardless of which tabs are open", () 
   assert.deepEqual(ids([{ id: "t1", favoriteId: "f1" }, { id: "t3", favoriteId: "f3" }, { id: "t2", favoriteId: "f2" }]), ["t1", "t2", "t3"]);
   assert.deepEqual(ids([{ id: "x" }, { id: "t2", favoriteId: "f2" }, { id: "y", favoriteId: "gone" }, { id: "t2b", favoriteId: "f2" }]), ["x", "y", "t2", "t2b"]);
 });
+
+test("orderTabsByFavorites: ungrouped favorite tabs follow favorite order, plain tabs stay first", () => {
+  const tabs = [{ id: "t1", favoriteId: "b" }, { id: "t2" }, { id: "t3", favoriteId: "a" }];
+  const favorites = [{ id: "a" }, { id: "b" }];
+  assert.deepEqual(orderTabsByFavorites(tabs, favorites, []).map((tab) => tab.id), ["t2", "t3", "t1"]);
+});
+
+import { insertPosition } from "../src/row-drag.ts";
+test("insertPosition counts the rows above the dragged row", () => {
+  assert.equal(insertPosition([10, 40, 70], 5), 0);
+  assert.equal(insertPosition([10, 40, 70], 50), 2);
+  assert.equal(insertPosition([10, 40, 70], 90), 3);
+});

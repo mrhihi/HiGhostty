@@ -175,3 +175,17 @@ test("restoreFiles drops malformed fields and old open/full-only data", async ()
   assert.deepEqual(restoreFiles({ open: true, full: false, path: "/a", expanded: ["/a/x", "/other", 5] }).expanded, ["/a/x"]);
   assert.equal(restoreFiles({ open: true, path: "rel" }).path, undefined);
 });
+
+test("a popped-out panel is hidden in the tab, saved, and cleared when closed or docked", async () => {
+  const { setDetached, shownInTab, saveFiles, restoreFiles, toggleOpen, initialFiles } = await import("../src/files.ts");
+  const open = { ...initialFiles(), open: true, path: "/a" };
+  const out = setDetached(open, true);
+  assert.equal(shownInTab(out), false);
+  assert.equal(shownInTab(open), true);
+  assert.equal(saveFiles(out).detached, true);
+  assert.equal(restoreFiles(saveFiles(out)).detached, true);
+  assert.equal("detached" in setDetached(out, false), false);
+  assert.equal(shownInTab(setDetached(out, false)), true);
+  assert.equal(toggleOpen(out).open, false);
+  assert.equal("detached" in toggleOpen(out), false);
+});

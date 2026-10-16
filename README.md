@@ -106,7 +106,3 @@ CARGO_TARGET_DIR=/private/tmp/highostty-target cargo test --manifest-path src-ta
 ```
 
 分割模型測試涵蓋拆分、移除、幾何配置、方向切換與尺寸限制；Rust 測試涵蓋家目錄與相對路徑展開。互動驗收清單在 `docs/verification.md`，完成與未完成的項目分開記錄。
-
-## 專案區
-
-多 agent 協作：coordinator 討論、計畫、任務交付與驗收。使用說明與設計取捨見 `docs/projects.md`，規格見 `docs/project-implementation.md`，實機驗收總表見 `docs/project-verification.md`。

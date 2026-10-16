@@ -58,5 +58,7 @@
   "files.menu.reveal": "在 Finder 中顯示",
   "files.menu.trash": "丟到垃圾桶",
   "files.menu.openInFinder": "在 Finder 中打開",
-  "files.menu.refresh": "重新整理"
+  "files.menu.refresh": "重新整理",
+  "files.popOut": "彈出成獨立視窗",
+  "files.dock": "放回頁籤"
 }

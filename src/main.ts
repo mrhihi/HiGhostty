@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { popupMenu as showMenu } from "./context-menu";
 import { t } from "./i18n";
@@ -33,29 +33,22 @@ import {
 import { initFilesPanel } from "./files-panel";
 import { initPreviewPanel } from "./preview-panel";
 import { openPreview, previewKind, splitBox, togglePreviewSide, type PreviewSide, type PreviewState } from "./preview";
-import { restoreFiles, sameSaved, saveFiles, type FilesState, type SavedFiles } from "./files";
+import { restoreFiles, sameSaved, saveFiles, setDetached, toggleOpen, type FilesState, type SavedFiles } from "./files";
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
+import { enableRowDrag } from "./row-drag";
+import { icons } from "./icons";
+import { AI_TOOLS, composeLaunch, joinCommand, parseLaunch, splitCommand, type Launch } from "./launch";
 import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDetail, togglePanel, type Detail, type DrawerState, type Panel } from "./drawer";
 import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, menuAnswerable, menuKeys, promptIdentity, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
 import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./prompt-rules";
 import builtinRules from "./prompt-rules.json?raw";
-import { newSessionName, restorable, tmuxCommand, validSession, withProgramPath } from "./tmux";
+import { newSessionName, restorable, tmuxCommand, validSession, withProgramDir, withProgramPath } from "./tmux";
 import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, previewSide, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
-import { runProjectControl } from "./project-ctl";
-import { agentKindOf, buildAgentCommand, INSTANCE_GENERATION, instanceKey, memberCandidates, parseAgentCommand, PROJECT_AGENT_KINDS, surfaceForInstance, type ProjectAgentKind } from "./project-control";
-import { initProjectPanel } from "./project-panel";
-import { allLoaded, dispatch as projectDispatch, loadKnownProjects, memberOfInstance, onProjectChanged, openProject, startProjectEvents } from "./project-store";
-import { validModel, type Member } from "./project-types";
-import { createDelivery } from "./project-delivery";
-import { launchSpecFromCommand } from "./project-launch";
-import { actionItems, bannerOf, emptyMarks, parseSeen, parseSnoozed, pruneMarks, SNOOZE_MS, unseen, type ActionItem } from "./project-attention";
-import { ownedTerminals } from "./project-cards";
-import { cardSignature, renderProjectCard, type ProjectCardActions, type ProjectItem } from "./project-attention-cards";
 import "./style.css";
 
 type MenuEntry = { text: string; action: () => unknown } | { item: "Separator" };
-type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; coordinator?: boolean; coordinatorRoot?: string; tmuxSessions?: (string | undefined)[]; favoriteId?: string; parent?: number; files?: SavedFiles };
+type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSessions?: (string | undefined)[]; favoriteId?: string; parent?: number; files?: SavedFiles };
 // Groups organize favorites; an open tab shows the group of the favorite it came from.
 type WorkspaceFavorite = TabFavoriteItem<SavedTab>;
 type FavoritesDocument = { revision: number; items: StoredFavorite<SavedTab>[] };
@@ -76,8 +69,6 @@ type Tab = {
   commandInShell?: boolean;
   tmux?: boolean;
   tmuxHideStatus?: boolean;
-  // Joins a project as coordinator: tmux stays on and the launch command is an agent chosen from a list.
-  coordinator?: boolean;
   favoriteId?: string;
   parentId?: string;
   files?: FilesState;
@@ -117,30 +108,6 @@ type NativeEvent = {
   shift?: boolean;
 };
 const win = getCurrentWindow();
-const icons = {
-  folder:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"/></svg>',
-  folderOpen:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V6h6l2 2h10v3H7L3 19h16l3-8H7z"/></svg>',
-  chevron:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>',
-  plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
-  folderPlus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"/><path d="M12 11v5M9.5 13.5h5"/></svg>',
-  tab: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 10 3 2-3 2M12 15h4"/></svg>',
-  eye: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
-  up: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
-  go: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
-  pencil: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>',
-  more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>',
-  close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
-  back: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10 3-5 5 5 5"/></svg>',
-  file: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/></svg>',
-  snippet: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 8 4 4-4 4M12 17h7"/><rect x="2" y="3" width="20" height="18" rx="2"/></svg>',
-  workspace: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
-  star: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z"/></svg>',
-  bell: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 6 2 7.5 2 7.5H4S6 15 6 9z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
-  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 3.1-.2-.1a1.7 1.7 0 0 0-1.8.1l-.2.1h-3.6l-.1-.2a1.7 1.7 0 0 0-1.5-1l-.3.1-3.1-1.8.1-.2a1.7 1.7 0 0 0-.1-1.8l-.1-.2v-3.6l.2-.1a1.7 1.7 0 0 0 1-1.5l-.1-.3 1.8-3.1.2.1a1.7 1.7 0 0 0 1.8-.1l.2-.1h3.6l.1.2a1.7 1.7 0 0 0 1.5 1l.3-.1 3.1 1.8-.1.2a1.7 1.7 0 0 0 .1 1.8l.1.2z"/></svg>',
-};
 const root = document.querySelector<HTMLDivElement>("#app")!;
 root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><span id="current">…</span><button id="bell-btn" class="icon-btn header-btn" title="Needs attention" data-i18n-title="app.attentionTitle" aria-label="Needs attention" data-i18n-aria-label="app.attentionTitle">${icons.bell}<span id="bell-count" hidden></span></button><button id="files-toggle" class="icon-btn header-btn" title="Files panel (⌘O / ⌘0)" data-i18n-title="app.filesToggle" aria-label="Files panel (⌘O / ⌘0)" data-i18n-aria-label="app.filesToggle" aria-pressed="false">${icons.folder}</button></header>
 <main><nav id="rail" aria-label="Sidebar" data-i18n-aria-label="app.sidebar">
@@ -154,8 +121,8 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 <section id="panel-favorites" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.favorites">Favorites</strong><button id="favorite-add" class="icon-btn" title="New favorite" data-i18n-title="app.addFavorite" aria-label="New favorite" data-i18n-aria-label="app.addFavorite">${icons.plus}</button><button id="favorite-group-add" class="icon-btn" title="New group" data-i18n-title="app.addGroup" aria-label="New group" data-i18n-aria-label="app.addGroup">${icons.folderPlus}</button></div><div id="favorite-add-options" class="inline-actions" hidden><button id="favorite-current-tab" class="ghost-btn wide-button"></button><button id="favorite-from-dir" class="ghost-btn wide-button" data-i18n="app.favoriteFromDir">Create favorite from folder…</button></div><div id="favorites"></div></section>
 <section id="panel-snippets" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.snippets">Snippets</strong><button id="snippet-add" class="icon-btn" title="New snippet" data-i18n-title="app.addSnippet" aria-label="New snippet" data-i18n-aria-label="app.addSnippet">${icons.plus}</button></div><div id="snippet-list"></div></section>
 <section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.settings">Settings</strong></div><div class="settings-content"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn" data-i18n="settings.openConfig">Open config file</button><button id="reload-config" class="ghost-btn" data-i18n="settings.reload">Reload</button></div><h4 data-i18n="settings.window">Window</h4><p class="help" data-i18n="settings.windowHelp">Where the main window appears when the app opens. The size is always restored from last time.</p><select id="window-placement"><option value="center" data-i18n="settings.placementCenter">Center on screen</option><option value="remember" data-i18n="settings.placementRemember">Remember last position</option></select><h4 data-i18n="settings.rules">Prompt detection rules</h4><p class="help" data-i18n="settings.rulesHelp">When an agent in a background tab stops to ask you something, the screen is recognized by these rules and you are notified. The rules file can add, replace or disable built-in rules.</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn" data-i18n="settings.openRules">Open rules file</button><button id="reload-rules" class="ghost-btn" data-i18n="settings.reload">Reload</button></div><h4 data-i18n="settings.control">Agent control commands</h4><p class="help" data-i18n="settings.controlHelp">Lets agents inside terminals use highostty ctl to read other tabs, run in the background, and more. Read-only: view only. Full: can also open tabs and send input. Only newly opened tabs get the related environment variables.</p><select id="control-mode"><option value="off" data-i18n="settings.controlOff">Off</option><option value="readonly" data-i18n="settings.controlReadonly">Read-only</option><option value="full" data-i18n="settings.controlFull">Full</option></select><p class="help" data-i18n="settings.skillHelp">The skill teaches an agent how to use these commands. Nothing is written until you press a button: it goes into each agent's skills folder (skills/highostty/SKILL.md under ~/.claude, ~/.codex, ~/.copilot, ~/.gemini) and can be removed at any time. For other agents, copy the content into their global instructions.</p><div id="skill-list"></div><p id="skill-status"></p><div class="button-row"><button id="copy-skill" class="ghost-btn" data-i18n="settings.copySkill">Copy skill content</button></div><h4 data-i18n="settings.diagnostics">Diagnostics</h4><pre id="config-diagnostics"></pre><h4 data-i18n="settings.shortcuts">Shortcuts</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span data-i18n="settings.sc.switchTab">Switch tabs</span><kbd>⌘⇧B</kbd><span data-i18n="settings.sc.sidebar">Toggle sidebar</span><kbd>⌘⇧P</kbd><span data-i18n="settings.sc.snippets">Snippets palette</span><kbd>⌘O / ⌘0</kbd><span data-i18n="settings.sc.files">Files panel</span><kbd>⇧⌘F</kbd><span data-i18n="settings.sc.filesFull">Files panel full screen</span><kbd>⌘T</kbd><span data-i18n="settings.sc.newTab">New tab</span><kbd>⌘⇧T</kbd><span data-i18n="settings.sc.childTab">Another tab in the same folder (child tab)</span><kbd>⌘D / ⌘⇧D</kbd><span data-i18n="settings.sc.split">Split</span></div></div></section>
-</div></section><section id="drawer-detail" aria-label="Details" data-i18n-aria-label="app.detail"><div class="drawer-inner"></div></section>
-<section id="workspace"><div id="terminal-column"><div id="project-banner" role="status" hidden></div><div id="terminals" aria-label="Native Ghostty workspace" data-i18n-aria-label="app.terminalsLabel"></div></div><div id="files-resizer" role="separator" aria-orientation="vertical" aria-label="Resize files panel" data-i18n-aria-label="app.resizeFiles" hidden></div><section id="files" aria-label="Files" data-i18n-aria-label="app.files" hidden></section><div id="empty" hidden><p data-i18n="app.emptyHint">Choose a folder to get started.</p><button id="first" data-i18n="app.chooseFolder">Choose folder…</button></div></section></main>
+</div></section><div id="drawer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" data-i18n-aria-label="app.resizeSidebar" hidden></div><section id="drawer-detail" aria-label="Details" data-i18n-aria-label="app.detail"><div class="drawer-inner"></div></section><div id="detail-resizer" role="separator" aria-orientation="vertical" aria-label="Resize editor" data-i18n-aria-label="app.resizeDetail" hidden></div>
+<section id="workspace"><div id="terminals" aria-label="Native Ghostty workspace" data-i18n-aria-label="app.terminalsLabel"></div><div id="files-resizer" role="separator" aria-orientation="vertical" aria-label="Resize files panel" data-i18n-aria-label="app.resizeFiles" hidden></div><section id="files" aria-label="Files" data-i18n-aria-label="app.files" hidden></section><div id="empty" hidden><p data-i18n="app.emptyHint">Choose a folder to get started.</p><button id="first" data-i18n="app.chooseFolder">Choose folder…</button></div></section></main>
 <footer><span id="app-version" title="HiGhostty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/><path d="M12 8l4 4-4 4-4-4z"/></svg><span id="app-version-text"></span></span><span id="search-status"></span></footer>
 <dialog id="confirm"><h3 data-i18n="app.confirmTitle">Close terminal?</h3><p data-i18n="app.confirmBody">These jobs are still running. Confirming will terminate them.</p><pre id="processes"></pre><div class="actions"><button id="cancel-close" data-i18n="app.cancel">Cancel</button><button id="force-close" class="danger" data-i18n="app.forceClose">Terminate and close</button></div></dialog>
 <dialog id="palette"><h3 id="palette-title" data-i18n="app.paletteTitle">Commands</h3><div id="palette-items"></div><div class="actions"><button id="close-palette" data-i18n="app.close">Close</button></div></dialog>
@@ -163,12 +130,11 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 getVersion().then((v) => { document.getElementById("app-version-text")!.textContent = `v${v}`; }).catch(() => {});
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
-// The project view covers the terminals (like the files panel in full mode); a terminal must not take the keyboard under it.
-let projectPanel: ReturnType<typeof initProjectPanel> | undefined;
-const terminalHidden = () => filesPanel.isFull() || !!projectPanel?.isOpen();
+// The full-screen files panel covers the terminals; a terminal must not take the keyboard under it.
+const terminalHidden = () => filesPanel.isFull();
 const native = <T = Record<string, unknown>>(
   request: Record<string, unknown>,
-) => request.op === "focus" && projectPanel?.isOpen() ? Promise.resolve({} as T) : invoke<T>("native", { request });
+) => invoke<T>("native", { request });
 const filesPanel = initFilesPanel({
   native,
   activeTab: () => active,
@@ -190,8 +156,42 @@ const filesPanel = initFilesPanel({
   layoutChanged: scheduleLayout,
   visibilityChanged: (tab) => rememberFilesState(tab as Tab),
   notify,
+  popOut: () => { if (active) popOutFiles(active).catch(notify); },
+  focusDetached: () => { if (active) openFilesWindow(active, true).catch(notify); },
+  detachedCwd: (cwd) => { if (active) emitTo(filesWindowLabel(active), "files-cwd", { cwd }).catch(() => {}); },
   icons,
 });
+// ---- Files panel in its own window (files-window.ts) ----
+const filesWindowLabel = (tab: Tab) => `preview-files-${tab.id}`;
+function filesWindowSize(): [number, number] | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem("files-window-size") || "null");
+    return saved && Number(saved.width) > 0 && Number(saved.height) > 0 ? [Number(saved.width), Number(saved.height)] : null;
+  } catch { return null; }
+}
+async function openFilesWindow(tab: Tab, focus: boolean) {
+  const files = tab.files;
+  if (!files) return;
+  await invoke("open_files_window", {
+    tab: tab.id, title: tabName(tab), focus, size: filesWindowSize(),
+    init: { tab: tab.id, origin: win.label, cwd: surfaces.get(tab.focused)?.cwd, home: homePath, files: { ...files, open: true, detached: undefined } },
+  });
+}
+async function popOutFiles(tab: Tab) {
+  const files = tab.files;
+  if (!files?.open || files.detached) return;
+  tab.files = setDetached(files, true);
+  filesPanel.invalidate(); scheduleLayout(); rememberFilesState(tab);
+  try { await openFilesWindow(tab, true); }
+  catch (error) { tab.files = files; filesPanel.invalidate(); scheduleLayout(); rememberFilesState(tab); throw error; }
+}
+// The window sent its panel back (or was closed): the tab shows it again, or keeps it closed.
+function dockFiles(tab: Tab, files: FilesState | undefined, close: boolean) {
+  if (!tab.files?.detached) return;
+  const base = { ...(files ?? tab.files), detached: undefined };
+  tab.files = close ? toggleOpen({ ...base, open: true }) : { ...base, open: true, full: false };
+  filesPanel.invalidate(); scheduleLayout(); rememberFilesState(tab);
+}
 const previewPanel = initPreviewPanel({
   activeTab: () => active,
   area: () => $("terminals").getBoundingClientRect(),
@@ -207,122 +207,6 @@ const previewPanel = initPreviewPanel({
   },
   notify,
 });
-// Types a prompt into an agent's terminal when it is ready: checked idle twice, 500 ms apart (a single
-// reading can catch a pause between tool calls). `force` accepts a busy agent but never a question
-// or a screen with no agent: typing into those would answer it or run the text as commands.
-async function sendPromptToAgent(id: string, text: string, beforeInput: () => Promise<void>, options: { force?: boolean } = {}): Promise<"sent" | "busy" | "blocked" | "gone"> {
-  const first = await pickAgent(id);
-  if (!first) return "gone";
-  if (first.state === "blocked") return "blocked";
-  if (!options.force) {
-    if (first.state !== "idle") return "busy";
-    await pause(500);
-    const second = await pickAgent(id);
-    if (!second) return "gone";
-    if (second.state === "blocked") return "blocked";
-    if (second.state !== "idle") return "busy";
-  }
-  await beforeInput();
-  await native({ op: "insert-text", id, text });
-  await native({ op: "key", id, key: "enter" });
-  return "sent";
-}
-// Starts an agent in a background terminal and waits until it can take a prompt; used for a project's coordinator
-// and for per-task work sessions. Returns the surface so the caller can identify it by instance.
-async function startAgentSession(kind: string, cwd: string, tmux: boolean, args: string[]): Promise<Surface> {
-  const made = agentCommand(kind, args);
-  if (!made.ok) throw new Error(made.reply.ok ? "" : made.reply.error.message);
-  const opened = await newSurface(cwd, undefined, undefined, { command: made.line, commandInShell: true, tmux, background: true });
-  let previousText: string | undefined;
-  // An agent that never gets ready (a login or trust prompt, say) must not leave its terminal behind: the caller
-  // only learns about a surface this function returns.
-  try {
-    const ready = await poll(60_000, async () => {
-      const seen = await pickAgent(opened.surface);
-      const done = !!seen && startReady(previousText, seen.screen.text, seen.state);
-      previousText = seen?.screen.text;
-      return done ? seen : undefined;
-    });
-    const surface = surfaces.get(opened.surface);
-    if (!ready || !surface) throw new Error(t("project.agentNotReady"));
-    return surface;
-  } catch (error) {
-    await destroy(opened.surface, true).catch(() => {});
-    throw error;
-  }
-}
-// The model this task asks for, unless the member's own launch arguments already choose one.
-const withModel = (args: string[], model: string | undefined) =>
-  model && validModel(model) && !args.some((a) => a === "--model" || a === "-m" || a.startsWith("--model=")) ? [...args, "--model", model] : args;
-const delivery = createDelivery({
-  notify,
-  surfaces: () => [...surfaces.values()].filter((surface) => !surface.exited),
-  observe: async (ids) => {
-    const screens = await scanScreens(ids);
-    return Object.fromEntries(ids.map((id) => [id, screens[id]?.agent ? agentState(screens[id].text, surfaces.get(id)?.title ?? "", promptRules) : "unknown"]));
-  },
-  sendPrompt: sendPromptToAgent,
-  agentKind: (id) => { const tab = tabFor(id); return tab ? agentKindOf(tab.command, resolveProgram) : undefined; },
-  startWorkSession: (spec, model) => startAgentSession(spec.kind, spec.cwd.path, spec.tmux, withModel(spec.args, model)),
-  closeSurface: (id) => destroy(id, true),
-  ready: () => initialized && !restoring,
-});
-projectPanel = initProjectPanel({
-  notify,
-  surfaces: () => [...surfaces.values()].filter((surface) => !surface.exited),
-  candidates: () => {
-    // Aliases and wrappers count only once looked up; look up what is unknown and redraw when learned.
-    for (const tab of tabs) warmProgram(tab.command).then((learned) => { if (learned) projectPanel?.refresh(); });
-    return memberCandidates(tabs.map((tab) => ({ command: tab.command, tmux: tab.tmux, leaves: leaves(tab.tree) })), surfaces, resolveProgram);
-  },
-  favoriteCandidates: () => {
-    for (const item of favorites) if (item.kind === "tab") warmProgram(item.tab.command).then((learned) => { if (learned) projectPanel?.refresh(); });
-    return favorites.filter((item) => item.kind === "tab" && item.tab.coordinator && agentKindOf(item.tab.command, resolveProgram) && !tabs.some((tab) => tab.favoriteId === item.id) && !favoriteProjectLock(item.id))
-      .map((item) => ({ id: item.id, name: item.name, cwd: item.tab.paths[0] || "" }));
-  },
-  openFavoriteInBackground: async (id) => {
-    const item = favorites.find((value) => value.id === id);
-    if (!item || item.kind !== "tab") throw new Error("favorite not found");
-    const saved = item.tab;
-    const opened = await newSurface(saved.paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, tmux: true, tmuxHideStatus: saved.tmuxHideStatus, coordinator: true, favoriteId: item.id, background: true });
-    recentFavoriteInstances.set(item.id, opened.tab!);
-    return surfaces.get(opened.surface)!;
-  },
-  canOpenMember: (instanceId) => !!favoriteForInstance(instanceId),
-  openMemberTerminal: async (instanceId) => {
-    const item = favoriteForInstance(instanceId);
-    if (!item) return;
-    projectPanel?.close();
-    await openFavorite(item);
-  },
-  isActiveSurface: (id) => !!active && leaves(active.tree).includes(id) && active.focused === id,
-  launchFor: (instanceId) => {
-    const surface = surfaceForInstance(instanceId, surfaces.values());
-    const tab = surface && tabFor(surface.id);
-    return tab && surface ? launchSpecFromCommand(tab.command, surface.cwd, resolveProgram) : { ok: false, reason: "offline" as const };
-  },
-  pickDirectory: () => invoke<string | null>("pick_directory", { path: defaultPath() || homePath || "~" }),
-  startAgent: (kind, cwd, tmux) => startAgentSession(kind, cwd, tmux, []).then((surface) => surface.id),
-  sendPrompt: sendPromptToAgent,
-  delivery,
-  showTerminal: async (id) => {
-    const tab = tabFor(id);
-    projectPanel?.close();
-    if (tab) await activate(tab);
-  },
-  openSettings: () => setPanel("settings"),
-  isMain: () => win.label === "main",
-  ready: () => initialized && !restoring,
-  layoutChanged: () => {
-    if (projectPanel?.isOpen()) invoke("native", { request: { op: "focus-web" } }).catch(() => {});
-    scheduleLayout();
-  },
-});
-// What the user is looking at decides which agents the project must leave alone.
-setInterval(() => {
-  const looking = !projectPanel?.isOpen() && document.hasFocus() && active ? leaves(active.tree).map((id) => surfaces.get(id)).filter((surface): surface is Surface => !!surface) : [];
-  delivery.setViewing(looking);
-}, 1000);
 function showPreview(tab: Tab, path: string, side?: PreviewSide) {
   tab.preview = tab.preview
     ? { ...tab.preview, path, side: side ?? tab.preview.side }
@@ -383,9 +267,6 @@ let focusEditorOnRender = false;
 let renderedDetail: Detail | undefined;
 let homePath = "";
 let collapsedWorkspaceGroups = new Set<string>(),
-  draggingTabId: string | undefined,
-  draggingFavoriteId: string | undefined,
-  groupExpandTimer: ReturnType<typeof setTimeout> | undefined,
   restoring = false;
 let config: NativeConfig | undefined,
   closeAction: (() => Promise<void>) | undefined,
@@ -455,18 +336,6 @@ function tabFolder(tab: Tab) {
   return id ? folders.find((folder) => folder.id === id) : undefined;
 }
 // Screen order: ungrouped tabs first, then tabs grouped by their favorite's group.
-// Terminals a project owns (its coordinator, live work sessions) live under the project, not in the workspace.
-function projectOwned() {
-  const keys = new Set<string>(), favorites = new Set<string>();
-  for (const project of allLoaded()) for (const owned of ownedTerminals(project.state)) {
-    if (owned.instanceId) keys.add(owned.instanceId);
-    if (owned.kind === "coordinator" && owned.favoriteId) favorites.add(owned.favoriteId);
-  }
-  const tab = (item: Tab) => leaves(item.tree).some((id) => { const surface = surfaces.get(id); return !!surface && keys.has(instanceKey(surface)); });
-  return { tab, favorites, signature: [...keys].sort().join("|") + "#" + [...favorites].sort().join("|") };
-}
-// What the sidebar shows and ⌘1～⌘9 / next-previous follow: the same list.
-const visibleTabs = () => { const owned = projectOwned(); return orderedTabs().filter((tab) => !owned.tab(tab)); };
 function orderedTabs(): Tab[] {
   const roots = orderTabsByFavorites(tabs.filter((tab) => rootOf(tab) === tab), favorites, folders.map((folder) => folder.id));
   return orderWithChildren([...roots, ...tabs.filter((tab) => rootOf(tab) !== tab)]);
@@ -477,106 +346,65 @@ function folderFavorites(folderId?: string) {
 function dialogsOpen() {
   return !!document.querySelector("dialog[open]");
 }
-// A terminal that is a project member keeps its identity only if it is an agent started from a list
-// choice inside tmux, so those two settings cannot be edited freely while it is a member.
-// A terminal that runs an agent in tmux can join a project as a member. Its identity is the tmux session, so a
-// favorite that is not open yet can already be a member: it keeps its session name and is online once it opens.
-async function requireAgent(command: string | undefined) {
-  await warmProgram(command);
-  if (!agentKindOf(command, resolveProgram)) throw new Error(t("app.coordinatorNeedsAgent"));
-}
-async function joinProject(root: string, session: string, name: string, purpose: string) {
-  await openProject(root).catch(() => {});
-  const key = instanceKey({ id: "", tmuxSession: session });
-  const known = memberOfInstance(key);
-  if (known) {
-    if (known.root !== root) throw new Error(t("app.alreadyMember", { project: known.projectName }));
-    if (purpose !== known.member.purpose) {
-      const done = await projectDispatch(root, { kind: "user" }, { type: "UpdatePurpose", memberId: known.member.id, purpose, source: "user" });
-      if (!done.ok) throw new Error(done.error.message);
-    }
-  } else {
-    const member: Member = { id: crypto.randomUUID(), role: "worker", name: name || session, purpose, purposeSource: "user", reportMode: "screen" };
-    const done = await projectDispatch(root, { kind: "user" }, { type: "AddMember", member, binding: { instanceId: key, generation: INSTANCE_GENERATION } });
-    if (!done.ok) throw new Error(done.error.message);
-  }
-  projectPanel?.refresh();
-}
-// The favorite whose saved tmux session is this member's identity (lets the project open it).
-function favoriteForInstance(instanceId: string) {
-  return favorites.find((item) => item.kind === "tab" && item.tab.tmuxSessions?.some((session) => !!session && instanceKey({ id: "", tmuxSession: session }) === instanceId));
-}
-function projectLock(tab: Tab) {
-  for (const id of leaves(tab.tree)) {
-    const surface = surfaces.get(id);
-    const hit = surface && memberOfInstance(instanceKey(surface));
-    if (hit) return hit;
-  }
-  return undefined;
-}
-function favoriteProjectLock(favoriteId: string) {
-  for (const tab of tabs) {
-    if (tab.favoriteId !== favoriteId) continue;
-    const hit = projectLock(tab);
-    if (hit) return hit;
-  }
-  for (const session of favorites.find((item) => item.id === favoriteId)?.tab.tmuxSessions ?? []) {
-    const hit = session && memberOfInstance(instanceKey({ id: "", tmuxSession: session }));
-    if (hit) return hit;
-  }
-  return undefined;
-}
-// What `where` says each start program is (see resolve_program); an empty list means it was looked up and unknown.
-const programNames = new Map<string, string[]>();
-const resolveProgram = (program: string) => programNames.get(program);
 function startProgram(command: string | undefined) {
   const words = (command ?? "").trim().split(/\s+/).filter(Boolean);
   while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
   return words[0];
 }
-// Looks the command's program up once; true when something new was learned.
-async function warmProgram(command: string | undefined): Promise<boolean> {
-  const program = startProgram(command);
-  if (!program || programNames.has(program)) return false;
-  programNames.set(program, await invoke<string[]>("resolve_program", { name: program }).catch(() => []));
-  return true;
-}
-// After a lookup finishes the editor is drawn again so an alias shows up as the agent it launches.
-function warmAndRedraw(command: string | undefined, shown: Detail) {
-  warmProgram(command).then((learned) => { if (learned && detail() === shown) renderDetail(); });
-}
-// The agent as a list plus free-text arguments; writes the rebuilt command back into `command`.
-function lockedCommandField(command: HTMLInputElement): HTMLElement | undefined {
-  const parsed = parseAgentCommand(command.value, resolveProgram);
-  if (!parsed) return undefined;
-  const kind = document.createElement("select");
-  for (const option of PROJECT_AGENT_KINDS) kind.append(Object.assign(document.createElement("option"), { value: option, textContent: option }));
-  kind.value = parsed.kind;
-  kind.setAttribute("aria-label", t("project.lockedAgent"));
-  const args = document.createElement("input"); args.className = "mono"; args.value = parsed.args; args.placeholder = t("project.lockedArgs"); args.setAttribute("aria-label", t("project.lockedArgs"));
-  const update = () => { command.value = buildAgentCommand(parsed, kind.value as ProjectAgentKind, args.value); command.dispatchEvent(new Event("input")); };
-  kind.onchange = update; args.oninput = update;
-  const row = document.createElement("div"); row.className = "inline-actions"; row.append(kind, args);
-  return row;
-}
-// Launch command field that follows the coordinator checkbox: free text normally, an agent list when checked
-// (a command that is not an agent becomes `claude`). Call `sync` after the checkbox or a lookup changes.
-function coordinatorCommandField(command: HTMLInputElement, checkbox: { checked: boolean }, forced: () => boolean) {
-  const slot = document.createElement("div");
-  const sync = () => {
-    const locked = checkbox.checked || forced();
-    if (locked && !parseAgentCommand(command.value, resolveProgram)) { command.value = "claude"; command.dispatchEvent(new Event("input")); }
-    slot.replaceChildren((locked && lockedCommandField(command)) || command);
-  };
-  sync();
-  return { slot, sync };
-}
 function detail(): Detail | undefined { return drawerState.detailStack.at(-1); }
+type WidthSpec = { key: string; css: string; min: number; max: number; def: number; value: number };
+const loadWidth = (spec: WidthSpec) => { try { const saved = Number(localStorage.getItem(spec.key)); if (saved) spec.value = Math.min(spec.max, Math.max(spec.min, Math.round(saved))); } catch {} return spec; };
+const drawerSpec = loadWidth({ key: "drawer-width", css: "--drawer-width", min: 220, max: 520, def: 272, value: 272 });
+// The second drawer holds the editors, so it is wider and its width is remembered separately.
+const detailSpec = loadWidth({ key: "detail-width", css: "--detail-width", min: 300, max: 760, def: 380, value: 380 });
+const clampWidth = (spec: WidthSpec, value: number) => Math.min(spec.max, Math.max(spec.min, Math.round(value)));
+const applyWidth = (spec: WidthSpec) => document.documentElement.style.setProperty(spec.css, `${spec.value}px`);
+function rememberDrawerOpen() { try { localStorage.setItem("drawer-open", String(!!drawerState.panel)); } catch {} }
+function wireWidthResizer(handle: HTMLElement, drawer: HTMLElement, spec: WidthSpec) {
+  handle.onpointerdown = (event) => {
+    event.preventDefault();
+    const startX = event.clientX, startWidth = spec.value;
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add("dragging");
+    drawer.classList.add("resizing");
+    handle.onpointermove = (move) => { spec.value = clampWidth(spec, startWidth + move.clientX - startX); drawer.style.width = `${spec.value}px`; applyWidth(spec); };
+    const stop = () => {
+      handle.onpointermove = handle.onpointerup = handle.onpointercancel = null;
+      handle.classList.remove("dragging"); drawer.classList.remove("resizing");
+      try { localStorage.setItem(spec.key, String(spec.value)); } catch {}
+      scheduleLayout();
+    };
+    handle.onpointerup = handle.onpointercancel = stop;
+  };
+  handle.ondblclick = () => { spec.value = spec.def; try { localStorage.setItem(spec.key, String(spec.value)); } catch {} renderDrawer(); };
+}
+function wireDrawerResizer() {
+  wireWidthResizer($("drawer-resizer"), $("drawer-primary"), drawerSpec);
+  wireWidthResizer($("detail-resizer"), $("drawer-detail"), detailSpec);
+}
+// An editor with unsaved input; set by editorFooter, cleared whenever the detail is rebuilt.
+let editorDirty: (() => boolean) | undefined;
+function discardChoice(): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value: boolean) => { if (!settled) { settled = true; resolve(value); } };
+    popupMenu([
+      { text: t("app.unsavedDiscard"), action: () => done(true) },
+      { text: t("app.unsavedKeep"), action: () => done(false) },
+    ]).finally(() => setTimeout(() => done(false), 200));
+  });
+}
+// Leaving an editor with unsaved input asks first; otherwise just goes.
+function afterLeavingEditor(go: () => void) {
+  if (!detail()?.kind.startsWith("edit-") || !editorDirty?.()) { go(); return; }
+  discardChoice().then((ok) => { if (ok) go(); }).catch(notify);
+}
 function renderDrawer() {
   const primary = $("drawer-primary"), secondary = $("drawer-detail");
   const panel = drawerState.panel;
-  primary.style.width = panel ? "272px" : "0px";
-  secondary.style.width = detail() ? "256px" : "0px";
+  primary.style.width = panel ? `${drawerSpec.value}px` : "0px";
+  applyWidth(drawerSpec); applyWidth(detailSpec);
+  secondary.style.width = detail() ? `${detailSpec.value}px` : "0px";
   primary.dataset.open = String(!!panel);
   secondary.dataset.open = String(!!detail());
   for (const item of ["workspace", "favorites", "snippets", "settings"] as Panel[]) {
@@ -586,6 +414,8 @@ function renderDrawer() {
   }
   if (window.innerWidth < 760 && detail()) primary.classList.add("compact-hidden");
   else primary.classList.remove("compact-hidden");
+  $("drawer-resizer").hidden = !panel || primary.classList.contains("compact-hidden");
+  $("detail-resizer").hidden = !detail();
   // Only rebuild the second drawer when its content changed, so resizing or
   // reopening panels never wipes an editor's unsaved input.
   if (renderedDetail !== detail()) renderDetail();
@@ -617,11 +447,19 @@ function syncSelection() {
   for (const row of document.querySelectorAll<HTMLElement>(".favorite-row"))
     row.classList.toggle("selected", stack.some((item) => item.kind === "edit-favorite" && item.favoriteId === row.dataset.favoriteId));
 }
-function setPanel(panel: Panel) { drawerState = openPanel(drawerState, panel); localStorage.setItem("drawer-panel", panel); renderDrawer(); }
-function toggleDrawerPanel(panel: Panel) { drawerState = togglePanel(drawerState, panel); if (drawerState.panel) localStorage.setItem("drawer-panel", drawerState.panel); renderDrawer(); if (!drawerState.panel && active) native({ op: "focus", id: active.focused }).catch(notify); }
-function closeDrawers() { drawerState = closeAll(drawerState); renderDrawer(); if (active) native({ op: "focus", id: active.focused }).catch(notify); }
-function showDetail(value: Detail, replace = false) { drawerState = replace ? replaceDetail(drawerState, value) : pushDetail(drawerState, value); focusEditorOnRender = value.kind.startsWith("edit-"); renderDrawer(); }
-function showRootDetail(value: Detail) { drawerState = { ...drawerState, detailStack: [value] }; focusEditorOnRender = value.kind.startsWith("edit-"); renderDrawer(); }
+function setPanel(panel: Panel) { drawerState = openPanel(drawerState, panel); localStorage.setItem("drawer-panel", panel); rememberDrawerOpen(); renderDrawer(); }
+function toggleDrawerPanel(panel: Panel) { drawerState = togglePanel(drawerState, panel); if (drawerState.panel) localStorage.setItem("drawer-panel", drawerState.panel); rememberDrawerOpen(); renderDrawer(); if (!drawerState.panel && active) native({ op: "focus", id: active.focused }).catch(notify); }
+function closeDrawers() { drawerState = closeAll(drawerState); rememberDrawerOpen(); renderDrawer(); if (active) native({ op: "focus", id: active.focused }).catch(notify); }
+// An editor opened from another editor's page (new group from a favorite) keeps it underneath
+// with `nested`; otherwise opening a different editor replaces the current one.
+function showDetail(value: Detail, replace = false, nested = false) {
+  afterLeavingEditor(() => {
+    const swap = replace || (!nested && value.kind.startsWith("edit-") && !!detail()?.kind.startsWith("edit-"));
+    drawerState = swap ? replaceDetail(drawerState, value) : pushDetail(drawerState, value);
+    focusEditorOnRender = value.kind.startsWith("edit-"); renderDrawer();
+  });
+}
+function showRootDetail(value: Detail) { afterLeavingEditor(() => { drawerState = { ...drawerState, detailStack: [value] }; focusEditorOnRender = value.kind.startsWith("edit-"); renderDrawer(); }); }
 function backDetail() {
   drawerState = popDetail(drawerState); renderDrawer();
   if (active) native({ op: "focus", id: active.focused }).catch(notify);
@@ -633,6 +471,7 @@ function renderDetail() {
   const shouldFocusEditor = focusEditorOnRender;
   focusEditorOnRender = false;
   host.replaceChildren();
+  editorDirty = undefined;
   host.ondragover = host.ondragleave = host.ondrop = null;
   host.classList.remove("drop-target-list");
   if (!current) return;
@@ -655,7 +494,6 @@ function renderDetail() {
     const edit = button("", () => editFolder(folder), t("app.editGroup")); edit.className = "icon-btn"; edit.innerHTML = icons.pencil;
     heading.append(dot, title, count, edit);
     host.append(heading);
-    makeFavoriteDropZone(host, folder.id);
     if (items.length) { const openAll = button(t("app.openAll"), () => openFolder(folder).then(closeAfterOpen), t("app.openAllTitle")); openAll.className = "primary-btn wide-button group-open-all"; host.append(openAll); }
     for (const item of items) appendFavoriteRow(host, item);
     if (!items.length) host.append(help(t("app.groupEmpty")));
@@ -675,38 +513,13 @@ function renderDetail() {
     host.append(labeled(t("app.name"), title), help(t("app.nameHelp")));
     host.append(formCaption(t("app.cap.launch")));
     const command = document.createElement("input"); command.id = "tab-command-value"; command.className = "mono"; command.value = tab.command || ""; command.placeholder = t("app.shellPlaceholder"); command.setAttribute("aria-label", t("app.launchCommand"));
-    const lock = projectLock(tab);
-    warmAndRedraw(command.value, current);
-    const coordinatorBox = { checked: !!tab.coordinator || !!lock, disabled: !!lock };
-    const commandField = coordinatorCommandField(command, coordinatorBox, () => !!lock);
-    host.append(labeled(t("app.launchCommand"), commandField.slot), help(lock ? t("project.lockedHelp", { project: lock.projectName }) : t("app.tabCommandHelp")));
-    // Join a project as a member: pick it, say what this terminal handles, press the button. There is no leaving from here.
-    const coordinatorSelect = document.createElement("select"); coordinatorSelect.setAttribute("aria-label", t("app.coordinator"));
-    coordinatorSelect.append(Object.assign(document.createElement("option"), { value: "", textContent: "" }));
-    for (const project of allLoaded()) if (project.state.config) coordinatorSelect.append(Object.assign(document.createElement("option"), { value: project.root, textContent: project.state.config.name }));
-    coordinatorSelect.value = lock?.root ?? "";
-    coordinatorSelect.disabled = !!lock;
-    const joinName = document.createElement("input"); joinName.value = lock?.member.name ?? (tab.title || name(cwd)); joinName.disabled = !!lock; joinName.setAttribute("aria-label", t("project.memberName"));
-    const joinPurpose = document.createElement("input"); joinPurpose.value = lock?.member.purpose ?? ""; joinPurpose.placeholder = t("project.purposePlaceholder"); joinPurpose.setAttribute("aria-label", t("project.purposePlaceholder"));
-    const joinButton = button(t(lock ? "app.updateMember" : "app.joinProject"), async () => {
-      await requireAgent(command.value);
-      const session = surfaces.get(leaves(tab.tree)[0])?.tmuxSession;
-      if (!session) throw new Error(t("app.coordinatorNeedsAgent"));
-      await joinProject(lock?.root ?? coordinatorSelect.value, session, joinName.value.trim(), joinPurpose.value.trim());
-      tab.coordinator = true; tab.tmux = true;
-      renderTabs();
-      if (detail() === current) renderDetail();
-    });
-    joinButton.className = "ghost-btn";
-    const joinFields = document.createElement("div"); joinFields.hidden = coordinatorSelect.value === "";
-    joinFields.append(labeled(t("project.memberName"), joinName), labeled(t("project.purposePlaceholder"), joinPurpose), joinButton);
-    coordinatorSelect.addEventListener("change", () => { joinFields.hidden = coordinatorSelect.value === ""; });
-    host.append(labeled(t("app.coordinator"), coordinatorSelect), help(t("app.coordinatorHelp")), joinFields);
+    const commandField = labeled(t("app.launchCommand"), command);
+    host.append(launchPicker(command, commandField), commandField, help(t("app.tabCommandHelp")));
     const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = !!tab.commandInShell; commandInShell.disabled = !command.value.trim();
     const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode(t("app.loadShell")));
     host.append(commandInShellLabel, help(t("app.loadShellHelp")));
     host.append(formCaption(t("app.cap.background")));
-    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!tab.tmux || !!lock || coordinatorBox.checked; tmuxBox.disabled = !!lock || coordinatorBox.checked;
+    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!tab.tmux;
     const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode(t("app.useTmux")));
     host.append(tmuxLabel, help(t("app.tmuxHelpTab")));
     const tmuxStatus = document.createElement("input"); tmuxStatus.type = "checkbox"; tmuxStatus.checked = !!tab.tmuxHideStatus; tmuxStatus.disabled = !tmuxBox.checked;
@@ -714,16 +527,16 @@ function renderDetail() {
     host.append(tmuxStatusLabel, help(t("app.hideTmuxStatusHelpTab")));
     host.append(formCaption(t("app.cap.content")));
     for (const [index, id] of leaves(tab.tree).entries()) host.append(summaryItem(t(index === 0 ? "app.splitPrimary" : "app.splitLabel", { index: index + 1 }), surfaces.get(id)?.cwd || ""));
-    const apply = () => { tab.title = title.value.trim() || undefined; tab.command = command.value.trim() || undefined; tab.commandInShell = tab.command ? commandInShell.checked : undefined; tab.coordinator = coordinatorBox.checked && !lock || undefined; tab.tmux = tmuxBox.checked || undefined; tab.tmuxHideStatus = tab.tmux && tmuxStatus.checked || undefined; for (const id of leaves(tab.tree)) { const session = surfaces.get(id)?.tmuxSession; if (session && original.tmuxHideStatus !== !!tab.tmuxHideStatus) invoke("tmux_set_status", { name: session, visible: !tab.tmuxHideStatus }).catch(() => {}); } original.tmuxHideStatus = !!tab.tmuxHideStatus; };
+    const apply = () => { tab.title = title.value.trim() || undefined; tab.command = command.value.trim() || undefined; tab.commandInShell = tab.command ? commandInShell.checked : undefined; tab.tmux = tmuxBox.checked || undefined; tab.tmuxHideStatus = tab.tmux && tmuxStatus.checked || undefined; for (const id of leaves(tab.tree)) { const session = surfaces.get(id)?.tmuxSession; if (session && original.tmuxHideStatus !== !!tab.tmuxHideStatus) invoke("tmux_set_status", { name: session, visible: !tab.tmuxHideStatus }).catch(() => {}); } original.tmuxHideStatus = !!tab.tmuxHideStatus; };
     host.append(formCaption(t("app.favorites")));
     host.append(help(t("app.favoriteTabHelp")));
     const saveFav = button(t("app.favoriteThisTab"), () => { apply(); newFavorite({ tabId: tab.id }); }); saveFav.className = "primary-btn wide-button"; host.append(saveFav);
     host.append(formCaption(t("app.cap.danger")));
     const close = button(t("app.closeTab"), () => requestClose(leaves(tab.tree), (force) => closeTab(tab, force))); close.className = "danger-btn wide-button"; host.append(close);
-    const original = { title: tab.title || "", command: tab.command || "", commandInShell: !!tab.commandInShell, tmux: !!tab.tmux, tmuxHideStatus: !!tab.tmuxHideStatus, coordinator: !!tab.coordinator };
+    const original = { title: tab.title || "", command: tab.command || "", commandInShell: !!tab.commandInShell, tmux: !!tab.tmux, tmuxHideStatus: !!tab.tmuxHideStatus };
     const save = button(t("app.save"), () => { apply(); renderTabs(); backDetail(); });
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = title.value === original.title && command.value === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && tmuxStatus.checked === original.tmuxHideStatus && coordinatorBox.checked === original.coordinator; };
+    const updateDirty = () => { save.disabled = title.value === original.title && command.value === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && tmuxStatus.checked === original.tmuxHideStatus; };
     title.oninput = () => { objectName.textContent = title.value.trim() || name(cwd); updateDirty(); };
     command.oninput = () => { commandInShell.disabled = !command.value.trim(); if (commandInShell.disabled) commandInShell.checked = false; updateDirty(); };
     commandInShell.onchange = updateDirty;
@@ -783,29 +596,13 @@ function renderDetail() {
     host.append(labeled(t("app.group"), groupSelect));
     const savedCommand = item?.tab.command ?? sourceTab?.command ?? "";
     const command = document.createElement("input"); command.id = "favorite-command"; command.className = "mono"; command.value = draft.command ?? savedCommand; command.placeholder = t("app.shellPlaceholder"); command.setAttribute("aria-label", t("app.launchCommand"));
-    const lock = item ? favoriteProjectLock(item.id) : undefined;
-    warmAndRedraw(command.value, current);
-    // The project this favorite joins as a member (empty: none), with a name and what it handles. Joining happens on save,
-    // even if the terminal is not open: the favorite keeps a tmux session name that identifies the member.
-    const coordinatorSelect = document.createElement("select"); coordinatorSelect.setAttribute("aria-label", t("app.coordinator"));
-    coordinatorSelect.append(Object.assign(document.createElement("option"), { value: "", textContent: "" }));
-    for (const project of allLoaded()) if (project.state.config) coordinatorSelect.append(Object.assign(document.createElement("option"), { value: project.root, textContent: project.state.config.name }));
-    coordinatorSelect.value = lock?.root ?? (draft.coordinatorRoot ?? item?.tab.coordinatorRoot ?? "");
-    coordinatorSelect.disabled = !!lock;
-    const joinName = document.createElement("input"); joinName.value = lock?.member.name ?? draft.memberName ?? alias.value; joinName.disabled = !!lock; joinName.setAttribute("aria-label", t("project.memberName"));
-    const joinPurpose = document.createElement("input"); joinPurpose.value = draft.memberPurpose ?? lock?.member.purpose ?? ""; joinPurpose.placeholder = t("project.purposePlaceholder"); joinPurpose.setAttribute("aria-label", t("project.purposePlaceholder"));
-    const joinFields = document.createElement("div"); joinFields.hidden = coordinatorSelect.value === "";
-    joinFields.append(labeled(t("project.memberName"), joinName), labeled(t("project.purposePlaceholder"), joinPurpose));
-    coordinatorSelect.addEventListener("change", () => { joinFields.hidden = coordinatorSelect.value === ""; });
-    const coordinatorBox = { get checked() { return coordinatorSelect.value !== "" || !!lock; }, disabled: !!lock, addEventListener: (type: string, fn: () => void) => coordinatorSelect.addEventListener(type, fn) };
-    const commandField = coordinatorCommandField(command, coordinatorBox, () => !!lock);
-    host.append(formCaption(t("app.cap.launch")), labeled(t("app.launchCommand"), commandField.slot), help(lock ? t("project.lockedHelp", { project: lock.projectName }) : t("app.favoriteCommandHelp")));
-    host.append(labeled(t("app.coordinator"), coordinatorSelect), help(t("app.coordinatorFavoriteHelp")), joinFields);
+    const commandField = labeled(t("app.launchCommand"), command);
+    host.append(formCaption(t("app.cap.launch")), launchPicker(command, commandField), commandField, help(t("app.favoriteCommandHelp")));
     const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = draft.commandInShell ?? (item?.tab.commandInShell ?? sourceTab?.commandInShell ?? false); commandInShell.disabled = !command.value.trim();
     const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode(t("app.loadShell")));
     host.append(commandInShellLabel, help(t("app.loadShellHelpNext")));
     host.append(formCaption(t("app.cap.background")));
-    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!lock || coordinatorBox.checked || (draft.tmux ?? !!(item?.tab.tmux ?? sourceTab?.tmux)); tmuxBox.disabled = !!lock || coordinatorBox.checked;
+    const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = draft.tmux ?? !!(item?.tab.tmux ?? sourceTab?.tmux);
     const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode(t("app.useTmux")));
     host.append(tmuxLabel, help(t("app.tmuxHelpFavorite")));
     const tmuxStatus = document.createElement("input"); tmuxStatus.type = "checkbox"; tmuxStatus.checked = draft.tmuxHideStatus ?? !!(item?.tab.tmuxHideStatus ?? sourceTab?.tmuxHideStatus); tmuxStatus.disabled = !tmuxBox.checked;
@@ -848,32 +645,21 @@ function renderDetail() {
       host.append(formCaption(t("app.cap.danger")), help(t("app.removeFavoriteHelp")));
       const remove = button(t("app.removeFavorite"), () => { if (confirmTwice(remove)) return removeFavorite(item); }); remove.className = "danger-btn wide-button"; host.append(remove);
     }
-    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell, tmux: !!item?.tab.tmux, tmuxHideStatus: !!item?.tab.tmuxHideStatus, coordinator: !!item?.tab.coordinator };
-    const save = button(item ? t("app.save") : t("app.favorites"), () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, { command: command.value.trim(), commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxBox.checked && tmuxStatus.checked, coordinator: coordinatorSelect.value !== "" && !lock, coordinatorRoot: lock ? "" : coordinatorSelect.value, join: coordinatorSelect.value ? { root: lock?.root ?? coordinatorSelect.value, name: joinName.value.trim(), purpose: joinPurpose.value.trim() } : undefined }));
+    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell, tmux: !!item?.tab.tmux, tmuxHideStatus: !!item?.tab.tmuxHideStatus };
+    const save = button(item ? t("app.save") : t("app.favorites"), () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, { command: command.value.trim(), commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxBox.checked && tmuxStatus.checked }));
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && (tmuxBox.checked && tmuxStatus.checked) === original.tmuxHideStatus && coordinatorSelect.value === (item?.tab.coordinatorRoot ?? "") && (!coordinatorSelect.value || (joinPurpose.value.trim() === (lock?.member.purpose ?? "") && (!!lock || joinName.value.trim() === original.name)))); };
+    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && (tmuxBox.checked && tmuxStatus.checked) === original.tmuxHideStatus ); };
     alias.oninput = () => { objectName.textContent = alias.value.trim() || defaultName; updateDirty(); };
     path?.addEventListener("input", updateDirty);
     command.addEventListener("input", () => { commandInShell.disabled = !command.value.trim(); if (commandInShell.disabled) commandInShell.checked = false; updateSummaryForFavorite(); updateDirty(); });
     commandInShell.addEventListener("change", () => { updateSummaryForFavorite(); updateDirty(); });
     tmuxBox.addEventListener("change", () => { tmuxStatus.disabled = !tmuxBox.checked; updateDirty(); });
-    coordinatorBox.addEventListener("change", () => {
-      warmProgram(command.value).then(() => {
-        commandField.sync();
-        if (coordinatorBox.checked) tmuxBox.checked = true;
-        tmuxBox.disabled = !!lock || coordinatorBox.checked;
-        tmuxStatus.disabled = !tmuxBox.checked;
-        commandInShell.disabled = !command.value.trim();
-        updateSummaryForFavorite();
-        updateDirty();
-      });
-    });
     tmuxStatus.addEventListener("change", updateDirty);
     groupSelect.onchange = () => {
       updateDirty();
       if (groupSelect.value !== "__new__") return;
       // Keep what was typed while the new-group editor is on top.
-      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxStatus.checked, coordinator: coordinatorBox.checked, coordinatorRoot: coordinatorSelect.value, memberName: joinName.value, memberPurpose: joinPurpose.value });
+      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxStatus.checked });
       createFolder();
     };
     enterSaves(save, alias, path, command);
@@ -900,7 +686,87 @@ function renderDetail() {
     renderLocaleEditor(host, current.code, { back: backDetail, notify });
   }
 }
-const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; coordinator?: boolean; coordinatorRoot?: string; memberName?: string; memberPurpose?: string }>();
+// Which AI tools are installed, looked up through the login shell (the app's own PATH is minimal).
+const toolInstalled = new Map<string, boolean>();
+let toolsDetected: Promise<void> | undefined;
+function detectTools() {
+  toolsDetected ??= Promise.all(AI_TOOLS.map(async (tool) => { toolInstalled.set(tool.id, !!(await invoke<string | null>("program_path", { name: tool.program }).catch(() => null))); })).then(() => {});
+  return toolsDetected;
+}
+// Tool / model / extra-arguments picker above the launch command. The command input stays the
+// single source of truth: the picker writes it and fires `input`, so dirty tracking is unchanged.
+function launchPicker(command: HTMLInputElement, commandField: HTMLElement): HTMLElement {
+  const box = document.createElement("div");
+  let launch: Launch | undefined = parseLaunch(command.value);
+  const toolSelect = document.createElement("select"); toolSelect.id = "launch-tool"; toolSelect.setAttribute("aria-label", t("app.launchTool"));
+  const modelSelect = document.createElement("select"); modelSelect.id = "launch-model"; modelSelect.setAttribute("aria-label", t("app.launchModel"));
+  const modelOther = document.createElement("input"); modelOther.className = "mono"; modelOther.placeholder = t("app.launchModelName"); modelOther.setAttribute("aria-label", t("app.launchModelName"));
+  const extra = document.createElement("input"); extra.id = "launch-extra"; extra.className = "mono"; extra.placeholder = t("app.launchExtraPlaceholder"); extra.setAttribute("aria-label", t("app.launchExtra"));
+  const preview = document.createElement("div"); preview.className = "launch-preview mono";
+  const progInput = document.createElement("input"); progInput.id = "launch-program"; progInput.className = "mono"; progInput.placeholder = t("app.shellPlaceholder"); progInput.setAttribute("aria-label", t("app.launchCommand"));
+  let custom = splitCommand(command.value);
+  progInput.value = custom.program;
+  const progField = labeled(t("app.launchCommand"), progInput);
+  const toolField = labeled(t("app.launchTool"), toolSelect), modelField = labeled(t("app.launchModel"), modelSelect), extraField = labeled(t("app.launchExtra"), extra);
+  const option = (select: HTMLSelectElement, value: string, text: string) => { const item = document.createElement("option"); item.value = value; item.textContent = text; select.append(item); };
+  const fillTools = () => {
+    toolSelect.replaceChildren();
+    option(toolSelect, "", t("app.launchCustom"));
+    for (const tool of AI_TOOLS) {
+      const installed = toolInstalled.get(tool.id);
+      if (installed || launch?.tool.id === tool.id) option(toolSelect, tool.id, installed ? tool.label : `${tool.label} ${t("app.launchNotInstalled")}`);
+    }
+    toolSelect.value = launch?.tool.id ?? "";
+  };
+  const fillModels = () => {
+    modelSelect.replaceChildren();
+    modelOther.hidden = true;
+    if (!launch) return;
+    option(modelSelect, "", t("app.launchModelDefault"));
+    for (const model of launch.tool.models) option(modelSelect, model, model);
+    option(modelSelect, "__other__", t("app.launchModelOther"));
+    const custom = !!launch.model && !launch.tool.models.includes(launch.model);
+    modelSelect.value = custom ? "__other__" : launch.model;
+    modelOther.hidden = !custom;
+    modelOther.value = custom ? launch.model : "";
+  };
+  const show = () => {
+    const ai = !!launch;
+    modelField.hidden = preview.hidden = !ai;
+    progField.hidden = ai;
+    if (!ai) modelOther.hidden = true;
+    // The command is edited as program + arguments; the real input only holds the joined text.
+    commandField.hidden = true;
+    extra.value = launch ? launch.extra : custom.args;
+    if (launch) preview.textContent = command.value;
+  };
+  const write = () => {
+    command.value = launch ? composeLaunch(launch.tool, launch.model, launch.extra) : joinCommand(custom.program, custom.args);
+    preview.textContent = command.value;
+    command.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  toolSelect.onchange = () => {
+    const tool = AI_TOOLS.find((item) => item.id === toolSelect.value);
+    const args = launch?.extra ?? custom.args;
+    launch = tool ? { tool, model: "", extra: args } : undefined;
+    if (!tool) { custom = { program: command.value.trim() ? splitCommand(command.value).program : "", args }; progInput.value = custom.program; }
+    fillModels(); show(); write();
+  };
+  modelSelect.onchange = () => {
+    if (!launch) return;
+    if (modelSelect.value === "__other__") { modelOther.hidden = false; modelOther.focus(); launch.model = modelOther.value.trim(); }
+    else { modelOther.hidden = true; launch.model = modelSelect.value; }
+    write();
+  };
+  modelOther.oninput = () => { if (launch) { launch.model = modelOther.value.trim(); write(); } };
+  extra.oninput = () => { if (launch) launch.extra = extra.value; else custom.args = extra.value; write(); };
+  progInput.oninput = () => { custom.program = progInput.value; write(); };
+  fillTools(); fillModels(); show();
+  detectTools().then(fillTools).catch(() => {});
+  box.append(toolField, progField, modelField, modelOther, extraField, preview);
+  return box;
+}
+const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean }>();
 const swatchColors = ["#77dfc0", "#7cc4ff", "#b59cff", "#ff9ecf", "#ff8f7a", "#f5c46b", "#a6d86e", "#9aa6b8"];
 function editorIntro(host: HTMLElement, heading: HTMLElement, pageTitle: string, objectName: string, subtitle: string) {
   heading.append(Object.assign(document.createElement("strong"), { textContent: pageTitle, className: "page-title" }));
@@ -918,6 +784,10 @@ function editorFooter(host: HTMLElement, save: HTMLButtonElement) {
   const cancel = button(t("app.cancel"), backDetail); cancel.className = "ghost-btn";
   save.className = "primary-btn";
   footer.append(cancel, save); host.append(footer);
+  let touched = false;
+  host.addEventListener("input", () => { touched = true; });
+  host.addEventListener("change", () => { touched = true; });
+  editorDirty = () => touched && !save.disabled;
 }
 function summaryItem(title: string, detailText: string) {
   const item = document.createElement("div"); item.className = "summary-item";
@@ -965,7 +835,6 @@ function applyFavoritesDocument(document: FavoritesDocument) {
       !((item.kind === "group" || item.kind === "edit-group") && item.groupId && !folderIds.has(item.groupId)) &&
       !(item.kind === "edit-favorite" && item.favoriteId && !ids.has(item.favoriteId))),
   };
-  projectPanel?.refresh();
   return result.migrated;
 }
 async function persistFavorites(nextFavorites: WorkspaceFavorite[], nextFolders: FavoriteFolder[] = folders) {
@@ -1001,7 +870,7 @@ function flushFilesState() {
 }
 function savedTab(tab: Tab, sessions = false): SavedTab {
   const ids = leaves(tab.tree);
-  return { tmux: tab.tmux, tmuxHideStatus: tab.tmuxHideStatus, coordinator: tab.coordinator, tmuxSessions: sessions && tab.tmux ? ids.map((id) => surfaces.get(id)?.tmuxSession) : undefined, paths: ids.map((id) => surfaces.get(id)?.cwd || ""), tree: savedTree(tab.tree, ids), focused: Math.max(0, ids.indexOf(tab.focused)), title: tab.favoriteId ? undefined : tab.title, command: tab.command, commandInShell: tab.commandInShell, favoriteId: tab.favoriteId, files: saveFiles(tab.files) };
+  return { tmux: tab.tmux, tmuxHideStatus: tab.tmuxHideStatus, tmuxSessions: sessions && tab.tmux ? ids.map((id) => surfaces.get(id)?.tmuxSession) : undefined, paths: ids.map((id) => surfaces.get(id)?.cwd || ""), tree: savedTree(tab.tree, ids), focused: Math.max(0, ids.indexOf(tab.focused)), title: tab.favoriteId ? undefined : tab.title, command: tab.command, commandInShell: tab.commandInShell, favoriteId: tab.favoriteId, files: saveFiles(tab.files) };
 }
 // ── Attention: bell / notification / agent waiting ──────────────────────────
 let attention: AttentionState = emptyAttention;
@@ -1107,95 +976,14 @@ async function answerPrompt(surfaceId: string, shown: Prompt, index: number) {
   }
   renderAttention();
 }
-let lastOwnedSignature = "";
 // 各卡片「畫面內容」方塊是否展開（預設收合）；重繪會重建 DOM，所以記在這裡。
 const expandedBodies = new Set<string>();
-// Project items (a plan to start, a worker's question, a result to review…) share the bell and the drop with terminal alerts.
-// Seen only quiets the badge; an item leaves when its source resolves in the journal.
-const projectMarks = emptyMarks();
-const SEEN_KEY = "project-attention-seen";
-const loadSeen = () => { try { projectMarks.seen = new Set(parseSeen(localStorage.getItem(SEEN_KEY))); } catch {} };
-const saveSeen = () => { try { localStorage.setItem(SEEN_KEY, JSON.stringify([...projectMarks.seen].slice(-500))); } catch {} };
-loadSeen();
-const SNOOZE_KEY = "project-attention-snoozed";
-const loadSnoozed = () => { try { projectMarks.snoozed = parseSnoozed(localStorage.getItem(SNOOZE_KEY), Date.now()); } catch {} };
-const saveSnoozed = () => { try { localStorage.setItem(SNOOZE_KEY, JSON.stringify(Object.fromEntries(projectMarks.snoozed))); } catch {} };
-loadSnoozed();
-// Another window marked something seen: follow it so the badge agrees everywhere.
-window.addEventListener("storage", (event) => { if (event.key === SEEN_KEY || event.key === SNOOZE_KEY) { loadSeen(); loadSnoozed(); renderAttention(); } });
-const projectDrafts = new Map<string, string>();
-const projectItems = (): ProjectItem[] => allLoaded().flatMap((p) => p.state.config ? actionItems(p.state).map((item) => ({ root: p.root, projectName: p.state.config!.name, state: p.state, item })) : []);
-const projectCardActions: ProjectCardActions = (() => {
-  const run = (root: string, body: Parameters<typeof projectDispatch>[2], after?: () => unknown) => void projectDispatch(root, { kind: "user" }, body)
-    .then((done) => { if (!done.ok) throw new Error(done.error.message); return after?.(); }).catch(notify);
-  const attempt = (item: ActionItem) => item.attemptId ?? "";
-  return {
-    startPlan: (root, item) => {
-      const plan = allLoaded().find((p) => p.root === root)?.state.plans.at(-1);
-      // The plan changed since the card was drawn: do not start one the user has not seen.
-      if (plan && `${plan.id}:${plan.version}` !== item.sourceId) { notify(t("project.drop.planChanged")); renderAttention(); return; }
-      if (plan) run(root, { type: "StartRun", runId: crypto.randomUUID(), planId: plan.id, version: plan.version, taskIds: plan.steps.map(() => crypto.randomUUID()), auto: true, consent: { id: crypto.randomUUID(), source: "start-button" } });
-    },
-    reply: (root, issueId, text) => run(root, { type: "ReplyIssue", issueId, replyId: crypto.randomUUID(), text }, () => delivery.replies(root)),
-    accept: (root, item) => item.taskId && run(root, { type: "AcceptResult", taskId: item.taskId, attemptId: attempt(item) }),
-    rework: (root, item, feedback) => item.taskId && run(root, { type: "RequestRework", taskId: item.taskId, attemptId: attempt(item), feedback }),
-    reconcile: (root, item, decision) => item.taskId && run(root, { type: "ReconcileTask", taskId: item.taskId, attemptId: attempt(item), decision }),
-    goTerminal: (item) => {
-      const project = allLoaded().find((p) => p.state.config?.id === item.projectId);
-      const binding = item.memberId && project?.state.bindings[item.memberId];
-      const surface = binding && surfaceForInstance(binding.instanceId, surfaces.values());
-      if (!surface) return;
-      attentionDrop.close(false);
-      const tab = tabFor(surface.id);
-      if (tab) { tab.focused = surface.id; activate(tab).catch(notify); }
-    },
-    snooze: (item) => { projectMarks.snoozed.set(item.id, Date.now() + SNOOZE_MS); saveSnoozed(); renderAttention(); },
-    markSeen: (item) => { projectMarks.seen.add(item.id); saveSeen(); renderAttention(); },
-    online: (item) => {
-      const project = allLoaded().find((p) => p.state.config?.id === item.projectId);
-      const binding = item.memberId && project?.state.bindings[item.memberId];
-      return !!binding && !!surfaceForInstance(binding.instanceId, surfaces.values());
-    },
-  };
-})();
-onProjectChanged(() => {
-  renderAttention();
-  // A terminal just became (or stopped being) a project's: move it between the workspace and the project list.
-  if (projectOwned().signature !== lastOwnedSignature) renderTabs();
-});
-// One line above the terminals when a project needs the user. It sits outside #terminals (a sibling in the
-// terminal column), so the native views simply get a smaller rectangle; it never opens the drop or takes focus.
-let bannerSig = "";
-function renderProjectBanner(projects: ProjectItem[]) {
-  const banner = $("project-banner");
-  const { first, more } = attentionDrop.isOpen() ? { first: undefined, more: 0 } : bannerOf(projects, projectMarks, Date.now());
-  const sig = first ? `${first.item.id}|${more}|${first.projectName}|${first.item.summary}` : "";
-  if (sig === bannerSig) return;
-  bannerSig = sig;
-  banner.hidden = !first;
-  banner.replaceChildren();
-  if (!first) return;
-  const member = first.state.members.find((m) => m.id === first.item.memberId)?.name ?? "";
-  const text = document.createElement("span");
-  text.className = "banner-text";
-  text.textContent = t(`project.banner.${first.item.kind}`, { project: first.projectName, name: member, title: first.item.summary }) + (more ? ` ${t("project.banner.more", { n: more })}` : "");
-  const handle = button(t("project.banner.handle"), () => attentionDrop.open());
-  handle.className = "ghost-btn";
-  const dismiss = button("×", () => { for (const p of projects) projectMarks.seen.add(p.item.id); saveSeen(); renderAttention(); }, t("app.dismiss"));
-  dismiss.className = "icon-btn";
-  dismiss.setAttribute("aria-label", t("app.dismiss"));
-  banner.append(text, handle, dismiss);
-}
 function renderAttention() {
-  const projects = projectItems();
-  // Seen ids are never pruned here: projects load one by one, so an item missing now may belong to one not loaded yet.
-  // Ids carry uuids, so a stale one is harmless; the list is capped on save.
-  const count = unreadCount(attention) + unseen(projects.map((p) => p.item), projectMarks, Date.now()).length;
+  const count = unreadCount(attention);
   for (const id of ["bell-count", "rail-alert"]) {
     const el = $(id); el.hidden = count === 0; if (id === "bell-count") el.textContent = badgeText(count);
   }
   $("bell-btn").classList.toggle("has-alert", count > 0);
-  renderProjectBanner(projects);
   if (!attentionDrop.isOpen()) { lastAttentionSig = undefined; return; }
   const list = attentionDrop.list;
   const alerts = sorted(attention);
@@ -1214,7 +1002,7 @@ function renderAttention() {
     }
   }
   const metaOf = (alert: (typeof alerts)[number]) => [alert.title, alert.prompt?.low ? t("app.uncertain") : "", alert.count > 1 ? `×${alert.count}` : "", screens.get(alert.surfaceId)?.agent, ago(alert.since)].filter(Boolean).join(" · ");
-  const sig = JSON.stringify([projects.map(cardSignature), alerts.map((alert) => [alert.surfaceId, alert.source, alertLabel(alert.surfaceId), alert.title, alert.count, screens.get(alert.surfaceId)?.agent, bodies.get(alert.surfaceId), asks.get(alert.surfaceId), alert.prompt?.selected, answering.get(alert.surfaceId)?.key])]);
+  const sig = JSON.stringify([alerts.map((alert) => [alert.surfaceId, alert.source, alertLabel(alert.surfaceId), alert.title, alert.count, screens.get(alert.surfaceId)?.agent, bodies.get(alert.surfaceId), asks.get(alert.surfaceId), alert.prompt?.selected, answering.get(alert.surfaceId)?.key])]);
   const hadCards = lastAttentionSig !== undefined && lastAttentionSig !== "[]";
   // Same content: only refresh the relative times, so scroll positions and focus survive the 1.5s scan.
   if (sig === lastAttentionSig) {
@@ -1229,9 +1017,7 @@ function renderAttention() {
   for (const card of list.querySelectorAll<HTMLElement>(".alert-card")) bodyTops.set(card.dataset.surface || "", card.querySelector(".alert-body")?.scrollTop ?? 0);
   for (const id of expandedBodies) if (!attention.has(id)) expandedBodies.delete(id);
   list.replaceChildren();
-  // Project cards come first: they are what the user can finish right here.
-  for (const p of projects) list.append(renderProjectCard(p, projectCardActions, projectDrafts));
-  if (!count && !projects.length) { list.append(help(t("app.noAttention"))); attentionDrop.afterRender(); return; }
+  if (!count) { list.append(help(t("app.noAttention"))); attentionDrop.afterRender(); return; }
   for (const alert of alerts) {
     const card = document.createElement("div"); card.className = "alert-card"; card.dataset.source = alert.source; card.dataset.surface = alert.surfaceId; if (alert.prompt?.low) card.dataset.low = "1";
     const head = document.createElement("div"); head.className = "alert-head";
@@ -1344,15 +1130,15 @@ function appendTabGroup(parent: HTMLElement, root: Tab, folder: FavoriteFolder |
   const count = document.createElement("span"); count.className = "badge"; count.textContent = String(members.length); count.title = t("app.sameDirTerminals", { n: members.length });
   head.append(toggle, count);
   if (root.favoriteId) { const star = document.createElement("span"); star.className = "favorite-mark"; star.innerHTML = icons.star; star.title = t("app.fromFavorite", { name: favoriteFor(root)?.name || "" }); head.append(star); }
+  head.dataset.tabId = root.id;
+  wireTabDrag(head, root, false);
   parent.append(head);
   if (collapsed) return;
   for (const tab of members) appendTabRow(parent, tab, folder, hotkey(tab), true);
 }
 function renderTabs() {
   scheduleSessionSave();
-  const owned = projectOwned();
-  lastOwnedSignature = owned.signature;
-  const arranged = orderedTabs().filter((tab) => !owned.tab(tab));
+  const arranged = orderedTabs();
   const list = $("tabs");
   list.replaceChildren();
   const caption = (text: string) => { const el = document.createElement("div"); el.className = "caption"; el.textContent = text; return el; };
@@ -1361,16 +1147,21 @@ function renderTabs() {
   ungrouped.append(caption(t("app.ungrouped")));
   // ⌘1～⌘9 follow on-screen order; show the hint on the first nine rows.
   const hotkey = (tab: Tab) => { const index = arranged.indexOf(tab); return index >= 0 && index < 9 ? index + 1 : undefined; };
-  for (const tab of loose.filter((item) => !item.parentId)) appendTabGroup(ungrouped, tab, undefined, hotkey);
-  // Ungrouped favorites without an open terminal still show here, like grouped ones do.
-  const closedLoose = folderFavorites(undefined).filter((item) => !owned.favorites.has(item.id) && !loose.some((tab) => !tab.parentId && tab.favoriteId === item.id));
-  for (const favorite of closedLoose) appendWorkspaceFavoriteRow(ungrouped, favorite);
-  if (!loose.length && !closedLoose.length) ungrouped.append(help(t("app.noUngroupedTabs")));
+  const looseRoots = loose.filter((item) => !item.parentId);
+  const looseFavorites = favorites.filter((item) => !folders.some((folder) => folder.id === item.groupId));
+  for (const tab of looseRoots.filter((item) => !looseFavorites.some((favorite) => favorite.id === item.favoriteId))) appendTabGroup(ungrouped, tab, undefined, hotkey);
+  // Ungrouped favorites follow favorite order, like grouped ones: opening a terminal never moves a row.
+  for (const favorite of looseFavorites) {
+    const instances = looseRoots.filter((tab) => tab.favoriteId === favorite.id);
+    for (const tab of instances) appendTabGroup(ungrouped, tab, undefined, hotkey);
+    if (!instances.length) appendWorkspaceFavoriteRow(ungrouped, favorite);
+  }
+  if (!loose.length && !looseFavorites.length) ungrouped.append(help(t("app.noUngroupedTabs")));
   list.append(ungrouped);
   if (folders.length) {
     list.append(Object.assign(document.createElement("div"), { className: "section-divider" }));
     for (const folder of folders) {
-      const items = folderFavorites(folder.id).filter((item) => !owned.favorites.has(item.id));
+      const items = folderFavorites(folder.id);
       const openTabs = arranged.filter((tab) => tabFolder(tab)?.id === folder.id);
       const block = document.createElement("section"); block.className = "tab-block grouped"; block.style.setProperty("--group-color", folder.color);
       block.dataset.groupId = folder.id;
@@ -1407,7 +1198,6 @@ function renderTabs() {
   const top = detail();
   if (top?.kind === "edit-tab" && !tabs.some((tab) => tab.id === top.tabId)) renderDetail();
   renderFavorites();
-  projectPanel?.refreshList();
 }
 // Reorder only within the same block: a tab's block comes from its favorite's
 // group, so dragging cannot change it.
@@ -1422,67 +1212,32 @@ function moveTab(movingId: string, beforeId?: string) {
   } else rest.splice(index, 0, moving);
   tabs = rest;
 }
-// Rows inside a group (open tab or not-yet-opened favorite) reorder the
-// favorites themselves, so the order is the same whether or not a terminal is open.
-let draggingGroupFavoriteId: string | undefined;
-function wireGroupRowDrag(row: HTMLElement, favoriteId: string, folder: FavoriteFolder) {
-  const type = "text/highostty-wsrow";
-  row.draggable = true;
-  const sameGroup = () => !!draggingGroupFavoriteId && draggingGroupFavoriteId !== favoriteId && favorites.find((item) => item.id === draggingGroupFavoriteId)?.groupId === folder.id;
-  const lowerHalf = (event: DragEvent) => event.clientY - row.getBoundingClientRect().top >= row.clientHeight / 2;
-  row.ondragstart = (event) => { if (event.dataTransfer) { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData(type, favoriteId); } draggingGroupFavoriteId = favoriteId; row.classList.add("dragging"); };
-  row.ondragend = () => { draggingGroupFavoriteId = undefined; row.classList.remove("dragging"); };
-  row.ondragover = (event) => {
-    if (!event.dataTransfer?.types.includes(type) || !sameGroup()) return;
-    event.preventDefault();
-    const after = lowerHalf(event);
-    row.classList.toggle("drop-before", !after);
-    row.classList.toggle("drop-after", after);
-  };
-  row.ondragleave = (event) => { if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return; row.classList.remove("drop-before", "drop-after"); };
-  row.ondrop = (event) => {
-    row.classList.remove("drop-before", "drop-after");
-    if (!sameGroup()) return;
-    event.preventDefault(); event.stopPropagation();
-    const moving = draggingGroupFavoriteId!;
-    const siblings = folderFavorites(folder.id).filter((item) => item.id !== moving);
-    const target = siblings.findIndex((item) => item.id === favoriteId);
-    const next = lowerHalf(event) ? siblings[target + 1] : siblings[target];
-    persistFavorites(moveGroupedItem(favorites, moving, folder.id, next?.id)).then(renderTabs).catch(notify);
-  };
+// Rows reorder by pointer (see row-drag.ts). A favorite's row, open or not, reorders the
+// favorite itself, so the order is remembered whether or not a terminal is open; other
+// tabs reorder the open list, sub-tabs only among their siblings.
+function wireRowDrag(row: HTMLElement, kind: string, id: string) {
+  row.dataset.dragKind = kind; row.dataset.dragId = id;
+  enableRowDrag(row, (moving, before) => {
+    const movingId = moving.dataset.dragId!, beforeId = before?.dataset.dragId;
+    if (kind === "fav") {
+      const groupId = moving.closest<HTMLElement>(".tab-block")?.dataset.groupId;
+      persistFavorites(moveGroupedItem(favorites, movingId, groupId ?? null, beforeId)).then(renderTabs).catch(notify);
+    } else { moveTab(movingId, beforeId); renderTabs(); }
+  });
+}
+function wireTabDrag(row: HTMLElement, tab: Tab, nested: boolean) {
+  if (nested) wireRowDrag(row, `child:${tab.parentId}`, tab.id);
+  else if (tab.favoriteId && favoriteOf(tab)) wireRowDrag(row, "fav", tab.favoriteId);
+  else wireRowDrag(row, "tab", tab.id);
 }
 function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, hotkey?: number, nested = false) {
   const ids = leaves(tab.tree), surface = surfaces.get(tab.focused);
   const top = detail();
   const editingThis = top?.kind === "edit-tab" && top.tabId === tab.id;
-  const row = document.createElement("div"); row.className = "row tab-row" + (tab === active || editingThis ? " selected" : ""); row.dataset.tabId = tab.id; row.draggable = true;
+  const row = document.createElement("div"); row.className = "row tab-row" + (tab === active || editingThis ? " selected" : ""); row.dataset.tabId = tab.id;
   row.classList.toggle("child", nested);
   if (folder) row.style.setProperty("--group-color", folder.color);
-  row.ondragstart = (event) => { if (event.dataTransfer) { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/highostty-tab", tab.id); } draggingTabId = tab.id; row.classList.add("dragging"); };
-  row.ondragend = () => { draggingTabId = undefined; row.classList.remove("dragging"); };
-  const sameBlock = () => { const moving = tabs.find((item) => item.id === draggingTabId); return !!moving && moving !== tab && tabFolder(moving) === tabFolder(tab) && moving.parentId === tab.parentId; };
-  const lowerHalf = (event: DragEvent) => event.clientY - row.getBoundingClientRect().top >= row.clientHeight / 2;
-  row.ondragover = (event) => {
-    if (!event.dataTransfer?.types.includes("text/highostty-tab") || !sameBlock()) return;
-    event.preventDefault();
-    const after = lowerHalf(event);
-    row.classList.toggle("drop-before", !after);
-    row.classList.toggle("drop-after", after);
-  };
-  row.ondragleave = (event) => { if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return; row.classList.remove("drop-before", "drop-after"); };
-  row.ondrop = (event) => {
-    row.classList.remove("drop-before", "drop-after");
-    if (!sameBlock()) return;
-    event.preventDefault(); event.stopPropagation();
-    const moving = draggingTabId!;
-    // Siblings exclude the dragged tab so "after the row above me" never
-    // resolves to the dragged tab itself.
-    const siblings = orderedTabs().filter((item) => item.id !== moving && tabFolder(item) === tabFolder(tab) && item.parentId === tab.parentId);
-    const next = lowerHalf(event) ? siblings[siblings.indexOf(tab) + 1] : tab;
-    moveTab(moving, next?.id);
-    renderTabs();
-  };
-  if (folder && tab.favoriteId) wireGroupRowDrag(row, tab.favoriteId, folder);
+  wireTabDrag(row, tab, nested);
   const alert = ids.map((id) => attention.get(id)).find(Boolean);
   if (alert) { row.classList.add("has-alert"); row.dataset.alert = alert.prompt?.low ? "maybe" : "yes"; }
   const state = document.createElement("span"); state.className = "status-dot"; state.classList.toggle("exited", ids.every((id) => surfaces.get(id)?.exited));
@@ -1500,17 +1255,52 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
     { text: tab.favoriteId ? t("app.editFavoriteEllipsis") : t("app.editTabEllipsis"), action: () => renameTab(tab) },
     { text: t("app.duplicateTab"), action: () => duplicateTab(tab, surface?.cwd || defaultPath()) },
     { item: "Separator" },
+    ...shellMenuItems(tab),
+    { item: "Separator" },
     { text: t("app.closeTab"), action: () => requestClose(ids, (force) => closeTab(tab, force)) },
   ]);
   const slot = document.createElement("span"); slot.className = "tab-slot";
   if (hotkey) { const key = document.createElement("kbd"); key.className = "tab-key"; key.textContent = `⌘${hotkey}`; slot.append(key); }
   const more = button("", menu, t("app.tabActions")); more.className = "icon-btn tab-more"; more.innerHTML = icons.more;
   slot.append(more);
-  row.oncontextmenu = (event) => { event.preventDefault(); menu(); };
+  row.oncontextmenu = (event) => { event.preventDefault(); if (event.ctrlKey) popupMenu(shellMenuItems(tab)); else menu(); };
   // The whole row switches tabs, not just the label: clicks on the alert pill,
   // status text, dot or empty space land here. Real controls handle themselves.
   row.onclick = (event) => { if (event.target instanceof Element && event.target.closest("button, input, kbd")) return; activate(tab); };
   row.append(slot); parent.append(row);
+}
+// Ctrl+click on a tab or favorite: a plain shell in its folder, ignoring any launch command.
+// macOS sends Ctrl+click as a contextmenu event, so callers use oncontextmenu.
+// The shell stays with its source: splits share the tab, a new tab is a child of it,
+// and a favorite that is not open yet starts a tab linked to that favorite's group.
+function shellMenuItems(tab: Tab): MenuEntry[] {
+  const path = surfaces.get(tab.focused)?.cwd || defaultPath();
+  const into = async (direction: number) => { await activate(tab); await newSurface(path, tab.focused, direction, { shell: true }); };
+  return [
+    { text: t("app.splitRight"), action: () => into(0) },
+    { text: t("app.splitDown"), action: () => into(1) },
+    { text: t("app.shellNewTab"), action: () => newSurface(path, undefined, undefined, { shell: true, parentId: rootOf(tab).id }) },
+  ];
+}
+async function openFavoriteShell(item: WorkspaceFavorite) {
+  const existing = recentFavoriteInstance(tabs, item.id, recentFavoriteInstances.get(item.id));
+  if (existing) { await popupMenu(shellMenuItems(existing)); return; }
+  await favoriteShellTab(item);
+}
+async function favoriteShellTab(item: WorkspaceFavorite) {
+  const existing = recentFavoriteInstance(tabs, item.id, recentFavoriteInstances.get(item.id));
+  const path = (existing && surfaces.get(existing.focused)?.cwd) || item.tab.paths[0] || defaultPath();
+  await newSurface(path, undefined, undefined, { shell: true, favoriteId: item.id, parentId: existing ? rootOf(existing).id : undefined });
+}
+// Right-click menu of a favorite row: new tabs even when an instance is already open.
+function favoriteMenuItems(item: WorkspaceFavorite): MenuEntry[] {
+  return [
+    { text: t("app.open"), action: () => openFavorite(item) },
+    { text: t("app.duplicateTab"), action: () => openFavorite(item, true) },
+    { text: t("app.shellNewTab"), action: () => favoriteShellTab(item) },
+    { item: "Separator" },
+    { text: t("app.editFavoriteEllipsis"), action: () => editFavorite(item) },
+  ];
 }
 async function popupMenu(items: MenuEntry[]) {
   try {
@@ -1519,11 +1309,12 @@ async function popupMenu(items: MenuEntry[]) {
 }
 function appendWorkspaceFavoriteRow(parent: HTMLElement, item: WorkspaceFavorite, folder?: FavoriteFolder) {
   const row = document.createElement("div"); row.className = "row favorite-workspace-row"; row.dataset.favoriteId = item.id;
-  if (folder) { row.style.setProperty("--group-color", folder.color); wireGroupRowDrag(row, item.id, folder); }
+  if (folder) row.style.setProperty("--group-color", folder.color);
+  wireRowDrag(row, "fav", item.id);
   const state = document.createElement("span"); state.className = "status-dot inactive"; state.title = t("app.terminalNotOpen");
   const label = button(item.name, () => openFavorite(item), `${item.name}\n${item.tab.paths[0] || ""}`); label.className = "row-label";
   const edit = button("", () => editFavorite(item), t("app.editFavorite")); edit.className = "icon-btn row-action"; edit.innerHTML = icons.pencil;
-  row.oncontextmenu = (event) => { event.preventDefault(); popupMenu([{ text: t("app.open"), action: () => openFavorite(item) }, { text: t("app.editFavoriteEllipsis"), action: () => editFavorite(item) }]); };
+  row.oncontextmenu = (event) => { event.preventDefault(); if (event.ctrlKey) { openFavoriteShell(item).catch(notify); return; } popupMenu(favoriteMenuItems(item)); };
   row.append(state, label, edit); parent.append(row);
 }
 // A linked tab is named by its favorite; anything else keeps its own title.
@@ -1627,7 +1418,6 @@ function revealTab(tab: Tab) {
   try { localStorage.setItem("workspace-collapsed-groups", JSON.stringify([...collapsedWorkspaceGroups])); } catch {}
 }
 async function activate(tab: Tab) {
-  projectPanel?.close();
   if (active !== tab) revealTab(tab);
   active = tab;
   rememberFavoriteInstance(tab);
@@ -1661,22 +1451,27 @@ function renderConfigText() {
   $("config-diagnostics").textContent =
     config.diagnostics.join("\n") || t("settings.configLoaded");
 }
-async function newSurface(path: string, source?: string, direction?: number, options: { command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; coordinator?: boolean; tmuxSession?: string; parentId?: string; favoriteId?: string; background?: boolean } = {}) {
+async function newSurface(path: string, source?: string, direction?: number, options: { command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSession?: string; parentId?: string; favoriteId?: string; background?: boolean; shell?: boolean } = {}) {
   const parent = source && direction !== undefined ? tabFor(source) : undefined;
   const sibling = options.parentId ? tabs.find((tab) => tab.id === options.parentId) : undefined;
   // ⌘⇧T 的子頁籤沿用來源頁籤的啟動命令、tmux 設定與收藏。
-  const command = options.command ?? sibling?.command;
-  const commandInShell = options.commandInShell ?? sibling?.commandInShell;
-  const coordinator = !!(options.coordinator ?? parent?.coordinator ?? sibling?.coordinator);
-  const useTmux = coordinator || !!(options.tmux ?? parent?.tmux ?? sibling?.tmux);
-  const hideStatus = !!(options.tmuxHideStatus ?? parent?.tmuxHideStatus ?? sibling?.tmuxHideStatus);
+  // shell：純 shell，不繼承啟動命令與 tmux，但仍歸在來源頁籤（收藏／群組）底下。
+  const command = options.shell ? undefined : options.command ?? sibling?.command;
+  const commandInShell = options.shell ? undefined : options.commandInShell ?? sibling?.commandInShell;
+  const useTmux = options.shell ? false : !!(options.tmux ?? parent?.tmux ?? sibling?.tmux);
+  const hideStatus = options.shell ? false : !!(options.tmuxHideStatus ?? parent?.tmuxHideStatus ?? sibling?.tmuxHideStatus);
   const tmuxSession = useTmux ? (validSession(options.tmuxSession) ? options.tmuxSession : newSessionName()) : undefined;
   const tmuxBin = tmuxSession ? await invoke<string | null>("tmux_path").catch(() => null) : null;
   if (tmuxSession && !tmuxBin) throw new Error(t("app.tmuxMissing"));
   // HIGHOSTTY_* 給 session 內的程式（tmux 3.2 以下為空表）；失敗不影響開頁籤。
   const program = startProgram(command);
   const tmuxProgramPath = tmuxSession && program && !program.includes("/") ? await invoke<string | null>("program_path", { name: program }).catch(() => null) : null;
-  const tmuxEnv = tmuxSession ? await invoke<Record<string, string>>("control_env", { session: tmuxSession }).catch(() => ({})) : undefined;
+  let tmuxEnv = tmuxSession ? await invoke<Record<string, string>>("control_env", { session: tmuxSession }).catch(() => ({})) : undefined;
+  // control_env 為空表代表 tmux 不支援 -e；支援時一併帶入登入 shell 的 PATH，pane 內的程式才找得到 Homebrew 等工具。
+  if (tmuxEnv && Object.keys(tmuxEnv).length) {
+    const loginPath = await invoke<string | null>("login_path").catch(() => null);
+    if (loginPath) tmuxEnv = { ...tmuxEnv, PATH: loginPath };
+  }
   const normalized = await invoke<string>("resolve_path", {
     path,
     base: homePath || undefined,
@@ -1689,7 +1484,7 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       path: normalized,
       source,
       split: direction !== undefined,
-      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramPath(command, tmuxProgramPath), hideStatus, tmuxBin, tmuxEnv) : command,
+      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramDir(withProgramPath(command, tmuxProgramPath), tmuxProgramPath), hideStatus, tmuxBin, tmuxEnv) : command,
       commandInShell: tmuxSession ? false : commandInShell,
       tmux: !!tmuxSession,
     });
@@ -1722,12 +1517,10 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       favoriteId: options.favoriteId ?? sibling?.favoriteId,
       tmux: useTmux || undefined,
       tmuxHideStatus: useTmux && hideStatus || undefined,
-      coordinator: coordinator || undefined,
       parentId: options.parentId,
     };
     // background：新頁籤不切過去、不搶焦點（agent 控制指令）；空工作區仍照常顯示。
     foreground = !options.background || !active;
-    if (!options.background) projectPanel?.close();
     tabs.push(tab);
     if (foreground) active = tab;
   }
@@ -1742,24 +1535,20 @@ async function newSurface(path: string, source?: string, direction?: number, opt
 }
 // ⌘⇧T: another terminal in the same directory, shown one level under the root tab.
 async function duplicateTab(tab: Tab, cwd: string) {
-  await newSurface(cwd, undefined, undefined, { parentId: rootOf(tab).id });
+  // 套用來源的設定（啟動命令、tmux、收藏）；已連結收藏時以收藏目前的設定為準。
+  const root = rootOf(tab), favorite = favoriteOf(root), config = favorite?.tab ?? root;
+  await newSurface(cwd, undefined, undefined, {
+    parentId: root.id,
+    command: config.command,
+    commandInShell: config.commandInShell,
+    tmux: !!config.tmux,
+    tmuxHideStatus: !!config.tmuxHideStatus,
+    favoriteId: favorite?.id ?? root.favoriteId,
+  });
 }
 function restoreTree(node: Node, ids: string[]): Node {
   if (node.kind === "leaf") return { kind: "leaf", id: ids[Number(node.id)] || ids[0] };
   return { ...node, first: restoreTree(node.first, ids), second: restoreTree(node.second, ids) };
-}
-// A favorite that names a project but never joined it (saved before members were per-session): join now and
-// remember the session on the favorite so the next open is the same member.
-function autoJoin(tab: Tab, root: string, favoriteId?: string) {
-  const session = surfaces.get(tab.focused)?.tmuxSession;
-  const favorite = favorites.find((item) => item.id === favoriteId);
-  if (!session) return;
-  joinProject(root, session, favorite?.name || tab.title || "", memberOfInstance(instanceKey({ id: "", tmuxSession: session }))?.member.purpose ?? "")
-    .then(async () => {
-      if (favorite && favorite.tab.tmuxSessions?.[0] !== session) await persistFavorites(favorites.map((item) => item.id === favorite.id ? { ...item, tab: { ...item.tab, tmuxSessions: [session, ...(item.tab.tmuxSessions ?? []).slice(1)] } } : item));
-      renderTabs();
-    })
-    .catch(notify);
 }
 // Older snapshots may still carry workspace groups; they are ignored now that
 // a tab's group comes from its favorite.
@@ -1770,9 +1559,8 @@ async function restoreSnapshot(value: { tabs?: SavedTab[] }) {
     for (const [position, saved] of (value.tabs || []).entries()) {
       const paths = saved.paths.filter(Boolean);
       if (!paths.length) continue;
-      await newSurface(paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, tmux: saved.tmux, tmuxHideStatus: saved.tmuxHideStatus, coordinator: saved.coordinator, tmuxSession: saved.tmuxSessions?.[0] });
+      await newSurface(paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, tmux: saved.tmux, tmuxHideStatus: saved.tmuxHideStatus, tmuxSession: saved.tmuxSessions?.[0] });
       const tab = active!;
-      if (saved.coordinatorRoot) autoJoin(tab, saved.coordinatorRoot, saved.favoriteId);
       const ids = [tab.focused];
       for (const path of paths.slice(1)) {
         await newSurface(path, ids[0], 0, { tmuxSession: saved.tmuxSessions?.[ids.length] });
@@ -1793,6 +1581,8 @@ async function restoreSnapshot(value: { tabs?: SavedTab[] }) {
     if (active) rememberFavoriteInstance(active);
     // newSurface already synced the panel while it still had no saved state.
     filesPanel.invalidate();
+    // Panels that were popped out come back as their own windows.
+    for (const tab of restoredTabs.values()) if (tab.files?.detached) openFilesWindow(tab, false).catch(notify);
   } finally { restoring = false; }
   renderTabs();
   renderDrawer();
@@ -1842,6 +1632,7 @@ async function forgetSurface(id: string) {
     const heir = promoteChildren(tabs, tab.id);
     if (heir && tab.favoriteId) heir.favoriteId = tab.favoriteId;
     tabs = tabs.filter((t) => t !== tab);
+    if (tab.files?.detached) invoke("close_files_window", { tab: tab.id }).catch(() => {});
     if (active === tab) active = heir || tabs.at(-1);
   } else {
     tab.tree = tree;
@@ -2023,7 +1814,6 @@ function renderFavorites() {
   const caption = (text: string) => Object.assign(document.createElement("div"), { className: "caption", textContent: text });
   const loose = folderFavorites(undefined);
   const ungrouped = document.createElement("section"); ungrouped.className = "favorite-block";
-  makeFavoriteDropZone(ungrouped, undefined);
   ungrouped.append(caption(t("app.ungrouped")));
   for (const item of loose) appendFavoriteRow(ungrouped, item);
   if (!favorites.length && !folders.length) ungrouped.append(help(t("app.noFavorites")));
@@ -2041,76 +1831,30 @@ function renderFavorites() {
     const openMark = document.createElement("span"); openMark.className = "active-mark"; openMark.title = t("app.groupHasOpen"); openMark.hidden = !items.some(favoriteIsOpen);
     const chevron = document.createElement("span"); chevron.className = "row-chevron"; chevron.innerHTML = icons.chevron;
     const edit = button("", () => editFolder(folder), t("app.editGroup")); edit.className = "icon-btn row-action"; edit.innerHTML = icons.pencil;
-    row.draggable = true;
-    row.ondragstart = (event) => { if (event.dataTransfer) { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/highostty-group", folder.id); } row.classList.add("dragging"); };
-    row.ondragend = () => row.classList.remove("dragging");
-    row.ondragover = (event) => {
-      const types = event.dataTransfer?.types;
-      if (types?.includes("text/highostty-favorite")) {
-        event.preventDefault();
-        if (row.classList.contains("drop-target-list")) return;
-        row.classList.add("drop-target-list");
-        clearTimeout(groupExpandTimer);
-        groupExpandTimer = setTimeout(() => { const top = detail(); if (top?.kind !== "group" || top.groupId !== folder.id) showRootDetail({ kind: "group", groupId: folder.id }); }, 600);
-      } else if (types?.includes("text/highostty-group")) {
-        event.preventDefault();
-        row.classList.add("drop-before");
-      }
-    };
-    row.ondragleave = (event) => { if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return; clearTimeout(groupExpandTimer); row.classList.remove("drop-before", "drop-target-list"); };
-    row.ondrop = (event) => {
-      event.preventDefault(); event.stopPropagation(); clearTimeout(groupExpandTimer);
-      row.classList.remove("drop-before", "drop-target-list");
-      const movingFolder = event.dataTransfer?.getData("text/highostty-group");
-      if (movingFolder && movingFolder !== folder.id) persistFavorites(favorites, moveItemBefore(folders, movingFolder, folder.id)).then(renderTabs).catch(notify);
-      const movingFavorite = event.dataTransfer?.getData("text/highostty-favorite");
-      if (movingFavorite) persistFavorites(moveGroupedItem(favorites, movingFavorite, folder.id)).then(renderTabs).catch(notify);
-    };
+    row.dataset.dragKind = "group"; row.dataset.dragId = folder.id;
+    enableRowDrag(row, (moving, before) => {
+      const movingId = moving.dataset.dragId!, beforeId = before?.dataset.dragId;
+      const next = beforeId ? moveItemBefore(folders, movingId, beforeId) : [...folders.filter((item) => item.id !== movingId), ...folders.filter((item) => item.id === movingId)];
+      persistFavorites(favorites, next).then(renderTabs).catch(notify);
+    });
     row.append(dot, label, count, openMark, chevron, edit);
     list.append(row);
   }
   if (detail()?.kind === "group") renderDetail();
 }
-function makeFavoriteDropZone(zone: HTMLElement, folderId: string | undefined) {
-  zone.ondragover = (event) => { if (event.dataTransfer?.types.includes("text/highostty-favorite")) { event.preventDefault(); zone.classList.add("drop-target-list"); } };
-  zone.ondragleave = (event) => { if (!(event.relatedTarget instanceof Node) || !zone.contains(event.relatedTarget)) zone.classList.remove("drop-target-list"); };
-  zone.ondrop = (event) => {
-    zone.classList.remove("drop-target-list");
-    const moving = event.dataTransfer?.getData("text/highostty-favorite");
-    if (!moving) return;
-    event.preventDefault();
-    persistFavorites(moveGroupedItem(favorites, moving, folderId || null)).then(renderTabs).catch(notify);
-  };
-}
 function appendFavoriteRow(parent: HTMLElement, item: WorkspaceFavorite) {
-  const row = document.createElement("div"); row.className = "row favorite-row"; row.dataset.favoriteId = item.id; row.draggable = true;
+  const row = document.createElement("div"); row.className = "row favorite-row"; row.dataset.favoriteId = item.id;
   const top = detail();
   row.classList.toggle("selected", top?.kind === "edit-favorite" && top.favoriteId === item.id);
-  row.ondragstart = (event) => { if (event.dataTransfer) { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/highostty-favorite", item.id); } draggingFavoriteId = item.id; row.classList.add("dragging"); };
-  row.ondragend = () => { draggingFavoriteId = undefined; row.classList.remove("dragging"); };
-  const lowerHalf = (event: DragEvent) => event.clientY - row.getBoundingClientRect().top >= row.clientHeight / 2;
-  row.ondragover = (event) => {
-    if (!event.dataTransfer?.types.includes("text/highostty-favorite") || draggingFavoriteId === item.id) return;
-    event.preventDefault();
-    const after = lowerHalf(event);
-    row.classList.toggle("drop-before", !after);
-    row.classList.toggle("drop-after", after);
-  };
-  row.ondragleave = (event) => { if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return; row.classList.remove("drop-before", "drop-after"); };
-  row.ondrop = (event) => {
-    row.classList.remove("drop-before", "drop-after");
-    const moving = event.dataTransfer?.getData("text/highostty-favorite");
-    if (!moving) return;
-    event.preventDefault(); event.stopPropagation();
-    if (moving === item.id) return;
-    const siblings = favorites.filter((value) => value.id !== moving && value.groupId === item.groupId);
-    const next = lowerHalf(event) ? siblings[siblings.indexOf(item) + 1] : item;
-    persistFavorites(moveGroupedItem(favorites, moving, item.groupId || null, next?.id)).then(renderTabs).catch(notify);
-  };
+  row.dataset.dragKind = `favorites:${item.groupId || ""}`; row.dataset.dragId = item.id;
+  enableRowDrag(row, (moving, before) => {
+    persistFavorites(moveGroupedItem(favorites, moving.dataset.dragId!, item.groupId || null, before?.dataset.dragId)).then(renderTabs).catch(notify);
+  });
   const icon = document.createElement("span"); icon.className = "favorite-icon"; icon.innerHTML = icons.tab;
   const label = button(item.name, () => openFavorite(item), `${item.name}\n${item.tab.paths[0] || ""}`); label.className = "row-label";
   const openMark = document.createElement("span"); openMark.className = "active-mark"; openMark.title = t("app.opened"); openMark.hidden = !favoriteIsOpen(item);
   const edit = button("", () => editFavorite(item), t("app.editFavorite")); edit.className = "icon-btn row-action"; edit.innerHTML = icons.pencil;
+  row.oncontextmenu = (event) => { event.preventDefault(); if (event.ctrlKey) openFavoriteShell(item).catch(notify); else popupMenu(favoriteMenuItems(item)); };
   row.append(icon, label);
   if (item.tab.paths.length > 1) { const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = String(item.tab.paths.length); badge.title = t("app.splitTitle", { n: item.tab.paths.length }); row.append(badge); }
   row.append(openMark, edit);
@@ -2121,7 +1865,7 @@ function toggleFolderDetail(folder: FavoriteFolder) {
   if (top?.kind === "group" && top.groupId === folder.id) { drawerState = { ...drawerState, detailStack: [] }; renderDrawer(); return; }
   showRootDetail({ kind: "group", groupId: folder.id });
 }
-function createFolder() { showDetail({ kind: "edit-group" }); }
+function createFolder() { showDetail({ kind: "edit-group" }, false, true); }
 function editFolder(folder: FavoriteFolder) { showDetail({ kind: "edit-group", groupId: folder.id }); }
 async function saveFolder(folder: FavoriteFolder | undefined, folderName: string, color: string) {
   if (folder) {
@@ -2204,23 +1948,11 @@ async function resolveFavoritePath() {
     return undefined;
   }
 }
-async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, launch: { command: string; commandInShell: boolean; tmux: boolean; tmuxHideStatus: boolean; coordinator: boolean; coordinatorRoot: string; join?: { root: string; name: string; purpose: string } }) {
+async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, launch: { command: string; commandInShell: boolean; tmux: boolean; tmuxHideStatus: boolean }) {
   if (!alias) { $("alias").focus(); return; }
   const group = groupId || undefined;
-  const options: Partial<SavedTab> = { command: launch.command || undefined, commandInShell: launch.command ? launch.commandInShell || undefined : undefined, tmux: launch.tmux || launch.coordinator || undefined, tmuxHideStatus: launch.tmux && launch.tmuxHideStatus || undefined, coordinator: launch.coordinator || undefined, coordinatorRoot: launch.coordinatorRoot || undefined };
+  const options: Partial<SavedTab> = { command: launch.command || undefined, commandInShell: launch.command ? launch.commandInShell || undefined : undefined, tmux: launch.tmux || undefined, tmuxHideStatus: launch.tmux && launch.tmuxHideStatus || undefined };
   let createdId: string | undefined;
-  // Joining a project needs an agent command and a fixed tmux session; the favorite keeps the session name.
-  let joinSession: string | undefined;
-  if (launch.join) {
-    await requireAgent(launch.command);
-    const live = (tab: Tab | undefined) => tab ? leaves(tab.tree).map((id) => surfaces.get(id)?.tmuxSession) : [];
-    const known = item?.tab.tmuxSessions ?? (item ? live(tabs.find((tab) => tab.favoriteId === item.id && !tab.parentId)) : live(sourceTab));
-    const sessions = [...known];
-    sessions[0] = validSession(sessions[0]) ? sessions[0] : newSessionName();
-    joinSession = sessions[0];
-    options.tmuxSessions = sessions;
-    options.tmux = true;
-  }
   if (item) {
     let tab = item.tab;
     if (pathInput) {
@@ -2245,7 +1977,6 @@ async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | und
     if (sourceTab) { sourceTab.favoriteId = id; recentFavoriteInstances.set(id, sourceTab.id); }
     createdId = id;
   }
-  if (launch.join && joinSession) await joinProject(launch.join.root, joinSession, launch.join.name || alias, launch.join.purpose);
   editorDrafts.delete(current);
   renderTabs();
   backDetail();
@@ -2453,8 +2184,7 @@ async function handleEvent(event: NativeEvent) {
     case "close-tab": {
       const tab = event.id ? tabFor(event.id) : active;
       if (!tab) break;
-      // "Close others / to the right" only touches what the sidebar shows; a project's terminals are closed from the project.
-      const arranged = visibleTabs();
+      const arranged = orderedTabs();
       const index = arranged.indexOf(tab),
         targets =
           event.mode === 1
@@ -2471,7 +2201,7 @@ async function handleEvent(event: NativeEvent) {
       break;
     }
     case "goto-tab": {
-      const arranged = visibleTabs();
+      const arranged = orderedTabs();
       if (!arranged.length) break;
       const index = active ? arranged.indexOf(active) : 0,
         v = event.value!;
@@ -2806,9 +2536,6 @@ async function start() {
   await listen<NativeEvent>("native-event", ({ payload }) => {
     eventQueue = eventQueue.then(() => handleEvent(payload)).catch(notify);
   });
-  await startProjectEvents();
-  // Only the main window settles tasks left mid-hand-over by the previous run; windows opened later must not.
-  loadKnownProjects().then(() => { renderTabs(); renderAttention(); }).then(() => (win.label === "main" ? delivery.recoverAll() : undefined)).catch(notify).finally(() => delivery.start());
   await listen<ControlRequest>("control-request", ({ payload }) => { handleControl(payload).catch(notify); });
   applyConfig(await native<NativeConfig>({ op: "init" }));
   initialized = true;
@@ -2826,6 +2553,31 @@ async function start() {
     showPreview(tab, event.payload.path);
     if (tab !== active) activate(tab).catch(notify);
   });
+  // Messages from a popped-out files panel (files-window.ts).
+  type FilesMessage = { tab: string; files?: FilesState; close?: boolean; op?: string; path?: string; directory?: string; command?: string; text?: string };
+  await listen<FilesMessage>("files-state", ({ payload }) => {
+    const tab = tabs.find((item) => item.id === payload.tab);
+    if (!tab?.files?.detached || !payload.files) return;
+    tab.files = { ...payload.files, open: true, full: false, detached: true };
+    rememberFilesState(tab);
+  });
+  await listen<FilesMessage>("files-dock", ({ payload }) => {
+    const tab = tabs.find((item) => item.id === payload.tab);
+    if (!tab || closing || sessionFrozen) return;
+    dockFiles(tab, payload.files, !!payload.close);
+    if (!payload.close) activate(tab).catch(notify);
+  });
+  await listen<FilesMessage>("files-request", ({ payload }) => {
+    eventQueue = eventQueue.then(async () => {
+      const tab = tabs.find((item) => item.id === payload.tab);
+      if (!tab) return;
+      if (payload.op === "open-terminal" && payload.path) await newSurface(payload.path);
+      else if (payload.op === "edit" && payload.directory) { await activate(tab); await newSurface(payload.directory, tab.focused, 0, { command: payload.command, commandInShell: true }); }
+      else if (payload.op === "insert" && payload.text) await native({ op: "insert-text", id: tab.focused, text: payload.text });
+      else if (payload.op === "preview" && payload.path) { showPreview(tab, payload.path); if (tab !== active) await activate(tab); }
+      else if (payload.op === "follow-preview" && payload.path && tab.preview && tab.preview.path !== payload.path) showPreview(tab, payload.path);
+    }).catch(notify);
+  });
   await listen("open-paths", () => { eventQueue = eventQueue.then(openPending).catch(notify); });
   // Convert old group favorites once and write the new format back.
   if (applyFavoritesDocument(await invoke<FavoritesDocument>("group_favorites")))
@@ -2839,7 +2591,10 @@ async function start() {
     event.preventDefault();
     shutdown().catch(notify);
   });
-  drawerState = openPanel(drawerState, drawerState.lastPanel || "workspace");
+  let openOnStart = true;
+  try { openOnStart = localStorage.getItem("drawer-open") !== "false"; } catch {}
+  if (openOnStart) drawerState = openPanel(drawerState, drawerState.lastPanel || "workspace");
+  wireDrawerResizer();
   renderDrawer();
   renderTabs();
   setInterval(() => {
@@ -2911,7 +2666,6 @@ async function shellIdle(id: string): Promise<boolean> {
   return (await native<Info>({ op: "info", id })).running.length === 0;
 }
 async function runControl(ctx: { caller?: string; mode: ControlMode; input?: unknown }, { op, args, flags, rest }: Parsed): Promise<Reply> {
-  if (op.name.startsWith("project ")) return runProjectControl({ op: op.name, args, flags, input: ctx.input, surface: ctx.caller ? surfaces.get(ctx.caller) && { id: ctx.caller, tmuxSession: surfaces.get(ctx.caller)!.tmuxSession } : undefined });
   const here = flags.here === true;
   // `--here` keeps only the window the caller is in; other windows contribute nothing.
   const visibleTabs = here && !ctx.caller ? [] : tabs;

@@ -21,7 +21,10 @@ const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 // 只對新建的 session 有效，-A 接上既有 session 時 tmux 會忽略。key 只收大寫識別字，避免進 shell。
 export function tmuxCommand(session: string, cwd: string, command?: string, hideStatus?: boolean, bin = "tmux", env?: Record<string, string>): string {
   if (!validSession(session)) throw new Error(t("common.invalidTmuxSession"));
-  const parts = [bin === "tmux" ? bin : quote(bin), "new-session", "-A", "-s", session];
+  // tmux 預設 extended-keys off，Shift+Enter 會被壓成單純 Enter（Claude Code 等會直接送出）。server 選項要在 attach 前設好，
+  // terminal-features 用固定索引指定，重複執行不會一直附加。
+  const parts = [bin === "tmux" ? bin : quote(bin), "start-server", "\\;", "set-option", "-s", "extended-keys", "on", "\\;",
+    "set-option", "-s", quote("terminal-features[100]"), quote("xterm*:extkeys"), "\\;", "new-session", "-A", "-s", session];
   for (const [key, value] of Object.entries(env ?? {})) if (/^[A-Z][A-Z0-9_]*$/.test(key)) parts.push("-e", quote(`${key}=${value}`));
   if (cwd) parts.push("-c", quote(cwd));
   if (command?.trim()) parts.push(quote(command.trim()));
@@ -46,4 +49,14 @@ export function restorable<T extends TmuxSaved>(tabs: unknown): T[] {
   return tabs
     .filter((tab): tab is T => !!tab && typeof tab === "object" && (tab as T).tmux === true && Array.isArray((tab as { paths?: unknown }).paths))
     .map((tab) => ({ ...tab, tmuxSessions: (Array.isArray(tab.tmuxSessions) ? tab.tmuxSessions : []).map((name) => (validSession(name) ? name : undefined)) }));
+}
+
+// Programs installed as scripts (`#!/usr/bin/env node`) need their own folder on PATH, which a tmux
+// pane started without the user's shell does not have: prefix PATH with the program's folder.
+// Standard system folders are already on every PATH and are left alone.
+export function withProgramDir(command: string | undefined, path: string | null | undefined): string | undefined {
+  if (!command?.trim() || !path || !path.startsWith("/")) return command;
+  const dir = path.slice(0, path.lastIndexOf("/"));
+  if (!dir || dir === "/usr/bin" || dir === "/bin") return command;
+  return `PATH="${dir.replace(/["$`\\]/g, "\\$&")}:$PATH" ${command}`;
 }

@@ -58,5 +58,7 @@
   "files.menu.reveal": "Show in Finder",
   "files.menu.trash": "Move to Trash",
   "files.menu.openInFinder": "Open in Finder",
-  "files.menu.refresh": "Refresh"
+  "files.menu.refresh": "Refresh",
+  "files.popOut": "Open in Window",
+  "files.dock": "Return to Tab"
 }
