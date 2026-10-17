@@ -154,7 +154,7 @@
   "app.rename": "Rename",
   "app.editFavoriteEllipsis": "Edit favorite…",
   "app.editTabEllipsis": "Edit tab…",
-  "app.cloneTab": "Clone tab",
+  "app.cloneTab": "Duplicate favorite tab",
   "app.duplicateTab": "Open new tab",
   "app.tabActions": "Tab actions",
   "app.terminalNotOpen": "Terminal not open yet",

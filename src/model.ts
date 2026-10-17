@@ -16,6 +16,16 @@ export type Rect = {
   height: number;
 };
 export type GroupedItem = { id: string; groupId?: string };
+export function nextCopyName(name: string, names: string[]): string {
+  const match = /^(.*)\((\d+)\)$/.exec(name);
+  const prefix = match ? match[1] : name;
+  let max = 0;
+  for (const candidate of names) {
+    const suffix = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\((\\d+)\\)$`).exec(candidate);
+    if (suffix) max = Math.max(max, Number(suffix[1]));
+  }
+  return `${prefix}(${max + 1})`;
+}
 export function orderGroupedItems<T extends GroupedItem>(items: T[], groupIds: string[]): T[] {
   const known = new Set(groupIds);
   return [

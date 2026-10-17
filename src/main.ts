@@ -23,6 +23,7 @@ import {
   dissolveGroup,
   recentFavoriteInstance,
   moveItemBefore,
+  nextCopyName,
   migrateFavorites,
   type FavoriteFolder,
   type StoredFavorite,
@@ -1308,6 +1309,7 @@ function favoriteMenuItems(item: WorkspaceFavorite): MenuEntry[] {
   return [
     { text: t("app.open"), action: () => openFavorite(item) },
     { text: t("app.duplicateTab"), action: () => openFavorite(item, true) },
+    { text: t("app.cloneTab"), action: () => copyFavorite(item).catch(notify) },
     { text: t("app.shellNewTab"), action: () => favoriteShellTab(item) },
     { item: "Separator" },
     { text: t("app.editFavoriteEllipsis"), action: () => editFavorite(item) },
@@ -1561,7 +1563,23 @@ async function duplicateTab(tab: Tab, cwd: string) {
 }
 // 整個頁籤的副本：分割、各格目錄、標題、啟動命令與 tmux 設定一併帶過去（tmux 一律開新 session）。
 async function cloneTab(tab: Tab) {
-  await restoreSnapshot({ tabs: [savedTab(tab)] });
+  const source = favoriteOf(rootOf(tab));
+  const saved = source?.tab ?? savedTab(rootOf(tab));
+  const copy = { ...saved };
+  delete copy.favoriteId;
+  delete copy.tmuxSessions;
+  await createFavoriteCopy(source?.name || tabName(rootOf(tab)), source?.groupId, copy);
+}
+async function createFavoriteCopy(name: string, groupId: string | undefined, tab: SavedTab) {
+  const id = crypto.randomUUID();
+  await persistFavorites([...favorites, { id, kind: "tab", name: nextCopyName(name, favorites.map((item) => item.name)), tab: { ...tab, title: undefined }, groupId }]);
+  renderTabs(); renderDrawer();
+}
+async function copyFavorite(item: WorkspaceFavorite) {
+  const tab = { ...item.tab };
+  delete tab.favoriteId;
+  delete tab.tmuxSessions;
+  await createFavoriteCopy(item.name, item.groupId, tab);
 }
 function restoreTree(node: Node, ids: string[]): Node {
   if (node.kind === "leaf") return { kind: "leaf", id: ids[Number(node.id)] || ids[0] };

@@ -11,7 +11,13 @@ import {
   equalize,
   orderWithChildren,
   promoteChildren,
+  nextCopyName,
 } from "../src/model.ts";
+test("copy names increment the largest matching suffix", () => {
+  assert.equal(nextCopyName("工作區", ["工作區", "工作區(1)", "工作區(3)", "工作區外(8)"]), "工作區(4)");
+  assert.equal(nextCopyName("工作區(2)", ["工作區", "工作區(2)", "工作區(5)"]), "工作區(6)");
+  assert.equal(nextCopyName("a.b", ["aXb(9)", "a.b(2)"]), "a.b(3)");
+});
 test("splitting and closing retain every other surface", () => {
   let tree = { kind: "leaf", id: "a" };
   tree = split(tree, "a", "b", 0);
