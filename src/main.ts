@@ -1253,6 +1253,7 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
   state.title = ids.every((id) => surfaces.get(id)?.exited) ? t("app.terminalExited") : t("app.terminalOpen");
   const label = button(tabName(tab), () => activate(tab), surface?.cwd); label.className = "row-label"; label.ondblclick = () => inlineRename(tab, label);
   row.append(state, label);
+  if (tab.tmux || ids.some((id) => surfaces.get(id)?.tmuxSession)) row.append(tmuxMark());
   if (tab.status) { const note = document.createElement("span"); note.className = "tab-status"; note.textContent = tab.status; note.title = tab.status; row.append(note); }
   if (alert) { const pill = document.createElement("span"); pill.className = "alert-pill"; pill.textContent = alert.prompt?.low ? t("app.waiting") : alert.title; pill.title = alert.prompt ? [alert.prompt.question, ...alert.prompt.options].filter(Boolean).join("\n") : alert.body; row.append(pill); }
   if (tab.favoriteId && !nested) { const star = document.createElement("span"); star.className = "favorite-mark"; star.innerHTML = icons.star; star.title = t("app.fromFavorite", { name: favoriteFor(tab)?.name || "" }); row.append(star); }
@@ -1263,6 +1264,7 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
     { text: t("app.rename"), action: async () => { await native({ op: "focus-web" }); inlineRename(tab, label); } },
     { text: tab.favoriteId ? t("app.editFavoriteEllipsis") : t("app.editTabEllipsis"), action: () => renameTab(tab) },
     { text: t("app.duplicateTab"), action: () => duplicateTab(tab, surface?.cwd || defaultPath()) },
+    { text: t("app.cloneTab"), action: () => cloneTab(tab).catch(notify) },
     { item: "Separator" },
     ...shellMenuItems(tab),
     { item: "Separator" },
@@ -1324,8 +1326,9 @@ function appendWorkspaceFavoriteRow(parent: HTMLElement, item: WorkspaceFavorite
   const label = button(item.name, () => openFavorite(item), `${item.name}\n${item.tab.paths[0] || ""}`); label.className = "row-label";
   const edit = button("", () => editFavorite(item), t("app.editFavorite")); edit.className = "icon-btn row-action"; edit.innerHTML = icons.pencil;
   row.oncontextmenu = (event) => { event.preventDefault(); if (event.ctrlKey) { openFavoriteShell(item).catch(notify); return; } popupMenu(favoriteMenuItems(item)); };
-  row.append(state, label, edit); parent.append(row);
+  row.append(state, label); if (item.tab.tmux) row.append(tmuxMark()); row.append(edit); parent.append(row);
 }
+function tmuxMark() { const mark = document.createElement("span"); mark.className = "tmux-mark"; mark.textContent = "tmux"; mark.title = t("app.tmuxTabMark"); return mark; }
 // A linked tab is named by its favorite; anything else keeps its own title.
 function renameLinked(tab: Tab, value: string) {
   const favorite = favoriteOf(tab);
@@ -1556,6 +1559,10 @@ async function duplicateTab(tab: Tab, cwd: string) {
     favoriteId: favorite?.id ?? root.favoriteId,
   });
 }
+// 整個頁籤的副本：分割、各格目錄、標題、啟動命令與 tmux 設定一併帶過去（tmux 一律開新 session）。
+async function cloneTab(tab: Tab) {
+  await restoreSnapshot({ tabs: [savedTab(tab)] });
+}
 function restoreTree(node: Node, ids: string[]): Node {
   if (node.kind === "leaf") return { kind: "leaf", id: ids[Number(node.id)] || ids[0] };
   return { ...node, first: restoreTree(node.first, ids), second: restoreTree(node.second, ids) };
@@ -1634,6 +1641,8 @@ async function forgetSurface(id: string) {
   const tab = tabFor(id);
   const session = surfaces.get(id)?.tmuxSession;
   surfaces.delete(id);
+  // 指標停在終端機上時 ⌘W 關閉：NSView 已移除，不會再收到 mouseExited，需自行清掉旗標，否則側欄 hover 永遠不顯示。
+  document.body.classList.remove("term-pointer");
   // 結束 app 時保留 session；其餘（手動關閉、shell 結束）一併結束 session，避免殘留。
   if (session && !keepTmux) invoke("tmux_kill_session", { name: session }).catch(() => {});
   if (!tab) return;
@@ -1866,6 +1875,7 @@ function appendFavoriteRow(parent: HTMLElement, item: WorkspaceFavorite) {
   const edit = button("", () => editFavorite(item), t("app.editFavorite")); edit.className = "icon-btn row-action"; edit.innerHTML = icons.pencil;
   row.oncontextmenu = (event) => { event.preventDefault(); if (event.ctrlKey) openFavoriteShell(item).catch(notify); else popupMenu(favoriteMenuItems(item)); };
   row.append(icon, label);
+  if (item.tab.tmux) row.append(tmuxMark());
   if (item.tab.paths.length > 1) { const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = String(item.tab.paths.length); badge.title = t("app.splitTitle", { n: item.tab.paths.length }); row.append(badge); }
   row.append(openMark, edit);
   parent.append(row);

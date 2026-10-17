@@ -334,6 +334,7 @@ pre { white-space: pre-wrap; max-height: 240px; overflow: auto; }
 .tab-row.has-alert[data-alert="maybe"] { background: rgb(255 198 107 / .05); box-shadow: inset 2px 0 0 rgb(255 198 107 / .45); }
 .tab-row.has-alert .row-label { font-weight: 600; }
 .tab-status { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-muted); opacity: 0.85; }
+.tmux-mark { flex: 0 0 auto; padding: 0 5px; border: 1px solid var(--border, currentColor); border-radius: 4px; color: var(--text-faint); font-size: 11px; line-height: 15px; letter-spacing: .02em; }
 .alert-pill { flex: 0 0 auto; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 8px; background: var(--attention); color: #241a05; font-size: 12px; font-weight: 700; }
 .tab-row.has-alert[data-alert="maybe"] .alert-pill { background: transparent; color: var(--attention); border: 1px solid rgb(255 198 107 / .5); }
 @keyframes alert-pulse { 50% { opacity: .35; } }

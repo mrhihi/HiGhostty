@@ -21,7 +21,6 @@ static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
 static PENDING_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static RESOURCES: OnceLock<PathBuf> = OnceLock::new();
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
-static STARTED: OnceLock<std::time::Instant> = OnceLock::new();
 extern "C" {
     fn hg_command(
         window: *mut std::ffi::c_void,
@@ -153,9 +152,17 @@ fn load_window_position(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -
     visible.then_some(tauri::PhysicalPosition::new(x, y))
 }
 /// 在視窗所在（或主）螢幕置中；用實際外框大小計算，避免 set_size 尚未生效造成偏移。
-fn center_window(window: &tauri::WebviewWindow) {
+fn center_window(window: &tauri::WebviewWindow, target_inner: Option<(f64, f64)>) {
     let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
-    let (Some(monitor), Ok(size)) = (monitor, window.outer_size()) else {
+    // set_size 之後 outer_size 可能還是舊值：用「目標內容大小＋外框差額」自己算。
+    let outer = match (target_inner, window.outer_size(), window.inner_size(), window.scale_factor()) {
+        (Some((w, h)), Ok(o), Ok(i), Ok(scale)) => Ok(tauri::PhysicalSize::new(
+            (w * scale).round() as u32 + o.width.saturating_sub(i.width),
+            (h * scale).round() as u32 + o.height.saturating_sub(i.height),
+        )),
+        _ => window.outer_size(),
+    };
+    let (Some(monitor), Ok(size)) = (monitor, outer) else {
         let _ = window.center();
         return;
     };
@@ -164,24 +171,20 @@ fn center_window(window: &tauri::WebviewWindow) {
     let y = p.y + (s.height as i32 - size.height as i32) / 2;
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
-/// 剛啟動的一小段時間內，原生終端機會依 Ghostty 設定把視窗改成初始大小；
-/// 這段期間每次大小變動都重新套用記住的大小與位置，並且不把中途狀態寫回檔案。
-fn in_startup() -> bool {
-    STARTED.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(5))
-}
+/// 啟動時只套用一次記住的大小與位置；之後視窗大小完全由使用者決定，終端機跟隨視窗。
 fn apply_startup_layout(window: &tauri::WebviewWindow) {
     let app = window.app_handle();
+    let mut target = None;
     if let (Some((w, h)), Ok(size), Ok(scale)) = (load_window_size(app), window.inner_size(), window.scale_factor()) {
         let current = size.to_logical::<f64>(scale);
         if (current.width - w).abs() > 1.0 || (current.height - h).abs() > 1.0 {
-            // 會再觸發一次 Resized，屆時大小吻合才套用位置。
             let _ = window.set_size(tauri::LogicalSize::new(w, h));
-            return;
+            target = Some((w, h));
         }
     }
     match remembers_position(app).then(|| load_window_position(app, window)).flatten() {
         Some(pos) => { let _ = window.set_position(pos); }
-        None => center_window(window),
+        None => center_window(window, target),
     }
 }
 #[tauri::command]
@@ -703,20 +706,14 @@ fn main() {
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 match event {
-                    tauri::WindowEvent::Resized(_) if in_startup() => {
-                        if let Some(win) = window.app_handle().get_webview_window("main") {
-                            apply_startup_layout(&win);
-                        }
-                    }
                     tauri::WindowEvent::Resized(_) => save_window_size(window),
-                    tauri::WindowEvent::Moved(_) if !in_startup() => save_window_position(window),
+                    tauri::WindowEvent::Moved(_) => save_window_position(window),
                     _ => {}
                 }
             }
         })
         .setup(|app| {
             let _ = APP.set(app.handle().clone());
-            let _ = STARTED.set(std::time::Instant::now());
             control::init(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 apply_startup_layout(&window);

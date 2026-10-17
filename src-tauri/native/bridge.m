@@ -31,7 +31,6 @@ static BOOL transparencyEnabled = YES;
 static NSMutableArray<NSString *> *activeKeyTexts;
 
 static NSMutableArray<id> *observers;
-static NSMutableSet<NSString *> *sizedWindows;
 static void emit(NSString *window, NSDictionary *event) {
     if (!eventCallback || shuttingDown || !window) return;
     NSData *json = [NSJSONSerialization dataWithJSONObject:event options:0 error:nil];
@@ -684,7 +683,7 @@ static bool nativeAction(ghostty_app_t app,ghostty_target_s target,ghostty_actio
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:event=@{@"type":@"exited",@"id":identifier,@"code":@(action.action.child_exited.exit_code)};break;
         case GHOSTTY_ACTION_OPEN_CONFIG:{ghostty_string_s path=ghostty_config_open_path();NSString *p=path.ptr?[[NSString alloc] initWithBytes:path.ptr length:path.len encoding:NSUTF8StringEncoding]:nil;if(p)[NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:p]];ghostty_string_free(path);return true;}
         case GHOSTTY_ACTION_RELOAD_CONFIG:dispatch_async(dispatch_get_main_queue(),^{reloadConfig();});return true;
-        case GHOSTTY_ACTION_INITIAL_SIZE:{if(!window||[sizedWindows containsObject:owner])return true;[sizedWindows addObject:owner];double scale=window.backingScaleFactor ?: 1;[window setContentSize:NSMakeSize(action.action.initial_size.width/scale+280,action.action.initial_size.height/scale+82)];return true;}
+        case GHOSTTY_ACTION_INITIAL_SIZE:return true; // 終端機跟隨視窗，不反過來依終端機大小改視窗
         case GHOSTTY_ACTION_SIZE_LIMIT:return true;
         case GHOSTTY_ACTION_CELL_SIZE:return true;
         case GHOSTTY_ACTION_TOGGLE_FULLSCREEN:[window toggleFullScreen:nil];return true;
@@ -914,7 +913,7 @@ static void applyCutout(HGSurface *s,NSView *web) {
 char *hg_command(void *windowPointer,const char *labelString,const char *resources,const char *request,hg_event_cb callback) {
     NSCAssert(NSThread.isMainThread,@"Native Ghostty must run on the AppKit thread");
     @autoreleasepool {
-        if(!surfaces)surfaces=[NSMutableDictionary dictionary];if(!windows)windows=[NSMutableDictionary dictionary];if(!sizedWindows)sizedWindows=[NSMutableSet set];eventCallback=callback;
+        if(!surfaces)surfaces=[NSMutableDictionary dictionary];if(!windows)windows=[NSMutableDictionary dictionary];eventCallback=callback;
         NSWindow *window=(__bridge NSWindow *)windowPointer;NSString *label=str(labelString);windows[label]=window;
         NSDictionary *req=[NSJSONSerialization JSONObjectWithData:[str(request) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];NSString *op=req[@"op"];
         NSDictionary *result=@{};
@@ -1008,7 +1007,7 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
         else if([op isEqualToString:@"close"]){HGSurface *s=surfaces[req[@"id"]];result=s?destroySurface(s,[req[@"force"] boolValue]):@{@"closed":@YES};}
         else if([op isEqualToString:@"binding"]){HGSurface *s=surfaces[req[@"id"]];NSString *binding=req[@"action"];if(!s||!ghostty_surface_binding_action(s.surface,binding.UTF8String,[binding lengthOfBytesUsingEncoding:NSUTF8StringEncoding]))result=@{@"error":@"Ghostty 無法執行這個動作"};}
         else if([op isEqualToString:@"quick"]){toggleQuickTerminal(label);}
-        else if([op isEqualToString:@"forget-window"]){[windows removeObjectForKey:label];[sizedWindows removeObject:label];}
+        else if([op isEqualToString:@"forget-window"]){[windows removeObjectForKey:label];}
         else if([op isEqualToString:@"insert-text"]){HGSurface *s=surfaces[req[@"id"]];NSString *text=req[@"text"];if(s.surface&&text.length)ghostty_surface_text(s.surface,text.UTF8String,[text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);else result=@{@"error":@"找不到終端機"};}
         else if([op hasPrefix:@"files-"])result=HGFilesCommand(window,req,^(NSDictionary *event){emit(label,event);});
         else result=@{@"error":@"未知原生指令"};
