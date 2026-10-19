@@ -15,6 +15,7 @@ mod files;
 mod locales;
 mod preview;
 mod snippets;
+mod tools;
 mod usage;
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
@@ -756,6 +757,9 @@ fn main() {
             locales::locale_read_file,
             locales::locale_write_file,
             snippets::snippets,
+            tools::load_launch_tools,
+            tools::save_launch_tools,
+            tools::open_with_app,
             usage::usage_codex,
             usage::usage_claude,
             snippets::save_snippets,

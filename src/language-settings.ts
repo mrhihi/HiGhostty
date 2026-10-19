@@ -49,7 +49,7 @@ async function exportLocale(deps: LanguageDeps, code: string, status: HTMLElemen
 
 // 設定面板的「語言」區塊。選單與錯誤訊息在語系或語系檔變動時重建。
 export function createLanguageSection(deps: LanguageDeps): HTMLElement {
-  const section = el("div", "language-section");
+  const section = el("div", "language-section settings-card");
   const heading = withI18n(el("h4"), "language.title");
   const help = withI18n(el("p", "help"), "language.help");
   const select = el("select"); select.id = "ui-language"; select.setAttribute("aria-label", t("language.title"));

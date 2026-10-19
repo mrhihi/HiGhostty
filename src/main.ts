@@ -6,6 +6,7 @@ import { popupMenu as showMenu } from "./context-menu";
 import { t } from "./i18n";
 import { initI18n, onLocaleChange } from "./i18n-runtime";
 import { createLanguageSection, renderLocaleEditor } from "./language-settings";
+import { createLaunchToolsSection, launchTools, loadLaunchTools } from "./launch-settings";
 import {
   leaves,
   split,
@@ -39,8 +40,8 @@ import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
 import { initUsageBar } from "./usage-bar";
 import { enableRowDrag } from "./row-drag";
-import { icons } from "./icons";
-import { AI_TOOLS, composeLaunch, joinCommand, parseLaunch, splitCommand, type Launch } from "./launch";
+import { aiToolIcons, icons } from "./icons";
+import { AI_TOOLS, composeLaunch, joinCommand, parseLaunch, presetCommand, resolveIcon, presetLabel, splitCommand, type Launch } from "./launch";
 import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDetail, togglePanel, type Detail, type DrawerState, type Panel } from "./drawer";
 import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, menuAnswerable, menuKeys, promptIdentity, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
 import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./prompt-rules";
@@ -122,7 +123,7 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 <section id="panel-workspace" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.workspace">Workspace</strong><button id="new" class="icon-btn" title="New tab" data-i18n-title="app.newTab" aria-label="New tab" data-i18n-aria-label="app.newTab">${icons.plus}</button></div><div id="tabs" role="tree" aria-label="Workspace" data-i18n-aria-label="app.workspace"></div></section>
 <section id="panel-favorites" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.favorites">Favorites</strong><button id="favorite-add" class="icon-btn" title="New favorite" data-i18n-title="app.addFavorite" aria-label="New favorite" data-i18n-aria-label="app.addFavorite">${icons.plus}</button><button id="favorite-group-add" class="icon-btn" title="New group" data-i18n-title="app.addGroup" aria-label="New group" data-i18n-aria-label="app.addGroup">${icons.folderPlus}</button></div><div id="favorite-add-options" class="inline-actions" hidden><button id="favorite-current-tab" class="ghost-btn wide-button"></button><button id="favorite-from-dir" class="ghost-btn wide-button" data-i18n="app.favoriteFromDir">Create favorite from folder…</button></div><div id="favorites"></div></section>
 <section id="panel-snippets" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.snippets">Snippets</strong><button id="snippet-add" class="icon-btn" title="New snippet" data-i18n-title="app.addSnippet" aria-label="New snippet" data-i18n-aria-label="app.addSnippet">${icons.plus}</button></div><div id="snippet-list"></div></section>
-<section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.settings">Settings</strong></div><div class="settings-content"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn" data-i18n="settings.openConfig">Open config file</button><button id="reload-config" class="ghost-btn" data-i18n="settings.reload">Reload</button></div><h4 data-i18n="settings.window">Window</h4><p class="help" data-i18n="settings.windowHelp">Where the main window appears when the app opens. The size is always restored from last time.</p><select id="window-placement"><option value="center" data-i18n="settings.placementCenter">Center on screen</option><option value="remember" data-i18n="settings.placementRemember">Remember last position</option></select><h4 data-i18n="settings.rules">Prompt detection rules</h4><p class="help" data-i18n="settings.rulesHelp">When an agent in a background tab stops to ask you something, the screen is recognized by these rules and you are notified. The rules file can add, replace or disable built-in rules.</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn" data-i18n="settings.openRules">Open rules file</button><button id="reload-rules" class="ghost-btn" data-i18n="settings.reload">Reload</button></div><h4 data-i18n="settings.control">Agent control commands</h4><p class="help" data-i18n="settings.controlHelp">Lets agents inside terminals use highostty ctl to read other tabs, run in the background, and more. Read-only: view only. Full: can also open tabs and send input. Only newly opened tabs get the related environment variables.</p><select id="control-mode"><option value="off" data-i18n="settings.controlOff">Off</option><option value="readonly" data-i18n="settings.controlReadonly">Read-only</option><option value="full" data-i18n="settings.controlFull">Full</option></select><p class="help" data-i18n="settings.skillHelp">The skill teaches an agent how to use these commands. Nothing is written until you press a button: it goes into each agent's skills folder (skills/highostty/SKILL.md under ~/.claude, ~/.codex, ~/.copilot, ~/.gemini) and can be removed at any time. For other agents, copy the content into their global instructions.</p><div id="skill-list"></div><p id="skill-status"></p><div class="button-row"><button id="copy-skill" class="ghost-btn" data-i18n="settings.copySkill">Copy skill content</button></div><h4 data-i18n="settings.diagnostics">Diagnostics</h4><pre id="config-diagnostics"></pre><h4 data-i18n="settings.shortcuts">Shortcuts</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span data-i18n="settings.sc.switchTab">Switch tabs</span><kbd>⌘⇧B</kbd><span data-i18n="settings.sc.sidebar">Toggle sidebar</span><kbd>⌘⇧P</kbd><span data-i18n="settings.sc.snippets">Snippets palette</span><kbd>⌘O / ⌘0</kbd><span data-i18n="settings.sc.files">Files panel</span><kbd>⇧⌘F</kbd><span data-i18n="settings.sc.filesFull">Files panel full screen</span><kbd>⌘T</kbd><span data-i18n="settings.sc.newTab">New tab</span><kbd>⌘⇧T</kbd><span data-i18n="settings.sc.childTab">Another tab in the same folder (child tab)</span><kbd>⌘D / ⌘⇧D</kbd><span data-i18n="settings.sc.split">Split</span></div></div></section>
+<section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.settings">Settings</strong></div><div class="settings-content"><div class="settings-card"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn" data-i18n="settings.openConfig">Open config file</button><button id="reload-config" class="ghost-btn" data-i18n="settings.reload">Reload</button></div></div><div class="settings-card"><h4 data-i18n="settings.window">Window</h4><p class="help" data-i18n="settings.windowHelp">Where the main window appears when the app opens. The size is always restored from last time.</p><select id="window-placement"><option value="center" data-i18n="settings.placementCenter">Center on screen</option><option value="remember" data-i18n="settings.placementRemember">Remember last position</option></select></div><div class="settings-card"><h4 data-i18n="settings.rules">Prompt detection rules</h4><p class="help" data-i18n="settings.rulesHelp">When an agent in a background tab stops to ask you something, the screen is recognized by these rules and you are notified. The rules file can add, replace or disable built-in rules.</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn" data-i18n="settings.openRules">Open rules file</button><button id="reload-rules" class="ghost-btn" data-i18n="settings.reload">Reload</button></div></div><div class="settings-card"><h4 data-i18n="settings.control">Agent control commands</h4><p class="help" data-i18n="settings.controlHelp">Lets agents inside terminals use highostty ctl to read other tabs, run in the background, and more. Read-only: view only. Full: can also open tabs and send input. Only newly opened tabs get the related environment variables.</p><select id="control-mode"><option value="off" data-i18n="settings.controlOff">Off</option><option value="readonly" data-i18n="settings.controlReadonly">Read-only</option><option value="full" data-i18n="settings.controlFull">Full</option></select><p class="help" data-i18n="settings.skillHelp">The skill teaches an agent how to use these commands. Nothing is written until you press a button: it goes into each agent's skills folder (skills/highostty/SKILL.md under ~/.claude, ~/.codex, ~/.copilot, ~/.gemini) and can be removed at any time. For other agents, copy the content into their global instructions.</p><div id="skill-list"></div><p id="skill-status"></p><div class="button-row"><button id="copy-skill" class="ghost-btn" data-i18n="settings.copySkill">Copy skill content</button></div></div><div class="settings-card"><h4 data-i18n="settings.diagnostics">Diagnostics</h4><pre id="config-diagnostics"></pre></div><div class="settings-card"><h4 data-i18n="settings.shortcuts">Shortcuts</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span data-i18n="settings.sc.switchTab">Switch tabs</span><kbd>⌘⇧B</kbd><span data-i18n="settings.sc.sidebar">Toggle sidebar</span><kbd>⌘⇧P</kbd><span data-i18n="settings.sc.snippets">Snippets palette</span><kbd>⌘O / ⌘0</kbd><span data-i18n="settings.sc.files">Files panel</span><kbd>⇧⌘F</kbd><span data-i18n="settings.sc.filesFull">Files panel full screen</span><kbd>⌘T</kbd><span data-i18n="settings.sc.newTab">New tab</span><kbd>⌘⇧T</kbd><span data-i18n="settings.sc.childTab">Another tab in the same folder (child tab)</span><kbd>⌘D / ⌘⇧D</kbd><span data-i18n="settings.sc.split">Split</span></div></div></div></section>
 </div></section><div id="drawer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" data-i18n-aria-label="app.resizeSidebar" hidden></div><section id="drawer-detail" aria-label="Details" data-i18n-aria-label="app.detail"><div class="drawer-inner"></div></section><div id="detail-resizer" role="separator" aria-orientation="vertical" aria-label="Resize editor" data-i18n-aria-label="app.resizeDetail" hidden></div>
 <section id="workspace"><div id="terminals" aria-label="Native Ghostty workspace" data-i18n-aria-label="app.terminalsLabel"></div><div id="files-resizer" role="separator" aria-orientation="vertical" aria-label="Resize files panel" data-i18n-aria-label="app.resizeFiles" hidden></div><section id="files" aria-label="Files" data-i18n-aria-label="app.files" hidden></section><div id="empty" hidden><p data-i18n="app.emptyHint">Choose a folder to get started.</p><button id="first" data-i18n="app.chooseFolder">Choose folder…</button></div></section></main>
 <footer><span id="app-version" title="HiGhostty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/><path d="M12 8l4 4-4 4-4-4z"/></svg><span id="app-version-text"></span></span><span id="search-status"></span></footer>
@@ -1252,7 +1253,15 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
   const state = document.createElement("span"); state.className = "status-dot"; state.classList.toggle("exited", ids.every((id) => surfaces.get(id)?.exited));
   state.title = ids.every((id) => surfaces.get(id)?.exited) ? t("app.terminalExited") : t("app.terminalOpen");
   const label = button(tabName(tab), () => activate(tab), surface?.cwd); label.className = "row-label"; label.ondblclick = () => inlineRename(tab, label);
-  row.append(state, label);
+  // A tab launched with an AI tool shows that tool's icon in place of the status dot (settings can change or hide it).
+  const aiTool = parseLaunch(tab.command)?.tool, aiIcon = aiTool && resolveIcon(aiTool.id, launchTools().icons);
+  if (aiTool && (aiIcon?.mark || aiIcon?.text)) {
+    const mark = document.createElement("span"); mark.className = "ai-mark"; mark.title = `${aiTool.label} · ${state.title}`;
+    if (aiIcon.mark && aiToolIcons[aiIcon.mark]) mark.innerHTML = aiToolIcons[aiIcon.mark]; else mark.textContent = aiIcon.text ?? "";
+    mark.classList.toggle("exited", state.classList.contains("exited"));
+    row.append(mark);
+  } else row.append(state);
+  row.append(label);
   if (tab.tmux || ids.some((id) => surfaces.get(id)?.tmuxSession)) row.append(tmuxMark());
   if (tab.status) { const note = document.createElement("span"); note.className = "tab-status"; note.textContent = tab.status; note.title = tab.status; row.append(note); }
   if (alert) { const pill = document.createElement("span"); pill.className = "alert-pill"; pill.textContent = alert.prompt?.low ? t("app.waiting") : alert.title; pill.title = alert.prompt ? [alert.prompt.question, ...alert.prompt.options].filter(Boolean).join("\n") : alert.body; row.append(pill); }
@@ -1264,6 +1273,8 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
     { text: tab.favoriteId ? t("app.editFavoriteEllipsis") : t("app.editTabEllipsis"), action: () => renameTab(tab) },
     { text: t("app.duplicateTab"), action: () => duplicateTab(tab, surface?.cwd || defaultPath()) },
     { text: t("app.cloneTab"), action: () => cloneTab(tab).catch(notify) },
+    { item: "Separator" },
+    ...launchMenuItems(surface?.cwd || defaultPath(), tabLaunchOptions(tab)),
     { item: "Separator" },
     ...shellMenuItems(tab),
     { item: "Separator" },
@@ -1310,8 +1321,36 @@ function favoriteMenuItems(item: WorkspaceFavorite): MenuEntry[] {
     { text: t("app.cloneTab"), action: () => copyFavorite(item).catch(notify) },
     { text: t("app.shellNewTab"), action: () => favoriteShellTab(item) },
     { item: "Separator" },
+    ...launchMenuItems((existingFavoriteTab(item) && surfaces.get(existingFavoriteTab(item)!.focused)?.cwd) || item.tab.paths[0] || defaultPath(), favoriteLaunchOptions(item)),
+    { item: "Separator" },
     { text: t("app.editFavoriteEllipsis"), action: () => editFavorite(item) },
   ];
+}
+// Quick launch presets (new tab in `path`), Finder and the user's "open with" apps.
+// The new tab belongs to the source's workspace: a child of its open instance (same group/favorite),
+// or, for a favorite that is not open yet, a new instance linked to the favorite.
+const existingFavoriteTab = (item: WorkspaceFavorite) => recentFavoriteInstance(tabs, item.id, recentFavoriteInstances.get(item.id));
+function tabLaunchOptions(tab: Tab) {
+  const root = rootOf(tab), favorite = favoriteOf(root), config = favorite?.tab ?? root;
+  return { parentId: root.id, favoriteId: favorite?.id ?? root.favoriteId, commandInShell: config.commandInShell, tmux: !!config.tmux, tmuxHideStatus: !!config.tmuxHideStatus };
+}
+function favoriteLaunchOptions(item: WorkspaceFavorite) {
+  const existing = existingFavoriteTab(item);
+  return { parentId: existing ? rootOf(existing).id : undefined, favoriteId: item.id, commandInShell: item.tab.commandInShell, tmux: !!item.tab.tmux, tmuxHideStatus: !!item.tab.tmuxHideStatus };
+}
+// Presets launch like the source tab: its "load shell" and tmux settings carry over (a tab through
+// `parentId`, a favorite through the options); only the command differs.
+function launchMenuItems(path: string, options: { parentId?: string; favoriteId?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean } = {}): MenuEntry[] {
+  const { presets, openers } = launchTools();
+  const items: MenuEntry[] = [];
+  for (const preset of presets) {
+    const command = presetCommand(preset);
+    if (command) items.push({ text: t("launch.menu.newTabWith", { name: presetLabel(preset) }), action: () => newSurface(path, undefined, undefined, { command, commandInShell: options.commandInShell, parentId: options.parentId, favoriteId: options.favoriteId, tmux: options.tmux, tmuxHideStatus: options.tmuxHideStatus }) });
+  }
+  if (items.length) items.push({ item: "Separator" });
+  items.push({ text: t("launch.menu.reveal"), action: () => native({ op: "files-reveal", paths: [path] }) });
+  for (const opener of openers) items.push({ text: t("launch.menu.openWith", { name: opener.name }), action: () => invoke("open_with_app", { path, app: opener.app }) });
+  return items;
 }
 async function popupMenu(items: MenuEntry[]) {
   try {
@@ -2467,13 +2506,17 @@ $("drawer-primary").addEventListener("transitionend", scheduleLayout);
 $("drawer-detail").addEventListener("transitionend", scheduleLayout);
 async function start() {
   await initI18n();
+  await loadLaunchTools();
+  const launchSection = createLaunchToolsSection(notify);
+  window.addEventListener("focus", () => { loadLaunchTools().then(() => (launchSection as HTMLElement & { rerender?: () => void }).rerender?.()).catch(() => {}); });
   $("panel-settings").querySelector(".settings-content")!.prepend(createLanguageSection({
     native,
     notify,
     openEditor: (code) => showDetail({ kind: "edit-locale", code }),
-  }));
+  }), launchSection);
   // 語言切換：重畫所有由程式產生的文字。開著的編輯器不重建（會丟掉未存的輸入）。
   onLocaleChange(() => {
+    (launchSection as HTMLElement & { rerender?: () => void }).rerender?.();
     if (!detail()?.kind.startsWith("edit-")) renderedDetail = undefined;
     renderTabs();
     renderFavorites();

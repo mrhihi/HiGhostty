@@ -97,3 +97,11 @@
 - Claude 的 OAuth token 只留在記憶體：經 stdin 傳給 curl、不寫檔、不進錯誤訊息或日誌；使用者可在細節浮層關閉 Claude 用量（關閉時不讀鑰匙圈）。
 - 細節浮層靠 `overlay-cutout` 顯示，與 ⌘⇧P 面板、待處理浮層共用單一遮罩，開啟前必須關掉其他浮層。
 - 改完照 `docs/usage.md` 的驗收清單實機操作（`npm test` 不涵蓋原生遮罩與鑰匙圈）。
+
+## 快速啟動組（`src/launch.ts`、`src/launch-settings.ts`、`src-tauri/src/tools.rs`）
+
+修改頁籤右鍵的啟動組／Finder／「用 X 開啟」或 `launch-tools.json` 前，先讀 `docs/launch-presets.md`。重點：
+
+- 正規化、組指令、App 名稱驗證只放 `src/launch.ts` 並補 `tests/launch.test.mjs`；App 名稱經 `open -a`（參數陣列），不經 shell。
+- 選單項目同步由快取 `launchTools()` 產生，一律走 `popupMenu`。
+- 改完照 `docs/launch-presets.md` 的驗收清單實機操作。

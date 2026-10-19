@@ -23,3 +23,11 @@ export const icons = {
   bell: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 6 2 7.5 2 7.5H4S6 15 6 9z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
   settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 3.1-.2-.1a1.7 1.7 0 0 0-1.8.1l-.2.1h-3.6l-.1-.2a1.7 1.7 0 0 0-1.5-1l-.3.1-3.1-1.8.1-.2a1.7 1.7 0 0 0-.1-1.8l-.1-.2v-3.6l.2-.1a1.7 1.7 0 0 0 1-1.5l-.1-.3 1.8-3.1.2.1a1.7 1.7 0 0 0 1.8-.1l.2-.1h3.6l.1.2a1.7 1.7 0 0 0 1.5 1l.3-.1 3.1 1.8-.1.2a1.7 1.7 0 0 0 .1 1.8l.1.2z"/></svg>',
 };
+
+// Marks for the AI tools a tab launches (keyed by AiTool id); filled, drawn in the row's color.
+export const aiToolIcons: Record<string, string> = {
+  claude: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M12 2l1.7 7.1L20.5 5l-4.1 6.8L23 12l-6.6.2 4.1 6.8-6.8-4.1L12 22l-1.7-7.1L3.5 19l4.1-6.8L1 12l6.6-.2L3.5 5l6.8 4.1z"/></svg>',
+  codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="m9 10 3 2-3 2M13 14.5h3"/></svg>',
+  copilot: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 11c0-4 3-6 7-6s7 2 7 6v5c0 2-3 3-7 3s-7-1-7-3z"/><circle cx="9" cy="12.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12.5" r="1.2" fill="currentColor" stroke="none"/></svg>',
+  gemini: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M12 2c.6 5.6 4.4 9.4 10 10-5.6.6-9.4 4.4-10 10-.6-5.6-4.4-9.4-10-10 5.6-.6 9.4-4.4 10-10z"/></svg>',
+};

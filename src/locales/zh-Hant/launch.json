@@ -1,0 +1,22 @@
+{
+  "launch.menu.openWith": "用 {name} 開啟",
+  "launch.menu.reveal": "在 Finder 中顯示",
+  "launch.menu.newTabWith": "新頁籤：{name}",
+  "launch.settings.presets": "快速啟動組",
+  "launch.settings.presetsHelp": "在頁籤上按右鍵，可用這些 AI 工具與模型在該頁籤的目錄開新頁籤。",
+  "launch.settings.openers": "用其他工具開啟目錄",
+  "launch.settings.openersHelp": "顯示在頁籤右鍵選單的 App。填 App 名稱（例如 Visual Studio Code）或完整路徑。",
+  "launch.settings.name": "名稱",
+  "launch.settings.app": "App 名稱或路徑",
+  "launch.settings.remove": "移除",
+  "launch.settings.addPreset": "新增啟動組",
+  "launch.settings.addOpener": "新增 App",
+  "launch.settings.models": "AI 模型清單",
+  "launch.settings.modelsHelp": "頁籤設定與啟動組可挑選的模型，以逗號分隔。留空使用內建清單（顯示為提示文字）；有新模型時直接在這裡更新。",
+  "launch.settings.resetModels": "還原",
+  "launch.settings.icon": "頁籤圖示",
+  "launch.settings.iconText": "自訂圖示文字（emoji）",
+  "launch.settings.iconDefault": "工具預設圖示",
+  "launch.settings.iconNone": "不顯示圖示",
+  "launch.settings.iconCustom": "自訂文字…"
+}

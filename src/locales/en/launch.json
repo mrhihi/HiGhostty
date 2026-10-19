@@ -1,0 +1,22 @@
+{
+  "launch.menu.openWith": "Open with {name}",
+  "launch.menu.reveal": "Show in Finder",
+  "launch.menu.newTabWith": "New tab: {name}",
+  "launch.settings.presets": "Quick launch presets",
+  "launch.settings.presetsHelp": "Right-click a tab to open a new tab in its folder with one of these AI tools and models.",
+  "launch.settings.openers": "Open folder with",
+  "launch.settings.openersHelp": "Apps shown in the tab right-click menu. Use the app name (for example Visual Studio Code) or its full path.",
+  "launch.settings.name": "Name",
+  "launch.settings.app": "App name or path",
+  "launch.settings.remove": "Remove",
+  "launch.settings.addPreset": "Add preset",
+  "launch.settings.addOpener": "Add app",
+  "launch.settings.models": "AI model lists",
+  "launch.settings.modelsHelp": "Models offered in the tab editor and presets. Separate names with commas. Leave empty to use the built-in list (shown as the placeholder); to update, edit here.",
+  "launch.settings.resetModels": "Reset",
+  "launch.settings.icon": "Tab icon",
+  "launch.settings.iconText": "Custom icon text (emoji)",
+  "launch.settings.iconDefault": "Own icon",
+  "launch.settings.iconNone": "No icon",
+  "launch.settings.iconCustom": "Custom text…"
+}
