@@ -115,7 +115,7 @@ body:not(.term-pointer) .row:hover { background: var(--hover); }
 .custom-color { background: conic-gradient(#f66, #fc6, #6d8, #6df, #a6f, #f6a, #f66); }
 .confirming { background: var(--danger-soft); }
 .move-current { margin: 12px 0; }
-.badge, .favorite-mark { flex: 0 0 auto; color: var(--text-faint); font-size: 13px; }
+.badge { flex: 0 0 auto; color: var(--text-faint); font-size: 13px; }
 .group-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; }
 .active-mark { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: var(--accent); }
 .active-mark[hidden] { display: none; }
@@ -146,8 +146,6 @@ body:not(.term-pointer) .row:hover { background: var(--hover); }
 .flash { animation: flash 400ms ease-out; }
 @keyframes flash { from { background: var(--selected); } }
 .favorite-icon { display: grid; color: var(--text-muted); }
-.favorite-mark { display: grid; }
-.favorite-mark svg { width: 10px; height: 10px; fill: currentColor; }
 /* Tab row end: the ⌘N hint at rest; the "more" button floats over it on hover so the label never reflows. */
 .tab-row { position: relative; cursor: pointer; }
 .tab-slot { flex: 0 0 auto; position: relative; display: flex; align-items: center; justify-content: flex-end; min-width: 22px; height: 22px; margin-left: auto; }

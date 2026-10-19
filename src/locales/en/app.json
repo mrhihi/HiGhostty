@@ -139,7 +139,6 @@
   "app.collapse": "Collapse",
   "app.sameDirTerminals.one": "{n} terminal in the same folder",
   "app.sameDirTerminals.other": "{n} terminals in the same folder",
-  "app.fromFavorite": "From favorite “{name}”",
   "app.noUngroupedTabs": "No ungrouped tabs",
   "app.expandGroup": "Expand group",
   "app.collapseGroup": "Collapse group",

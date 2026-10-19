@@ -921,10 +921,10 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
         else if(!engine)result=@{@"error":@"原生 Ghostty 尚未初始化"};
         else if([op isEqualToString:@"pick-directory"]){
             NSOpenPanel *panel=[NSOpenPanel openPanel];panel.canChooseDirectories=YES;panel.canChooseFiles=NO;panel.allowsMultipleSelection=NO;panel.canCreateDirectories=YES;panel.prompt=L(@"native.chooseDirectory",@"Choose");panel.directoryURL=[NSURL fileURLWithPath:req[@"path"]];
-            __block BOOL done=NO;__block NSString *picked=nil;
-            [panel beginSheetModalForWindow:window completionHandler:^(NSModalResponse response){if(response==NSModalResponseOK)picked=panel.URL.path;done=YES;}];
-            while(!done)[NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
-            result=@{@"path":picked ?: (id)NSNull.null};
+            // Let AppKit own its modal event loop. Manually pumping only the
+            // default run-loop mode starves mouse tracking while browsing.
+            NSModalResponse response=[panel runModal];
+            result=@{@"path":response==NSModalResponseOK?panel.URL.path:(id)NSNull.null};
         }
         else if([op isEqualToString:@"set-strings"]){
             NSDictionary *strings=req[@"strings"];
@@ -937,10 +937,8 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
             UTType *json=[UTType typeWithFilenameExtension:@"json"];if(json)panel.allowedContentTypes=@[json];
             if(saving){NSString *name=req[@"name"];if([name isKindOfClass:NSString.class])panel.nameFieldStringValue=name;}
             else{NSOpenPanel *open=(NSOpenPanel *)panel;open.canChooseFiles=YES;open.canChooseDirectories=NO;open.allowsMultipleSelection=NO;}
-            __block BOOL done=NO;__block NSString *picked=nil;
-            [panel beginSheetModalForWindow:window completionHandler:^(NSModalResponse response){if(response==NSModalResponseOK)picked=panel.URL.path;done=YES;}];
-            while(!done)[NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
-            result=@{@"path":picked ?: (id)NSNull.null};
+            NSModalResponse response=[panel runModal];
+            result=@{@"path":response==NSModalResponseOK?panel.URL.path:(id)NSNull.null};
         }
         else if([op isEqualToString:@"cwd"]){HGSurface *s=surfaces[req[@"id"]];if(s){int pid=shellPid(s);struct proc_vnodepathinfo cwd={0};if(pid>0&&proc_pidinfo(pid,PROC_PIDVNODEPATHINFO,0,&cwd,sizeof(cwd))==sizeof(cwd)){NSString *p=str(cwd.pvi_cdir.vip_path);if(p.length&&![p isEqualToString:s.cwd]){s.cwd=p;emit(s.owner,@{@"type":@"cwd",@"id":s.identifier,@"path":p});}}result=@{@"cwd":s.cwd ?: @"",@"exited":@(ghostty_surface_process_exited(s.surface))};}}
         else if([op isEqualToString:@"idle-rules"]){NSMutableArray *list=[NSMutableArray array];id given=req[@"rules"];if([given isKindOfClass:[NSArray class]])for(id item in given)if([item isKindOfClass:[NSDictionary class]]&&[item[@"name"] isKindOfClass:[NSString class]])[list addObject:item];idleRules=list;}

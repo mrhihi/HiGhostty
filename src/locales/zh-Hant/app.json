@@ -139,7 +139,6 @@
   "app.collapse": "收合",
   "app.sameDirTerminals.one": "{n} 個同目錄終端機",
   "app.sameDirTerminals.other": "{n} 個同目錄終端機",
-  "app.fromFavorite": "來自收藏「{name}」",
   "app.noUngroupedTabs": "沒有未分組的頁籤",
   "app.expandGroup": "展開群組",
   "app.collapseGroup": "收合群組",

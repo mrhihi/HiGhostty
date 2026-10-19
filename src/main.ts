@@ -1139,7 +1139,6 @@ function appendTabGroup(parent: HTMLElement, root: Tab, folder: FavoriteFolder |
   toggle.replaceChildren(chevron, label);
   const count = document.createElement("span"); count.className = "badge"; count.textContent = String(members.length); count.title = t("app.sameDirTerminals", { n: members.length });
   head.append(toggle, count);
-  if (root.favoriteId) { const star = document.createElement("span"); star.className = "favorite-mark"; star.innerHTML = icons.star; star.title = t("app.fromFavorite", { name: favoriteFor(root)?.name || "" }); head.append(star); }
   head.dataset.tabId = root.id;
   wireTabDrag(head, root, false);
   parent.append(head);
@@ -1257,7 +1256,6 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
   if (tab.tmux || ids.some((id) => surfaces.get(id)?.tmuxSession)) row.append(tmuxMark());
   if (tab.status) { const note = document.createElement("span"); note.className = "tab-status"; note.textContent = tab.status; note.title = tab.status; row.append(note); }
   if (alert) { const pill = document.createElement("span"); pill.className = "alert-pill"; pill.textContent = alert.prompt?.low ? t("app.waiting") : alert.title; pill.title = alert.prompt ? [alert.prompt.question, ...alert.prompt.options].filter(Boolean).join("\n") : alert.body; row.append(pill); }
-  if (tab.favoriteId && !nested) { const star = document.createElement("span"); star.className = "favorite-mark"; star.innerHTML = icons.star; star.title = t("app.fromFavorite", { name: favoriteFor(tab)?.name || "" }); row.append(star); }
   if (ids.length > 1) { const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = String(ids.length); badge.title = t("app.splitTitle", { n: ids.length }); row.append(badge); }
   // One slot at the row end: the ⌘N hint at rest, a floating "more" button on
   // hover. The button overlays the hint so hovering never reflows the label.
