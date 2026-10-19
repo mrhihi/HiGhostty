@@ -553,6 +553,13 @@ fn tmux_path() -> Option<String> {
     let path = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && path.starts_with('/')).then_some(path)
 }
+/// tmux 3.5 added the CSI-u extended key format needed by Codex TUI.
+#[tauri::command]
+fn tmux_supports_csi_u() -> bool {
+    let Some(tmux) = tmux_path() else { return false };
+    let Ok(version) = std::process::Command::new(tmux).arg("-V").output() else { return false };
+    control::tmux_supports_csi_u(&String::from_utf8_lossy(&version.stdout))
+}
 /// 給 tmux session 的 HIGHOSTTY_* 環境變數（new-session -e）；tmux 低於 3.2 不支援 -e，回傳空表。
 #[tauri::command]
 fn control_env(app: tauri::AppHandle, session: String) -> Result<std::collections::HashMap<String, String>, String> {
@@ -765,6 +772,7 @@ fn main() {
             tmux_set_status,
             tmux_available,
             tmux_path,
+            tmux_supports_csi_u,
             program_path,
             login_path,
             control_env,

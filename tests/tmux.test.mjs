@@ -13,14 +13,19 @@ test("session names are valid and distinct", () => {
 });
 
 test("tmuxCommand attaches or creates, quoting cwd and command", () => {
-  assert.equal(tmuxCommand("hg-abcd1234", "/tmp/a b"), "tmux start-server \\; set-option -s extended-keys always \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/tmp/a b' \\; set-option status on");
+  assert.equal(tmuxCommand("hg-abcd1234", "/tmp/a b", undefined, false, "tmux", undefined, true), "tmux start-server \\; set-option -s extended-keys always \\; set-option -s extended-keys-format csi-u \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/tmp/a b' \\; set-option status on");
   assert.ok(tmuxCommand("hg-abcd1234", "/", undefined, true).endsWith("\\; set-option status off"));
-  assert.equal(tmuxCommand("hg-abcd1234", "/it's", "npm run dev"), "tmux start-server \\; set-option -s extended-keys always \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/it'\\''s' 'npm run dev' \\; set-option status on");
+  assert.equal(tmuxCommand("hg-abcd1234", "/it's", "npm run dev", false, "tmux", undefined, true), "tmux start-server \\; set-option -s extended-keys always \\; set-option -s extended-keys-format csi-u \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/it'\\''s' 'npm run dev' \\; set-option status on");
   assert.throws(() => tmuxCommand("x; rm", "/"));
 });
 
 test("tmuxCommand uses a quoted absolute binary", () => {
   assert.ok(tmuxCommand("hg-abcd1234", "/", undefined, false, "/opt/homebrew/bin/tmux").startsWith("'/opt/homebrew/bin/tmux' start-server"));
+});
+
+test("tmuxCommand enables csi-u only when the installed tmux supports it", () => {
+  assert.ok(!tmuxCommand("hg-abcd1234", "/").includes("extended-keys-format"));
+  assert.ok(tmuxCommand("hg-abcd1234", "/", undefined, false, "tmux", undefined, true).includes("extended-keys-format csi-u"));
 });
 
 test("restorable keeps only tmux tabs and drops invalid sessions", () => {

@@ -156,6 +156,22 @@ pub fn tmux_supports_env(version: &str) -> bool {
     }
 }
 
+/// tmux added `extended-keys-format` in 3.5; older versions keep their default xterm format.
+pub fn tmux_supports_csi_u(version: &str) -> bool {
+    let text = version.trim().strip_prefix("tmux").unwrap_or(version).trim();
+    let text = text.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let mut parts = text.splitn(2, '.');
+    let number = |part: Option<&str>| {
+        part.map(|p| p.chars().take_while(char::is_ascii_digit).collect::<String>())
+            .and_then(|digits| digits.parse::<u32>().ok())
+    };
+    match (number(parts.next()), number(parts.next())) {
+        (Some(major), Some(minor)) => (major, minor) >= (3, 5),
+        (Some(major), None) => major > 3,
+        _ => false,
+    }
+}
+
 /// Read the saved mode and start the server accordingly; called once at startup.
 pub fn init(app: &tauri::AppHandle) {
     let mode = read_mode(app);
@@ -631,6 +647,17 @@ mod tests {
         assert!(!tmux_supports_env("tmux 2.9"));
         assert!(!tmux_supports_env("tmux master"));
         assert!(!tmux_supports_env(""));
+    }
+    #[test]
+    fn tmux_csi_u_support_needs_3_5() {
+        assert!(tmux_supports_csi_u("tmux 3.8"));
+        assert!(tmux_supports_csi_u("tmux 3.5a"));
+        assert!(tmux_supports_csi_u("tmux next-3.5"));
+        assert!(tmux_supports_csi_u("tmux 4.0"));
+        assert!(!tmux_supports_csi_u("tmux 3.4"));
+        assert!(!tmux_supports_csi_u("tmux 2.9"));
+        assert!(!tmux_supports_csi_u("tmux master"));
+        assert!(!tmux_supports_csi_u(""));
     }
     #[test]
     fn timeout_flag_is_read_until_double_dash() {

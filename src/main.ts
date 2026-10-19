@@ -1475,6 +1475,7 @@ async function newSurface(path: string, source?: string, direction?: number, opt
   const tmuxSession = useTmux ? (validSession(options.tmuxSession) ? options.tmuxSession : newSessionName()) : undefined;
   const tmuxBin = tmuxSession ? await invoke<string | null>("tmux_path").catch(() => null) : null;
   if (tmuxSession && !tmuxBin) throw new Error(t("app.tmuxMissing"));
+  const tmuxCsiU = tmuxSession ? await invoke<boolean>("tmux_supports_csi_u").catch(() => false) : false;
   // HIGHOSTTY_* 給 session 內的程式（tmux 3.2 以下為空表）；失敗不影響開頁籤。
   const program = startProgram(command);
   const tmuxProgramPath = tmuxSession && program && !program.includes("/") ? await invoke<string | null>("program_path", { name: program }).catch(() => null) : null;
@@ -1497,7 +1498,7 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       path: normalized,
       source,
       split: direction !== undefined,
-      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramDir(withProgramPath(command, tmuxProgramPath), tmuxProgramPath, tmuxLoginPath), hideStatus, tmuxBin, tmuxEnv) : command,
+      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramDir(withProgramPath(command, tmuxProgramPath), tmuxProgramPath, tmuxLoginPath), hideStatus, tmuxBin, tmuxEnv, tmuxCsiU) : command,
       commandInShell: tmuxSession ? false : commandInShell,
       tmux: !!tmuxSession,
     });

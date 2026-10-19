@@ -4,7 +4,7 @@
 
 ## 行為
 - 每個窗格（含分割）各自一個 tmux session，名稱 `hg-<8 碼>`（`src/tmux.ts` 的 `newSessionName`）。
-- 啟動命令先設定 server 的 `extended-keys always` 與 `terminal-features ... extkeys`，再執行 `tmux new-session -A -s <name> -c <cwd> [命令]`。這會保留 Shift+Enter 等修飾鍵資訊，即使 AI CLI 沒有自行要求 extended keys；不支援這些按鍵序列的舊 CLI 可能無法辨認修飾鍵。命令直接當 surface 的啟動命令（不經互動式 shell，所以不會進 shell history）；tmux 以 `tmux_path` 取得絕對路徑（GUI app 的 PATH 找不到 Homebrew tmux）。detach（⌃B d）後 surface 結束，頁籤關閉並 kill session。`-A` 讓首次啟動與恢復共用同一條命令。
+- 啟動命令先設定 server 的 `extended-keys always` 與 `terminal-features ... extkeys`；tmux 3.5+ 另設 `extended-keys-format csi-u`，再執行 `tmux new-session -A -s <name> -c <cwd> [命令]`。`csi-u` 格式可讓新版 Codex TUI 分辨 Shift+Enter；tmux 的 xterm 格式會在某些鍵盤回報模式中遺失這個差異。命令直接當 surface 的啟動命令（不經互動式 shell，所以不會進 shell history）；tmux 以 `tmux_path` 取得絕對路徑（GUI app 的 PATH 找不到 Homebrew tmux）。detach（⌃B d）後 surface 結束，頁籤關閉並 kill session。`-A` 讓首次啟動與恢復共用同一條命令。
 - 命令／shell 結束：Ghostty embedded API 對有 `command` 的 surface 強制 `wait-after-command`，會停在 `[exited]` 等按鍵；所以前端收到 `exited` 事件時對 tmux 窗格直接 `destroy`，不等按鍵。
 - 結束 app（主視窗關閉／⌘Q）：先 `save_session` 寫入 `session.json`（`data_dir`），再關閉窗格；`keepTmux` 讓 session 保留。
 - 手動關閉頁籤／窗格、或 shell 結束：`forgetSurface` 呼叫 `tmux_kill_session`，避免殘留。
