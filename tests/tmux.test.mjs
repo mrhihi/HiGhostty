@@ -13,9 +13,9 @@ test("session names are valid and distinct", () => {
 });
 
 test("tmuxCommand attaches or creates, quoting cwd and command", () => {
-  assert.equal(tmuxCommand("hg-abcd1234", "/tmp/a b"), "tmux start-server \\; set-option -s extended-keys on \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/tmp/a b' \\; set-option status on");
+  assert.equal(tmuxCommand("hg-abcd1234", "/tmp/a b"), "tmux start-server \\; set-option -s extended-keys always \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/tmp/a b' \\; set-option status on");
   assert.ok(tmuxCommand("hg-abcd1234", "/", undefined, true).endsWith("\\; set-option status off"));
-  assert.equal(tmuxCommand("hg-abcd1234", "/it's", "npm run dev"), "tmux start-server \\; set-option -s extended-keys on \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/it'\\''s' 'npm run dev' \\; set-option status on");
+  assert.equal(tmuxCommand("hg-abcd1234", "/it's", "npm run dev"), "tmux start-server \\; set-option -s extended-keys always \\; set-option -s 'terminal-features[100]' 'xterm*:extkeys' \\; new-session -A -s hg-abcd1234 -c '/it'\\''s' 'npm run dev' \\; set-option status on");
   assert.throws(() => tmuxCommand("x; rm", "/"));
 });
 

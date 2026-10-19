@@ -21,9 +21,10 @@ const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 // 只對新建的 session 有效，-A 接上既有 session 時 tmux 會忽略。key 只收大寫識別字，避免進 shell。
 export function tmuxCommand(session: string, cwd: string, command?: string, hideStatus?: boolean, bin = "tmux", env?: Record<string, string>): string {
   if (!validSession(session)) throw new Error(t("common.invalidTmuxSession"));
-  // tmux 預設 extended-keys off，Shift+Enter 會被壓成單純 Enter（Claude Code 等會直接送出）。server 選項要在 attach 前設好，
+  // AI CLI 不一定會要求 extended keys；用 always 才能把 Shift+Enter 等修飾鍵資訊傳到 pane，
+  // 避免被壓成單純 Enter（Claude Code 等會直接送出）。server 選項要在 attach 前設好，
   // terminal-features 用固定索引指定，重複執行不會一直附加。
-  const parts = [bin === "tmux" ? bin : quote(bin), "start-server", "\\;", "set-option", "-s", "extended-keys", "on", "\\;",
+  const parts = [bin === "tmux" ? bin : quote(bin), "start-server", "\\;", "set-option", "-s", "extended-keys", "always", "\\;",
     "set-option", "-s", quote("terminal-features[100]"), quote("xterm*:extkeys"), "\\;", "new-session", "-A", "-s", session];
   for (const [key, value] of Object.entries(env ?? {})) if (/^[A-Z][A-Z0-9_]*$/.test(key)) parts.push("-e", quote(`${key}=${value}`));
   if (cwd) parts.push("-c", quote(cwd));
