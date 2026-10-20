@@ -26,6 +26,7 @@ const VERSION_FILES: [&str; 4] = [
 const USAGE: &str = "\
 用法：cargo xtask <command> [options]
 
+  debug                                       啟動開發模式（npm run tauri -- dev）
   build    [--debug]                          建置 HiGhostty.app
   publish  [--debug] [--skip-build]           打包成 dmg
            [--install | --no-install]         是否複製到 ~/Applications（未指定則詢問）
@@ -61,6 +62,10 @@ fn dispatch(args: &[String]) -> Result {
     let mut opts = Opts::parse(rest)?;
     // 先取出所有參數並拒絕多餘的，再開始執行，避免跑完才發現打錯。
     match cmd {
+        "debug" => {
+            opts.finish()?;
+            debug()
+        }
         "build" => {
             let debug = opts.flag("--debug");
             opts.finish()?;
@@ -110,6 +115,15 @@ fn dispatch(args: &[String]) -> Result {
 }
 
 // ---------------------------------------------------------------- build
+
+fn debug() -> Result {
+    let root = root();
+    ensure_prerequisites(&root)?;
+    remove_apple_double(&root.join("src-tauri/capabilities"))?;
+    let mut cmd = Command::new("npm");
+    cmd.args(["run", "tauri", "--", "dev"]);
+    run(cmd.current_dir(&root).env("CARGO_TARGET_DIR", target_dir()))
+}
 
 fn build(debug: bool) -> Result<PathBuf> {
     let root = root();

@@ -157,3 +157,15 @@ export function linkTarget(href: string, currentPath: string): LinkTarget {
   }
   return { kind: "file", path: "/" + parts.filter(Boolean).join("/") };
 }
+
+// A favorite's default preview is stored relative to the tab's working directory.
+export function relativeToDir(dir: string, path: string): string | undefined {
+  const base = dir.endsWith("/") ? dir : `${dir}/`;
+  if (!path.startsWith(base) || path.length === base.length) return undefined;
+  const rel = path.slice(base.length);
+  return rel.split("/").includes("..") ? undefined : rel;
+}
+export function resolveInDir(dir: string, rel: string): string | undefined {
+  if (!rel || rel.startsWith("/") || rel.split("/").includes("..")) return undefined;
+  return `${dir.endsWith("/") ? dir : `${dir}/`}${rel}`;
+}

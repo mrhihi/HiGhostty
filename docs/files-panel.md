@@ -5,23 +5,25 @@
 ## 版面與狀態
 
 ```
-┌rail┬──────────────────────┬┬─────────────────────────────┐
-│    │                      ││ ↑ ~ › proj › src  ⟲ 👁 ⤢ ×  │
-│ ▣  │   終端機（目前頁籤）     ││ 名稱 ▲          大小  修改日期 │
-│ ★  │                      ││ › 📁 native        —   今天  │
-│    │                      ││   📄 main.rs     12 KB 昨天  │
-└────┴──────────────────────┴┴─────────────────────────────┘
-                            ↑ #files-resizer
+┌rail┬─────────────────────────────────────────────┐
+│    │  ┌ ↑ ~ › proj › src  ⟲ 👁 ⤢ ^ ─────────────┐ │
+│ ▣  │  │ 名稱 ▲            大小     修改日期        │ │  ← #files（浮層）
+│ ★  │  │ › 📁 native        —       今天          │ │
+│    │  └──────────── ═ #files-resizer ───────────┘ │
+│    │   終端機（整面仍可點、可拖入）                    │
+└────┴─────────────────────────────────────────────┘
 ```
 
-- `#workspace` 是 flex row：`#terminals` ＋ `#files-resizer` ＋ `#files`。
-  - 原生終端機 NSView 疊在 WebView 之上，所以面板只能當兄弟元素擠窄終端機，不能疊上去。
-  - 寬度變化由 `ResizeObserver(scheduleLayout)` 自動重排終端機。
-- 寬度存在 `localStorage("files-width")`，所有頁籤共用，範圍 240px～視窗寬 70%。
-- **滿版**：`#workspace.files-full` 隱藏 `#terminals`。`updateLayout()` 透過 `filesPanel.isFull()` 傳空 rects，原生 surface 全部隱藏，鍵盤交給列表。
+- `#files` 是 `#workspace` 內的絕對定位浮層，從頂部落下（`width:80%`，視窗／終端機區改變寬度時跟著變，最小 360px；`z-index:29`，比待處理／⌘⇧P 低，它們可疊在上面）。**不佔空間、不擠窄終端機。**
+  - 原生終端機 NSView 疊在 WebView 之上，所以靠 `overlay-cutout`（`slot:"files"`）把浮層範圍挖洞顯示；`reportCutout` 在開關、ResizeObserver（含寬度隨工作區變動）、切頁籤時送出，關閉時一定送全零（收合時帶 `restoreFocus`）。
+  - 原生端 `cutoutRequests[label][slot]`：不同 slot 的洞可同時存在（palette／attention／usage 共用 `default`，與檔案浮層互不影響）。重疊的洞會先切成不相交的矩形再做 even-odd 遮罩。
+- **Esc、`^`（`#files-close`）、右上資料夾鈕、⌘O（焦點已在列表時）會收合；失去焦點（點終端機、切換視窗／App）不收**，讓它可留著當參考或一邊拖曳。獨立視窗內 Esc 只清除選取。
+  - Esc 與側欄收合不衝突：`main.ts` 的 window 層 Esc 處理在焦點不在側欄（`#rail`／`#drawer-*`）時先呼叫 `filesPanel.collapse()`，面板開著就只收面板；焦點在側欄內才由側欄處理。
+- 高度存在 `localStorage("files-height")`（預設工作區 50%，`clampDropHeight`：160px～工作區 85%），所有頁籤共用，拖曳浮層底緣的 `#files-resizer` 調整。
+- 已沒有「滿版」（浮層蓋住終端機沒有意義；要大畫面請彈出成視窗）。`restoreFiles` 會忽略舊存檔的 `full`。
 - 面板寬度 < 420px 時（container query），只留名稱欄。
-- 每個頁籤的狀態存在 `tab.files`（`FilesState`，見 `src/files.ts`）：`open`、`full`、`path`、`follow`、`expanded`。
-  - `SavedTab.files`（`SavedFiles`，`saveFiles`／`restoreFiles` 在 `src/files.ts`）存 `open`、`full`、`path`、`follow`、`expanded`、`columnRoot`、`view`：重開時面板維持開合、瀏覽位置、展開的資料夾、直欄最左欄與清單／直欄檢視。`restoreFiles` 會丟掉格式不對的欄位；`expanded` 只保留在 `path` 底下的項目。若 `follow` 為真而重開後終端機 cwd 與存的 `path` 不同，`onCwd` 照舊跟隨 cwd 並清空展開。
+- 每個頁籤的狀態存在 `tab.files`（`FilesState`，見 `src/files.ts`）：`open`、`path`、`follow`、`expanded`。
+  - `SavedTab.files`（`SavedFiles`，`saveFiles`／`restoreFiles` 在 `src/files.ts`）存 `open`、`path`、`follow`、`expanded`、`columnRoot`、`view`：重開時面板維持開合、瀏覽位置、展開的資料夾、直欄最左欄與清單／直欄檢視。`restoreFiles` 會丟掉格式不對的欄位；`expanded` 只保留在 `path` 底下的項目。若 `follow` 為真而重開後終端機 cwd 與存的 `path` 不同，`onCwd` 照舊跟隨 cwd 並清空展開。
     - `files-panel.ts` 的 `update`（含 `openPanel`，不可再直接指定 `tab.files`）發現存檔欄位改變就呼叫 host 的 `visibilityChanged`；`main.ts` 的 `rememberFilesState` 立即排程 tmux session 存檔，收藏則 600ms 去抖後 `persistFavorites`。非收藏、非 tmux 的頁籤本來就不會跨啟動還原。
 - `updateLayout()` 一開始呼叫 `filesPanel.sync()`。所有切換頁籤的路徑（點擊、⌘數字、關閉頁籤、還原收藏）都經過這裡，所以不用在每個呼叫點各自同步。
 
@@ -76,8 +78,8 @@
 | 複製一份 | ⌘D |
 | 丟到垃圾桶 | ⌘⌫ |
 | 新增資料夾 | ⇧⌘N（新增後直接進入改名） |
-| 滿版 | ⇧⌘F 或標題列按鈕 |
-| 焦點回終端機 | Esc：有選取時先清除選取，再按一次才回終端機 |
+| 收合 | Esc、標題列 `^`、右上資料夾鈕；⌘O／⌘0 在焦點已在列表時也會收合 |
+| 焦點回終端機 | Esc：收合面板並回到終端機（獨立視窗內只清除選取） |
 | 右上角資料夾按鈕 | 標題列最右側的 `#files-toggle`，單純開關目前頁籤的面板；面板開著時按鈕呈選取狀態，沒有頁籤時停用 |
 | ⌘O（字母 O）或 ⌘0 | 面板沒開 → 開啟並聚焦；開著但焦點在終端機 → 聚焦列表；焦點已在列表 → 關閉 |
 
@@ -91,13 +93,18 @@
 **在終端機中編輯**：在目前頁籤向右分割，執行 `sh -c '${EDITOR:-vi} "$1"' sh '<path>'`。
 - 用 `commandInShell` 先載入使用者 shell，讓 rc 裡設定的 `EDITOR` 生效。
 - 透過 `sh -c` 包一層，zsh、bash、fish 都能執行。
-- 編輯器結束後保留 shell。滿版時會先退出滿版。
+- 編輯器結束後保留 shell。
 
-**Finder 拖入**：拖到面板會複製進游標下的資料夾，否則複製進面板目前的資料夾。拖到終端機仍是貼上路徑。
+**Finder 拖入**：拖到面板會複製進游標下的資料夾，否則複製進面板目前的資料夾。拖到終端機是貼上路徑。
+
+**拖出到終端機**：在列上按住拖動超過 5px，前端送 `files-drag`（`files.m` 的 `beginDrag`，主執行緒）開原生 drag session（WKWebView 自己的 HTML5 drag 不會帶 file URL）。拖的是目前選取項目（按到的列不在選取內就只拖該列；上層欄／內容欄的列只拖自己）。
+- 終端機 `HGSurface` 已註冊 file-URL，`performDragOperation` 貼出**反斜線跳脫**的路徑（多個以空格分隔，不送 Enter）；Finder、其他視窗的終端機、獨立視窗拖到主視窗終端機都適用。
+- 跳脫規則 `shellEscape`（`src/files.ts`，有測試）／`HGEscapePath`（`files.m`，兩邊要同步）：保留 `A-Za-z0-9_@%+=:,./~-` 與非 ASCII，其餘字元前加 `\`；含換行等控制字元時整段用 `$'…'`。
+- 拖進面板自己的資料夾列走既有 Finder 拖入流程（複製）。
 
 ## 剪貼簿
 
-- 「拷貝」寫入每個項目的 `public.file-url`，Finder 可以貼上。第一個 item 另外寫入 shell 引號包好的路徑文字，貼到終端機時和拖放檔案的效果一致。
+- 「拷貝」寫入每個項目的 `public.file-url`，Finder 可以貼上。第一個 item 另外寫入反斜線跳脫的路徑文字（`HGEscapePath`），貼到終端機時和拖放檔案的效果一致。
 - 「剪下」另外寫入自訂型別 `com.highostty.cut`（內容為路徑清單）。
   - 貼上時只有標記和目前的檔案清單完全相符，才當作搬移。從 Finder 或其他 App 拷貝的檔案一律當作複製。
   - 標記放在系統剪貼簿上，所以跨視窗也能用。
@@ -131,12 +138,14 @@ AppKit 相關的操作走 `hg_command` 的 `files-*` op（主執行緒）：`fil
 
 ## 驗收
 
-自動：`npm test`（`tests/files.test.mjs` 涵蓋狀態、選取、排序、路徑引號）、`npm run build`、`cargo check`／`cargo test`。
+自動：`npm test`（`tests/files.test.mjs` 涵蓋狀態、選取、排序、路徑引號、`shellEscape`、浮層高度）、`npm run build`、`cargo check`／`cargo test`。
 
 實機（`CARGO_TARGET_DIR=/private/tmp/highostty-target npm run tauri -- dev`，debug 與 release 各一次）：
 
-- [ ] ⌘O 與 ⌘0 都能開啟、聚焦、關閉；每個頁籤各自記住開合／滿版；切換頁籤時面板跟著換；從收藏還原時保留開合。
-- [ ] 拖曳調寬時終端機即時重排，沒有殘影或遮擋；滿版時終端機隱藏，退出滿版後焦點回到終端機。
+- [ ] ⌘O 與 ⌘0 都能開啟、聚焦、關閉；每個頁籤各自記住開合；切換頁籤時面板跟著換；從收藏還原時保留開合。
+- [ ] 浮層從頂部落下、終端機寬度不變；浮層不被終端機蓋住且可點，浮層以外的終端機可點、可打字；Esc、`^`、資料夾鈕會收合，點終端機、切換視窗／App 不會收；收合後焦點回終端機且整面可點。
+- [ ] 拖曳底緣調高並記住；開著檔案浮層時開待處理鈴鐺、⌘⇧P、用量浮層，都能疊在上面，關掉後檔案浮層與遮罩仍正確。
+- [ ] 拖單檔、多選、含空白／括號／`'`／中文／`$` 的檔名到終端機：貼出反斜線跳脫的路徑，在 zsh／bash 以 `ls` 貼上內容可執行；直欄模式、獨立視窗拖到主視窗終端機也行；拖到 Finder 為複製；Finder 拖進終端機同樣是反斜線跳脫。
 - [ ] `cd` 後面板跟隨；同頁籤切換分割時跟隨該分割；面板瀏覽別處後暫停跟隨，按「回到終端機目前目錄」恢復。
 - [ ] 面板拷貝 → Finder 貼上，以及反向；剪下＋貼上會搬移；同名自動改名；在同一資料夾 ⌘D 產生「副本」；拷貝路徑。
 - [ ] 改名與新增資料夾（含中文輸入法選字中按 Enter 不會提前送出）；⌘⌫ 丟到垃圾桶，可從垃圾桶還原。

@@ -23,7 +23,7 @@
 `src/usage.ts` 的 `WARN_AT = 70`、`DANGER_AT = 90`：≥70% 黃（`--attention`）、≥90% 紅（`--danger`），按鈕上的數字與細節的進度條都套用。
 
 ## 細節浮層與遮罩
-浮層在 `#workspace` 右下角，終端機 NSView 在 WebView 之上，所以靠 `overlay-cutout` 顯示（做法同 `src/attention-drop.ts`）。`cutoutRequests` 每視窗只有一格：開啟時 `closeOthers` 會關掉片段面板與待處理浮層，反過來開啟那兩個前也要呼叫 `usageBar.close(false)`。關閉時送全零取消遮罩。
+浮層在 `#workspace` 右下角，終端機 NSView 在 WebView 之上，所以靠 `overlay-cutout` 顯示（做法同 `src/attention-drop.ts`）。`cutoutRequests` 的 `default` slot 每視窗只有一格（檔案浮層用另一個 `files` slot，不受影響）：開啟時 `closeOthers` 會關掉片段面板與待處理浮層，反過來開啟那兩個前也要呼叫 `usageBar.close(false)`。關閉時送全零取消遮罩。
 
 ## 驗收清單（實機，debug 與 release 都要）
 1. footer 最右邊顯示 Claude 與 Codex 的 5h／7d 百分比；Codex 剛跑過對話後數字會更新。

@@ -34,7 +34,8 @@ import {
 } from "./model";
 import { initFilesPanel } from "./files-panel";
 import { initPreviewPanel } from "./preview-panel";
-import { openPreview, previewKind, splitBox, togglePreviewSide, type PreviewSide, type PreviewState } from "./preview";
+import { gitSummary, isDirty, sameGit, stripHeight, type GitInfo } from "./git";
+import { openPreview, previewKind, relativeToDir, resolveInDir, splitBox, togglePreviewSide, type PreviewSide, type PreviewState } from "./preview";
 import { restoreFiles, sameSaved, saveFiles, setDetached, toggleOpen, type FilesState, type SavedFiles } from "./files";
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
@@ -51,7 +52,7 @@ import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedSt
 import "./style.css";
 
 type MenuEntry = { text: string; action: () => unknown } | { item: "Separator" };
-type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSessions?: (string | undefined)[]; favoriteId?: string; parent?: number; files?: SavedFiles };
+type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSessions?: (string | undefined)[]; favoriteId?: string; parent?: number; files?: SavedFiles; preview?: string };
 // Groups organize favorites; an open tab shows the group of the favorite it came from.
 type WorkspaceFavorite = TabFavoriteItem<SavedTab>;
 type FavoritesDocument = { revision: number; items: StoredFavorite<SavedTab>[] };
@@ -123,9 +124,9 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 <section id="panel-workspace" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.workspace">Workspace</strong><button id="new" class="icon-btn" title="New tab" data-i18n-title="app.newTab" aria-label="New tab" data-i18n-aria-label="app.newTab">${icons.plus}</button></div><div id="tabs" role="tree" aria-label="Workspace" data-i18n-aria-label="app.workspace"></div></section>
 <section id="panel-favorites" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.favorites">Favorites</strong><button id="favorite-add" class="icon-btn" title="New favorite" data-i18n-title="app.addFavorite" aria-label="New favorite" data-i18n-aria-label="app.addFavorite">${icons.plus}</button><button id="favorite-group-add" class="icon-btn" title="New group" data-i18n-title="app.addGroup" aria-label="New group" data-i18n-aria-label="app.addGroup">${icons.folderPlus}</button></div><div id="favorite-add-options" class="inline-actions" hidden><button id="favorite-current-tab" class="ghost-btn wide-button"></button><button id="favorite-from-dir" class="ghost-btn wide-button" data-i18n="app.favoriteFromDir">Create favorite from folder…</button></div><div id="favorites"></div></section>
 <section id="panel-snippets" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.snippets">Snippets</strong><button id="snippet-add" class="icon-btn" title="New snippet" data-i18n-title="app.addSnippet" aria-label="New snippet" data-i18n-aria-label="app.addSnippet">${icons.plus}</button></div><div id="snippet-list"></div></section>
-<section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.settings">Settings</strong></div><div class="settings-content"><div class="settings-card"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn" data-i18n="settings.openConfig">Open config file</button><button id="reload-config" class="ghost-btn" data-i18n="settings.reload">Reload</button></div></div><div class="settings-card"><h4 data-i18n="settings.window">Window</h4><p class="help" data-i18n="settings.windowHelp">Where the main window appears when the app opens. The size is always restored from last time.</p><select id="window-placement"><option value="center" data-i18n="settings.placementCenter">Center on screen</option><option value="remember" data-i18n="settings.placementRemember">Remember last position</option></select></div><div class="settings-card"><h4 data-i18n="settings.rules">Prompt detection rules</h4><p class="help" data-i18n="settings.rulesHelp">When an agent in a background tab stops to ask you something, the screen is recognized by these rules and you are notified. The rules file can add, replace or disable built-in rules.</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn" data-i18n="settings.openRules">Open rules file</button><button id="reload-rules" class="ghost-btn" data-i18n="settings.reload">Reload</button></div></div><div class="settings-card"><h4 data-i18n="settings.control">Agent control commands</h4><p class="help" data-i18n="settings.controlHelp">Lets agents inside terminals use highostty ctl to read other tabs, run in the background, and more. Read-only: view only. Full: can also open tabs and send input. Only newly opened tabs get the related environment variables.</p><select id="control-mode"><option value="off" data-i18n="settings.controlOff">Off</option><option value="readonly" data-i18n="settings.controlReadonly">Read-only</option><option value="full" data-i18n="settings.controlFull">Full</option></select><p class="help" data-i18n="settings.skillHelp">The skill teaches an agent how to use these commands. Nothing is written until you press a button: it goes into each agent's skills folder (skills/highostty/SKILL.md under ~/.claude, ~/.codex, ~/.copilot, ~/.gemini) and can be removed at any time. For other agents, copy the content into their global instructions.</p><div id="skill-list"></div><p id="skill-status"></p><div class="button-row"><button id="copy-skill" class="ghost-btn" data-i18n="settings.copySkill">Copy skill content</button></div></div><div class="settings-card"><h4 data-i18n="settings.diagnostics">Diagnostics</h4><pre id="config-diagnostics"></pre></div><div class="settings-card"><h4 data-i18n="settings.shortcuts">Shortcuts</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span data-i18n="settings.sc.switchTab">Switch tabs</span><kbd>⌘⇧B</kbd><span data-i18n="settings.sc.sidebar">Toggle sidebar</span><kbd>⌘⇧P</kbd><span data-i18n="settings.sc.snippets">Snippets palette</span><kbd>⌘O / ⌘0</kbd><span data-i18n="settings.sc.files">Files panel</span><kbd>⇧⌘F</kbd><span data-i18n="settings.sc.filesFull">Files panel full screen</span><kbd>⌘T</kbd><span data-i18n="settings.sc.newTab">New tab</span><kbd>⌘⇧T</kbd><span data-i18n="settings.sc.childTab">Another tab in the same folder (child tab)</span><kbd>⌘D / ⌘⇧D</kbd><span data-i18n="settings.sc.split">Split</span></div></div></div></section>
+<section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.settings">Settings</strong></div><div class="settings-content"><div class="settings-card"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn" data-i18n="settings.openConfig">Open config file</button><button id="reload-config" class="ghost-btn" data-i18n="settings.reload">Reload</button></div></div><div class="settings-card"><h4 data-i18n="settings.window">Window</h4><p class="help" data-i18n="settings.windowHelp">Where the main window appears when the app opens. The size is always restored from last time.</p><select id="window-placement"><option value="center" data-i18n="settings.placementCenter">Center on screen</option><option value="remember" data-i18n="settings.placementRemember">Remember last position</option></select></div><div class="settings-card"><h4 data-i18n="settings.rules">Prompt detection rules</h4><p class="help" data-i18n="settings.rulesHelp">When an agent in a background tab stops to ask you something, the screen is recognized by these rules and you are notified. The rules file can add, replace or disable built-in rules.</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn" data-i18n="settings.openRules">Open rules file</button><button id="reload-rules" class="ghost-btn" data-i18n="settings.reload">Reload</button></div></div><div class="settings-card"><h4 data-i18n="settings.control">Agent control commands</h4><p class="help" data-i18n="settings.controlHelp">Lets agents inside terminals use highostty ctl to read other tabs, run in the background, and more. Read-only: view only. Full: can also open tabs and send input. Only newly opened tabs get the related environment variables.</p><select id="control-mode"><option value="off" data-i18n="settings.controlOff">Off</option><option value="readonly" data-i18n="settings.controlReadonly">Read-only</option><option value="full" data-i18n="settings.controlFull">Full</option></select><p class="help" data-i18n="settings.skillHelp">The skill teaches an agent how to use these commands. Nothing is written until you press a button: it goes into each agent's skills folder (skills/highostty/SKILL.md under ~/.claude, ~/.codex, ~/.copilot, ~/.gemini) and can be removed at any time. For other agents, copy the content into their global instructions.</p><div id="skill-list"></div><p id="skill-status"></p><div class="button-row"><button id="copy-skill" class="ghost-btn" data-i18n="settings.copySkill">Copy skill content</button></div></div><div class="settings-card"><h4 data-i18n="settings.diagnostics">Diagnostics</h4><pre id="config-diagnostics"></pre></div><div class="settings-card"><h4 data-i18n="settings.shortcuts">Shortcuts</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span data-i18n="settings.sc.switchTab">Switch tabs</span><kbd>⌘⇧B</kbd><span data-i18n="settings.sc.sidebar">Toggle sidebar</span><kbd>⌘⇧P</kbd><span data-i18n="settings.sc.snippets">Snippets palette</span><kbd>⌘O / ⌘0</kbd><span data-i18n="settings.sc.files">Files panel</span><kbd>⌘T</kbd><span data-i18n="settings.sc.newTab">New tab</span><kbd>⌘⇧T</kbd><span data-i18n="settings.sc.childTab">Another tab in the same folder (child tab)</span><kbd>⌘D / ⌘⇧D</kbd><span data-i18n="settings.sc.split">Split</span></div></div></div></section>
 </div></section><div id="drawer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" data-i18n-aria-label="app.resizeSidebar" hidden></div><section id="drawer-detail" aria-label="Details" data-i18n-aria-label="app.detail"><div class="drawer-inner"></div></section><div id="detail-resizer" role="separator" aria-orientation="vertical" aria-label="Resize editor" data-i18n-aria-label="app.resizeDetail" hidden></div>
-<section id="workspace"><div id="terminals" aria-label="Native Ghostty workspace" data-i18n-aria-label="app.terminalsLabel"></div><div id="files-resizer" role="separator" aria-orientation="vertical" aria-label="Resize files panel" data-i18n-aria-label="app.resizeFiles" hidden></div><section id="files" aria-label="Files" data-i18n-aria-label="app.files" hidden></section><div id="empty" hidden><p data-i18n="app.emptyHint">Choose a folder to get started.</p><button id="first" data-i18n="app.chooseFolder">Choose folder…</button></div></section></main>
+<section id="workspace"><div id="terminals" aria-label="Native Ghostty workspace" data-i18n-aria-label="app.terminalsLabel"></div><section id="files" aria-label="Files" data-i18n-aria-label="app.files" hidden></section><div id="empty" hidden><p data-i18n="app.emptyHint">Choose a folder to get started.</p><button id="first" data-i18n="app.chooseFolder">Choose folder…</button></div></section></main>
 <footer><span id="app-version" title="HiGhostty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/><path d="M12 8l4 4-4 4-4-4z"/></svg><span id="app-version-text"></span></span><span id="search-status"></span></footer>
 <dialog id="confirm"><h3 data-i18n="app.confirmTitle">Close terminal?</h3><p data-i18n="app.confirmBody">These jobs are still running. Confirming will terminate them.</p><pre id="processes"></pre><div class="actions"><button id="cancel-close" data-i18n="app.cancel">Cancel</button><button id="force-close" class="danger" data-i18n="app.forceClose">Terminate and close</button></div></dialog>
 <dialog id="palette"><h3 id="palette-title" data-i18n="app.paletteTitle">Commands</h3><div id="palette-items"></div><div class="actions"><button id="close-palette" data-i18n="app.close">Close</button></div></dialog>
@@ -133,8 +134,6 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 getVersion().then((v) => { document.getElementById("app-version-text")!.textContent = `v${v}`; }).catch(() => {});
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
-// The full-screen files panel covers the terminals; a terminal must not take the keyboard under it.
-const terminalHidden = () => filesPanel.isFull();
 const native = <T = Record<string, unknown>>(
   request: Record<string, unknown>,
 ) => invoke<T>("native", { request });
@@ -153,9 +152,9 @@ const filesPanel = initFilesPanel({
   insertIntoTerminal: async (text) => {
     if (!active) return;
     await native({ op: "insert-text", id: active.focused, text });
-    if (!terminalHidden()) await native({ op: "focus", id: active.focused });
+    await native({ op: "focus", id: active.focused });
   },
-  focusTerminal: () => { if (active && !terminalHidden()) native({ op: "focus", id: active.focused }).catch(notify); },
+  focusTerminal: () => { if (active) native({ op: "focus", id: active.focused }).catch(notify); },
   layoutChanged: scheduleLayout,
   visibilityChanged: (tab) => rememberFilesState(tab as Tab),
   notify,
@@ -192,7 +191,7 @@ async function popOutFiles(tab: Tab) {
 function dockFiles(tab: Tab, files: FilesState | undefined, close: boolean) {
   if (!tab.files?.detached) return;
   const base = { ...(files ?? tab.files), detached: undefined };
-  tab.files = close ? toggleOpen({ ...base, open: true }) : { ...base, open: true, full: false };
+  tab.files = close ? toggleOpen({ ...base, open: true }) : { ...base, open: true };
   filesPanel.invalidate(); scheduleLayout(); rememberFilesState(tab);
 }
 const previewPanel = initPreviewPanel({
@@ -223,7 +222,7 @@ function closePreview(tab = active) {
   if (!tab?.preview) return;
   delete tab.preview;
   scheduleLayout();
-  if (tab === active && !terminalHidden()) native({ op: "focus", id: tab.focused }).catch(notify);
+  if (tab === active) native({ op: "focus", id: tab.focused }).catch(notify);
 }
 const snippets = initSnippets({
   native,
@@ -234,18 +233,18 @@ const snippets = initSnippets({
     await native({ op: "insert-text", id: active.focused, text });
     await native({ op: "focus", id: active.focused });
   },
-  focusTerminal: () => { if (active && !terminalHidden()) native({ op: "focus", id: active.focused }).catch(notify); },
+  focusTerminal: () => { if (active) native({ op: "focus", id: active.focused }).catch(notify); },
   editInDrawer: (snippetId, scope, text) => {
     if (!drawerState.panel) setPanel("snippets");
     showRootDetail({ kind: "edit-snippet", snippetId, scope, text });
   },
   notify,
-  canInsert: () => !!active && !terminalHidden(),
+  canInsert: () => !!active,
 });
 // 與 snippets 共用單一 overlay-cutout，兩個浮層不可同時開著。
 const attentionDrop = initAttentionDrop({
   native,
-  focusTerminal: () => { if (active && !terminalHidden()) native({ op: "focus", id: active.focused }).catch(notify); },
+  focusTerminal: () => { if (active) native({ op: "focus", id: active.focused }).catch(notify); },
   notify,
   render: () => renderAttention(),
   clearAll: () => setAttention(emptyAttention),
@@ -253,7 +252,7 @@ const attentionDrop = initAttentionDrop({
 });
 const usageBar = initUsageBar({
   native,
-  focusTerminal: () => { if (active && !terminalHidden()) native({ op: "focus", id: active.focused }).catch(notify); },
+  focusTerminal: () => { if (active) native({ op: "focus", id: active.focused }).catch(notify); },
   notify,
   closeOthers: () => { snippets.close(false); attentionDrop.close(false); },
 });
@@ -281,6 +280,10 @@ let collapsedWorkspaceGroups = new Set<string>(),
 let config: NativeConfig | undefined,
   closeAction: (() => Promise<void>) | undefined,
   lastRects: Rect[] = [],
+  // Per-pane git status for the strip; null = not in a repo. Keyed by surface id.
+  gitInfo = new Map<string, GitInfo | null>(),
+  gitFetchedAt = new Map<string, number>(),
+  gitBusy = new Set<string>(),
   layoutPending = false,
   initialized = false,
   closedHistory: { paths: string[]; title?: string }[] = [],
@@ -629,6 +632,13 @@ function renderDetail() {
       if (item) host.append(help(t("app.favoritePathHelp")));
       const error = document.createElement("p"); error.id = "favorite-path-error"; error.className = "field-error"; error.hidden = true; host.append(error);
     }
+    host.append(formCaption(t("app.cap.preview")));
+    const previewInput = document.createElement("input"); previewInput.id = "favorite-preview"; previewInput.className = "mono"; previewInput.readOnly = true; previewInput.value = draft.preview ?? item?.tab.preview ?? (sourceTab?.preview && relativeToDir(sourcePath, sourceTab.preview.path)) ?? ""; previewInput.placeholder = t("app.previewNone"); previewInput.setAttribute("aria-label", t("app.previewFile"));
+    const previewRow = document.createElement("div"); previewRow.className = "field-row";
+    const previewChoose = button(t("app.choose"), () => pickPreviewFile(previewInput, path?.value || defaultPath)); previewChoose.className = "ghost-btn";
+    const previewClear = button(t("app.clear"), () => { previewInput.value = ""; previewInput.dispatchEvent(new Event("input")); }); previewClear.className = "ghost-btn";
+    previewRow.append(previewInput, previewChoose, previewClear);
+    host.append(labeled(t("app.previewFile"), previewRow), help(t("app.previewFileHelp")));
     const updateSummaryForFavorite = () => {
       if (!(item || sourceTab)) return;
       const count = item?.tab.paths.length ?? leaves(sourceTab!.tree).length;
@@ -655,12 +665,13 @@ function renderDetail() {
       host.append(formCaption(t("app.cap.danger")), help(t("app.removeFavoriteHelp")));
       const remove = button(t("app.removeFavorite"), () => { if (confirmTwice(remove)) return removeFavorite(item); }); remove.className = "danger-btn wide-button"; host.append(remove);
     }
-    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell, tmux: !!item?.tab.tmux, tmuxHideStatus: !!item?.tab.tmuxHideStatus };
-    const save = button(item ? t("app.save") : t("app.favorites"), () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, { command: command.value.trim(), commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxBox.checked && tmuxStatus.checked }));
+    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell, tmux: !!item?.tab.tmux, tmuxHideStatus: !!item?.tab.tmuxHideStatus, preview: item?.tab.preview || "" };
+    const save = button(item ? t("app.save") : t("app.favorites"), () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, { command: command.value.trim(), commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxBox.checked && tmuxStatus.checked }, previewInput.value));
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && (tmuxBox.checked && tmuxStatus.checked) === original.tmuxHideStatus ); };
+    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && (tmuxBox.checked && tmuxStatus.checked) === original.tmuxHideStatus && previewInput.value === original.preview ); };
     alias.oninput = () => { objectName.textContent = alias.value.trim() || defaultName; updateDirty(); };
     path?.addEventListener("input", updateDirty);
+    previewInput.addEventListener("input", updateDirty);
     command.addEventListener("input", () => { commandInShell.disabled = !command.value.trim(); if (commandInShell.disabled) commandInShell.checked = false; updateSummaryForFavorite(); updateDirty(); });
     commandInShell.addEventListener("change", () => { updateSummaryForFavorite(); updateDirty(); });
     tmuxBox.addEventListener("change", () => { tmuxStatus.disabled = !tmuxBox.checked; updateDirty(); });
@@ -669,7 +680,7 @@ function renderDetail() {
       updateDirty();
       if (groupSelect.value !== "__new__") return;
       // Keep what was typed while the new-group editor is on top.
-      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxStatus.checked });
+      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxStatus.checked, preview: previewInput.value });
       createFolder();
     };
     enterSaves(save, alias, path, command);
@@ -776,7 +787,7 @@ function launchPicker(command: HTMLInputElement, commandField: HTMLElement): HTM
   box.append(toolField, progField, modelField, modelOther, extraField, preview);
   return box;
 }
-const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean }>();
+const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; preview?: string }>();
 const swatchColors = ["#77dfc0", "#7cc4ff", "#b59cff", "#ff9ecf", "#ff8f7a", "#f5c46b", "#a6d86e", "#9aa6b8"];
 function editorIntro(host: HTMLElement, heading: HTMLElement, pageTitle: string, objectName: string, subtitle: string) {
   heading.append(Object.assign(document.createElement("strong"), { textContent: pageTitle, className: "page-title" }));
@@ -1209,8 +1220,8 @@ function renderTabs() {
   if (top?.kind === "edit-tab" && !tabs.some((tab) => tab.id === top.tabId)) renderDetail();
   renderFavorites();
 }
-// Reorder only within the same block: a tab's block comes from its favorite's
-// group, so dragging cannot change it.
+// Reorder within a block. moveTab only handles non-favorite tabs (no group); favorite rows
+// move through moveGroupedItem, which also changes the group when dropped in another block.
 function moveTab(movingId: string, beforeId?: string) {
   const moving = tabs.find((tab) => tab.id === movingId);
   if (!moving) return;
@@ -1227,13 +1238,14 @@ function moveTab(movingId: string, beforeId?: string) {
 // tabs reorder the open list, sub-tabs only among their siblings.
 function wireRowDrag(row: HTMLElement, kind: string, id: string) {
   row.dataset.dragKind = kind; row.dataset.dragId = id;
-  enableRowDrag(row, (moving, before) => {
+  enableRowDrag(row, (moving, before, block) => {
     const movingId = moving.dataset.dragId!, beforeId = before?.dataset.dragId;
     if (kind === "fav") {
-      const groupId = moving.closest<HTMLElement>(".tab-block")?.dataset.groupId;
+      // Dropped into another block: the favorite changes group (or leaves its group).
+      const groupId = (block ?? moving.closest<HTMLElement>(".tab-block"))?.dataset.groupId;
       persistFavorites(moveGroupedItem(favorites, movingId, groupId ?? null, beforeId)).then(renderTabs).catch(notify);
     } else { moveTab(movingId, beforeId); renderTabs(); }
-  });
+  }, kind === "fav");
 }
 function wireTabDrag(row: HTMLElement, tab: Tab, nested: boolean) {
   if (nested) wireRowDrag(row, `child:${tab.parentId}`, tab.id);
@@ -1399,17 +1411,52 @@ function scheduleLayout() {
     updateLayout().catch(notify);
   });
 }
+// Layout reruns can come from dragging a divider; cap how often git is asked again per pane.
+const GIT_LAYOUT_AGE_MS = 1000;
+const GIT_POLL_AGE_MS = 4000;
+function gitStrip(info: GitInfo): HTMLElement {
+  const strip = document.createElement("div");
+  strip.className = "git-strip" + (isDirty(info) ? " dirty" : "");
+  strip.textContent = gitSummary(info, { detached: t("git.detached"), noUpstream: t("git.noUpstream") });
+  strip.title = isDirty(info) ? t("git.dirty") : t("git.title");
+  return strip;
+}
+// Git status of one pane's cwd. Results for a cwd that changed while the request was running are dropped.
+async function refreshGit(id: string, minAgeMs = 0) {
+  const s = surfaces.get(id);
+  if (!s?.cwd || gitBusy.has(id)) return;
+  if (Date.now() - (gitFetchedAt.get(id) ?? 0) < minAgeMs) return;
+  gitBusy.add(id);
+  const cwd = s.cwd;
+  try {
+    const info = await invoke<GitInfo | null>("git_status", { path: cwd });
+    if (surfaces.get(id)?.cwd !== cwd) return;
+    gitFetchedAt.set(id, Date.now());
+    const before = gitInfo.get(id) ?? null;
+    if (sameGit(before, info)) return;
+    gitInfo.set(id, info);
+    if (!!before !== !!info) {
+      scheduleLayout();
+    } else {
+      const outline = [...$("terminals").querySelectorAll<HTMLElement>(".surface-outline")].find((el) => el.dataset.id === id);
+      outline?.querySelector(".git-strip")?.remove();
+      if (info) outline?.append(gitStrip(info));
+    }
+  } finally {
+    gitBusy.delete(id);
+  }
+}
+
 async function updateLayout() {
   filesPanel.sync();
   const area = $("terminals").getBoundingClientRect();
-  const full = terminalHidden();
   const split = splitBox(
     { x: area.x, y: area.y, width: area.width, height: area.height },
-    active && !full ? active.preview : undefined,
+    active ? active.preview : undefined,
   );
   const box = split.terminals;
   previewPanel.sync(split.preview, { x: area.x, y: area.y, width: area.width, height: area.height });
-  const visible = active && !full
+  const visible = active
     ? active.zoom
       ? [
           {
@@ -1431,17 +1478,23 @@ async function updateLayout() {
       "surface-outline" + (r.id === active?.focused ? " focused" : "") + (surfaces.get(r.id)?.tmuxSession ? " tmux" : "");
     outline.dataset.id = r.id;
     outline.style.cssText = `left:${r.x - area.x}px;top:${r.y - area.y}px;width:${r.width}px;height:${r.height}px`;
+    const git = gitInfo.get(r.id);
+    if (git) outline.append(gitStrip(git));
     host.append(outline);
+    refreshGit(r.id, GIT_LAYOUT_AGE_MS).catch(() => {});
   }
   await native({
     op: "layout",
-    rects: visible.map((r) => ({
-      ...r,
-      x: r.x + 1,
-      y: r.y + 1,
-      width: Math.max(0, r.width - 2),
-      height: Math.max(0, r.height - 2),
-    })),
+    rects: visible.map((r) => {
+      const strip = stripHeight(gitInfo.get(r.id));
+      return {
+        ...r,
+        x: r.x + 1,
+        y: r.y + 1,
+        width: Math.max(0, r.width - 2),
+        height: Math.max(0, r.height - 2 - strip),
+      };
+    }),
     viewportWidth: window.innerWidth,
     suspended: dialogsOpen(),
   });
@@ -1697,6 +1750,8 @@ async function forgetSurface(id: string) {
   const tab = tabFor(id);
   const session = surfaces.get(id)?.tmuxSession;
   surfaces.delete(id);
+  gitInfo.delete(id);
+  gitFetchedAt.delete(id);
   // 指標停在終端機上時 ⌘W 關閉：NSView 已移除，不會再收到 mouseExited，需自行清掉旗標，否則側欄 hover 永遠不顯示。
   document.body.classList.remove("term-pointer");
   // 結束 app 時保留 session；其餘（手動關閉、shell 結束）一併結束 session，避免殘留。
@@ -1852,13 +1907,9 @@ function defaultPath() {
   return currentSurface()?.cwd || homePath;
 }
 // "terminal" opens a new tab in the chosen folder; "favorite" fills the editor.
-async function pick(field: "terminal" | "favorite") {
+// Suspend all native surfaces while the OS sheet owns keyboard input.
+async function withSheet<T>(run: () => Promise<T>) {
   await updateLayout();
-  const initial =
-    field === "favorite"
-      ? $<HTMLInputElement>("favorite-path").value
-      : defaultPath();
-  // Suspend all native surfaces while the OS sheet owns keyboard input.
   await native({
     op: "layout",
     rects: [],
@@ -1866,6 +1917,17 @@ async function pick(field: "terminal" | "favorite") {
     suspended: true,
   });
   try {
+    return await run();
+  } finally {
+    await updateLayout();
+  }
+}
+async function pick(field: "terminal" | "favorite") {
+  await withSheet(async () => {
+    const initial =
+      field === "favorite"
+        ? $<HTMLInputElement>("favorite-path").value
+        : defaultPath();
     const path = await invoke<string | null>("pick_directory", {
       path: initial || defaultPath() || (await invoke<string>("home")),
     });
@@ -1876,9 +1938,26 @@ async function pick(field: "terminal" | "favorite") {
       }
       else await newSurface(path);
     }
-  } finally {
-    await updateLayout();
-  }
+  });
+}
+// Any file may be previewed, but the default has to live in the tab's folder: only the relative path is kept.
+async function pickPreviewFile(input: HTMLInputElement, dir: string) {
+  await withSheet(async () => {
+    const picked = await native<{ path: string | null }>({ op: "pick-file", any: true, dir });
+    if (!picked.path) return;
+    const rel = relativeToDir(dir, picked.path);
+    if (rel === undefined) { notify(new Error(t("app.previewOutsideDir", { dir }))); return; }
+    input.value = rel;
+    input.dispatchEvent(new Event("input"));
+  });
+}
+// A tab opened from a favorite shows the favorite's default preview, relative to the tab's folder, if that file exists.
+async function showFavoritePreview(tab: Tab | undefined, rel: string | undefined) {
+  const dir = tab && surfaces.get(tab.focused)?.cwd;
+  const path = dir && rel ? resolveInDir(dir, rel) : undefined;
+  if (!tab || !path) return;
+  try { await invoke("preview_stat", { path }); } catch { return; }
+  showPreview(tab, path, "bottom");
 }
 function favoriteIsOpen(item: WorkspaceFavorite) {
   return !!recentFavoriteInstance(tabs, item.id, recentFavoriteInstances.get(item.id));
@@ -1970,6 +2049,7 @@ async function openFolder(folder: FavoriteFolder) {
       await restoreSnapshot({ tabs: [{ ...item.tab, favoriteId: item.id }] });
       tab = active;
       if (tab) recentFavoriteInstances.set(item.id, tab.id);
+      await showFavoritePreview(tab, item.tab.preview);
     }
     first ??= tab;
   }
@@ -2001,6 +2081,7 @@ async function openFavorite(item: WorkspaceFavorite, forceNew = false) {
   if (!forceNew && existing) { await activate(existing); return; }
   await restoreSnapshot({ tabs: [{ ...item.tab, favoriteId: item.id }] });
   if (active) recentFavoriteInstances.set(item.id, active.id);
+  await showFavoritePreview(active, item.tab.preview);
 }
 async function removeFavorite(item: WorkspaceFavorite) {
   await persistFavorites(favorites.filter((value) => value.id !== item.id));
@@ -2024,10 +2105,10 @@ async function resolveFavoritePath() {
     return undefined;
   }
 }
-async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, launch: { command: string; commandInShell: boolean; tmux: boolean; tmuxHideStatus: boolean }) {
+async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, launch: { command: string; commandInShell: boolean; tmux: boolean; tmuxHideStatus: boolean }, previewPath: string) {
   if (!alias) { $("alias").focus(); return; }
   const group = groupId || undefined;
-  const options: Partial<SavedTab> = { command: launch.command || undefined, commandInShell: launch.command ? launch.commandInShell || undefined : undefined, tmux: launch.tmux || undefined, tmuxHideStatus: launch.tmux && launch.tmuxHideStatus || undefined };
+  const options: Partial<SavedTab> = { command: launch.command || undefined, commandInShell: launch.command ? launch.commandInShell || undefined : undefined, tmux: launch.tmux || undefined, tmuxHideStatus: launch.tmux && launch.tmuxHideStatus || undefined, preview: previewPath || undefined };
   let createdId: string | undefined;
   if (item) {
     let tab = item.tab;
@@ -2157,6 +2238,7 @@ async function handleEvent(event: NativeEvent) {
         clearViewed(true);
         syncOutlines();
         if (changed) { renderTabs(); filesPanel.sync(); await filesPanel.cwdChanged(s!.cwd); }
+        refreshGit(event.id!, GIT_LAYOUT_AGE_MS).catch(() => {});
       }
       break;
     }
@@ -2164,6 +2246,7 @@ async function handleEvent(event: NativeEvent) {
       if (s && event.path && event.path !== s.cwd) {
         s.cwd = event.path;
         renderTabs();
+        refreshGit(s.id).catch(() => {});
         if (event.id === active?.focused) await filesPanel.cwdChanged(event.path);
       }
       break;
@@ -2488,6 +2571,8 @@ window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape" || event.isComposing || dialogsOpen() || attentionDrop.isOpen()) return;
   // Inputs with their own Escape behavior handle it; don't also close drawers.
   if (event.target instanceof Element && event.target.closest(".inline-rename, #search, #files, #palette-drop, #attention-drop")) return;
+  // The files drop-down wins Esc unless focus is in the sidebar itself, so one Esc never collapses both.
+  if (!(event.target instanceof Element && event.target.closest("#rail, #drawer-primary, #drawer-detail")) && filesPanel.collapse()) { event.preventDefault(); return; }
   if (!$("favorite-add-options").hidden) { event.preventDefault(); $("favorite-add-options").hidden = true; return; }
   if (detail()) { event.preventDefault(); backDetail(); }
   else if (drawerState.panel) { event.preventDefault(); closeDrawers(); }
@@ -2639,7 +2724,7 @@ async function start() {
   await listen<FilesMessage>("files-state", ({ payload }) => {
     const tab = tabs.find((item) => item.id === payload.tab);
     if (!tab?.files?.detached || !payload.files) return;
-    tab.files = { ...payload.files, open: true, full: false, detached: true };
+    tab.files = { ...payload.files, open: true, detached: true };
     rememberFilesState(tab);
   });
   await listen<FilesMessage>("files-dock", ({ payload }) => {
@@ -2687,6 +2772,10 @@ async function start() {
   setInterval(() => {
     if (document.visibilityState === "visible" && !closing) scanAttention().catch(() => {});
   }, 1500);
+  // 每個可見窗格定期重查 git，抓到外部 commit／checkout／修改；快取時間內不會真的呼叫 git。
+  setInterval(() => {
+    if (document.visibilityState === "visible" && !closing) for (const r of lastRects) refreshGit(r.id, GIT_POLL_AGE_MS).catch(() => {});
+  }, 5000);
 }
 // agent 控制指令（highostty ctl）。Rust 把請求廣播給所有視窗，每個視窗各回一次並宣告 claim：
 // owner（這是我的事）、part（跨視窗列表中我這一份）、none（與我無關）；指令名稱、參數、權限與 claim 的純邏輯在 control.ts。

@@ -25,7 +25,8 @@
 
 修改檔案面板、檔案操作、Quick Look 或剪貼簿相關程式碼前，先讀 `docs/files-panel.md`。重點：
 
-- 原生終端機 NSView 疊在 WebView 之上；面板必須是 `#terminals` 的兄弟元素、不可與終端機矩形重疊。右鍵選單一律用原生 `Menu.popup()`，不要做 HTML 浮動選單。
+- 原生終端機 NSView 疊在 WebView 之上；面板是頂部落下的浮層，靠 `overlay-cutout`（`slot:"files"`，與其他浮層的 `default` 互不影響）顯示，關閉時一定送全零；Esc、`^`、開關鈕會收合；失焦不收，不可加失焦自動關閉。右鍵選單一律用原生 `Menu.popup()`，不要做 HTML 浮動選單。
+- 拖到終端機走原生 drag session（`files-drag`），路徑跳脫只在 `shellEscape`（`src/files.ts`）與 `HGEscapePath`（`files.m`），兩處要同步。
 - 會改動檔案的操作（拷貝、搬移、改名、新增、垃圾桶）集中在 `files.m` 的 `hg_files`，同名改名規則只在這裡實作；它在背景執行緒執行，不可碰 AppKit UI。剪貼簿、Quick Look、打開方式等 AppKit 操作走 `hg_command` 的 `files-*` op（主執行緒）。
 - 原生程式沿用 `@try/@catch`，不讓 Objective-C exception 漏出。
 - 原生右鍵選單一律走 `src/context-menu.ts` 的 `popupMenu`；選單開著時送 `Menu.new`／`close` 會讓整個 App 死結。
@@ -105,3 +106,11 @@
 - 正規化、組指令、App 名稱驗證只放 `src/launch.ts` 並補 `tests/launch.test.mjs`；App 名稱經 `open -a`（參數陣列），不經 shell。
 - 選單項目同步由快取 `launchTools()` 產生，一律走 `popupMenu`。
 - 改完照 `docs/launch-presets.md` 的驗收清單實機操作。
+
+## 窗格 git 資訊列（`src/git.ts`、`src/main.ts` 的 `refreshGit`、`src-tauri/src/git.rs`）
+
+修改分割窗格的版面（`updateLayout()`）或資訊列前，先讀 `docs/git-strip.md`。重點：
+
+- 資訊列靠縮短送給原生的矩形高度保留空間，不用 cutout，也不會蓋住終端機。
+- git 狀態只用 `git status --porcelain=v2 -uno`，不寫入 repo；`GIT_OPTIONAL_LOCKS=0` 必須保留。
+- 改完照 `docs/git-strip.md` 的驗收清單實機操作。

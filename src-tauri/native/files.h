@@ -6,3 +6,6 @@
 // returns nil for ops it does not own.
 char *hg_files(const char *request);
 NSDictionary *HGFilesCommand(NSWindow *window, NSDictionary *req, void (^emitEvent)(NSDictionary *event));
+// Backslash-escaped path for pasting into a shell (control characters fall back to $'…').
+// Keep in sync with shellEscape in src/files.ts.
+NSString *HGEscapePath(NSString *path);

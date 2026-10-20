@@ -11,7 +11,7 @@ export type FileEntry = {
 };
 // columnRoot: leftmost folder shown in columns view (memory only).
 // detached: the panel lives in its own window (open stays true); the tab's own panel stays hidden.
-export type FilesState = { open: boolean; full: boolean; path?: string; follow: boolean; expanded: string[]; columnRoot?: string; view?: FilesView; detached?: boolean };
+export type FilesState = { open: boolean; path?: string; follow: boolean; expanded: string[]; columnRoot?: string; view?: FilesView; detached?: boolean };
 // The panel is showing inside the tab (not closed, not popped out).
 export const shownInTab = (state: FilesState | undefined): boolean => !!state?.open && !state.detached;
 // "list" is a tree with size/date columns; "columns" is a row of columns, one per folder level.
@@ -19,17 +19,17 @@ export type FilesView = "list" | "columns";
 export type SortKey = "name" | "size" | "modified";
 export type Sort = { key: SortKey; descending: boolean };
 
-export const MIN_WIDTH = 240;
-export const DEFAULT_WIDTH = 360;
+export const MIN_HEIGHT = 160;
+export const DEFAULT_HEIGHT_RATIO = 0.5;
 
 export function initialFiles(): FilesState {
-  return { open: false, full: false, follow: true, expanded: [] };
+  return { open: false, follow: true, expanded: [] };
 }
 // What survives a restart: panel visibility, where it was browsing and which folders were open.
-export type SavedFiles = { open: true; full: boolean; path?: string; follow?: boolean; expanded?: string[]; columnRoot?: string; view?: FilesView; detached?: true };
+export type SavedFiles = { open: true; path?: string; follow?: boolean; expanded?: string[]; columnRoot?: string; view?: FilesView; detached?: true };
 export function saveFiles(state: FilesState | undefined): SavedFiles | undefined {
   if (!state?.open) return undefined;
-  return { open: true, full: state.full, path: state.path, follow: state.follow, expanded: state.expanded.length ? state.expanded : undefined, columnRoot: state.columnRoot, view: state.view, ...(state.detached ? { detached: true as const } : {}) };
+  return { open: true, path: state.path, follow: state.follow, expanded: state.expanded.length ? state.expanded : undefined, columnRoot: state.columnRoot, view: state.view, ...(state.detached ? { detached: true as const } : {}) };
 }
 // Saved data may be old or hand-edited: keep only well-formed fields.
 export function restoreFiles(saved: Partial<SavedFiles> | undefined): FilesState | undefined {
@@ -38,19 +38,16 @@ export function restoreFiles(saved: Partial<SavedFiles> | undefined): FilesState
   const expanded = path && Array.isArray(saved.expanded) ? saved.expanded.filter((item): item is string => typeof item === "string" && item.startsWith(path)) : [];
   const columnRoot = path && typeof saved.columnRoot === "string" && path.startsWith(saved.columnRoot) ? saved.columnRoot : undefined;
   const view = saved.view === "list" || saved.view === "columns" ? saved.view : undefined;
-  return { open: true, full: !!saved.full, path, follow: path ? saved.follow !== false : true, expanded, columnRoot, view, ...(saved.detached === true ? { detached: true } : {}) };
+  return { open: true, path, follow: path ? saved.follow !== false : true, expanded, columnRoot, view, ...(saved.detached === true ? { detached: true } : {}) };
 }
 export const sameSaved = (a: SavedFiles | undefined, b: SavedFiles | undefined): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 export function toggleOpen(state: FilesState): FilesState {
-  return state.open ? withoutDetached({ ...state, open: false, full: false }) : { ...state, open: true };
+  return state.open ? withoutDetached({ ...state, open: false }) : { ...state, open: true };
 }
 // Pop the panel out into its own window, or bring it back into the tab.
 const withoutDetached = (state: FilesState): FilesState => { const { detached: _detached, ...rest } = state; return rest; };
 export function setDetached(state: FilesState, detached: boolean): FilesState {
-  return detached ? { ...state, open: true, full: false, detached: true } : withoutDetached({ ...state, open: true, full: false });
-}
-export function toggleFull(state: FilesState): FilesState {
-  return { ...state, open: true, full: !state.full };
+  return detached ? { ...state, open: true, detached: true } : withoutDetached({ ...state, open: true });
 }
 // The panel follows the terminal's cwd until the user browses elsewhere.
 export function onCwd(state: FilesState, cwd: string): FilesState {
@@ -142,8 +139,18 @@ export function stemLength(name: string, isDir: boolean) {
 export function shellQuote(path: string) {
   return `'${path.replaceAll("'", "'\\''")}'`;
 }
-export function clampWidth(width: number, viewport: number) {
-  return Math.round(Math.max(MIN_WIDTH, Math.min(width, Math.max(MIN_WIDTH, viewport * 0.7))));
+// Height of the drop-down panel; leaves some terminal visible below it (drag targets).
+export function clampDropHeight(height: number, workspaceHeight: number) {
+  return Math.round(Math.max(MIN_HEIGHT, Math.min(height, Math.max(MIN_HEIGHT, workspaceHeight * 0.85))));
+}
+export function defaultDropHeight(workspaceHeight: number) {
+  return clampDropHeight(workspaceHeight * DEFAULT_HEIGHT_RATIO, workspaceHeight);
+}
+// Backslash-escaped path for pasting into a shell (what dropping a file on a terminal inserts).
+// Keep in sync with escapePath in src-tauri/native/bridge.m.
+export function shellEscape(path: string) {
+  if (/[\u0000-\u001f\u007f]/.test(path)) return `$'${path.replace(/[\\']/g, "\\$&").replace(/\n/g, "\\n").replace(/\t/g, "\\t").replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}'`;
+  return path.replace(/[^A-Za-z0-9_@%+=:,./~\-\u0080-\uffff]/g, "\\$&");
 }
 export const DEFAULT_PREVIEW_HEIGHT = 220;
 const MIN_PREVIEW_HEIGHT = 80;

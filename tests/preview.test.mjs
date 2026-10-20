@@ -10,6 +10,8 @@ import {
   stepFontSize,
   clampRatio,
   linkTarget,
+  relativeToDir,
+  resolveInDir,
   openPreview,
   previewKind,
   ratioFromPointer,
@@ -145,4 +147,24 @@ test("column width is independent of text size, clamped, and parsed from typed i
   assert.equal(parseWidthInput("75%", 100), 75);
   assert.equal(parseWidthInput(" 20 ", 100), 30);
   assert.equal(parseWidthInput("abc", 80), 80);
+});
+
+test("favorite default preview is stored relative to the tab folder", () => {
+  assert.equal(relativeToDir("/work/app", "/work/app/docs/PLAN.md"), "docs/PLAN.md");
+  assert.equal(relativeToDir("/work/app/", "/work/app/PLAN.md"), "PLAN.md");
+  assert.equal(relativeToDir("/", "/PLAN.md"), "PLAN.md");
+  assert.equal(relativeToDir("/work/app", "/work/app"), undefined);
+  assert.equal(relativeToDir("/work/app", "/work/application/PLAN.md"), undefined);
+  assert.equal(relativeToDir("/work/app", "/work/other/PLAN.md"), undefined);
+  assert.equal(relativeToDir("/work/app", "/work/app/../x.md"), undefined);
+});
+
+test("favorite default preview resolves inside the new tab folder only", () => {
+  assert.equal(resolveInDir("/work/app", "docs/PLAN.md"), "/work/app/docs/PLAN.md");
+  assert.equal(resolveInDir("/work/app/", "PLAN.md"), "/work/app/PLAN.md");
+  assert.equal(resolveInDir("/", "PLAN.md"), "/PLAN.md");
+  assert.equal(resolveInDir("/work/app", ""), undefined);
+  assert.equal(resolveInDir("/work/app", "/etc/hosts"), undefined);
+  assert.equal(resolveInDir("/work/app", "../secret.md"), undefined);
+  assert.equal(resolveInDir("/work/app", "a/../../secret.md"), undefined);
 });

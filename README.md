@@ -42,6 +42,7 @@ Xcode 27 的 SDK 使用 arm64e libc stubs 時，bootstrap 自動選 x86_64 Zig�
 ## 建置與發佈（xtask）
 
 ```sh
+cargo xtask debug                  # 開發模式（npm run tauri -- dev，輸出目錄同 build）
 cargo xtask build                  # 建置 HiGhostty.app（--debug 為開發版）
 cargo xtask publish                # 打包 dmg，詢問是否複製到 ~/Applications（--install / --no-install）
 cargo xtask clean                  # 清除 Cargo 輸出目錄、dist 等產出與中間產物；--all 連 src-tauri/vendor、node_modules 一併清

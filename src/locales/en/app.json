@@ -17,7 +17,6 @@
   "app.addSnippet": "New snippet",
   "app.detail": "Details",
   "app.terminalsLabel": "Native Ghostty workspace",
-  "app.resizeFiles": "Resize files panel",
   "app.files": "Files",
   "app.emptyHint": "Choose a folder to get started.",
   "app.chooseFolder": "Choose folder…",
@@ -94,6 +93,12 @@
   "app.path": "Path",
   "app.choose": "Choose…",
   "app.favoriteCommandHelp": "Runs in the main terminal when the favorite opens.",
+  "app.cap.preview": "Default preview",
+  "app.previewFile": "Preview file",
+  "app.previewNone": "None",
+  "app.previewFileHelp": "A path inside the tab's folder. When a new tab opens from this favorite, this file opens in a preview below the terminal (if the file still exists).",
+  "app.previewOutsideDir": "Choose a file inside the tab's folder: {dir}",
+  "app.clear": "Clear",
   "app.favoritePathHelp": "Only changes the main terminal's folder; the split layout stays as is.",
   "app.splitCount.one": "{n} split",
   "app.splitCount.other": "{n} splits",
@@ -198,5 +203,9 @@
   "app.launchModelName": "Model name",
   "app.launchExtra": "Extra arguments",
   "app.launchExtraPlaceholder": "e.g. --resume",
-  "app.resizeDetail": "Resize editor"
+  "app.resizeDetail": "Resize editor",
+  "git.title": "Git status of this directory",
+  "git.dirty": "Uncommitted changes",
+  "git.detached": "detached",
+  "git.noUpstream": "No upstream"
 }

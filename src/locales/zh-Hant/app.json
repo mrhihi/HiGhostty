@@ -17,7 +17,6 @@
   "app.addSnippet": "新增片段",
   "app.detail": "詳細內容",
   "app.terminalsLabel": "原生 Ghostty 工作區",
-  "app.resizeFiles": "調整檔案面板寬度",
   "app.files": "檔案",
   "app.emptyHint": "選擇目錄，開始工作。",
   "app.chooseFolder": "選擇資料夾…",
@@ -94,6 +93,12 @@
   "app.path": "路徑",
   "app.choose": "選擇…",
   "app.favoriteCommandHelp": "收藏開啟時於主要終端機執行。",
+  "app.cap.preview": "預設預覽",
+  "app.previewFile": "預覽檔案",
+  "app.previewNone": "無",
+  "app.previewFileHelp": "填入頁籤工作目錄內的相對路徑。從此收藏開啟新頁籤時，若檔案仍存在，會在終端機下方開啟預覽。",
+  "app.previewOutsideDir": "請選擇頁籤工作目錄（{dir}）內的檔案",
+  "app.clear": "清除",
   "app.favoritePathHelp": "只修改主要終端機的目錄；分割布局維持原樣。",
   "app.splitCount.one": "{n} 分割",
   "app.splitCount.other": "{n} 分割",
@@ -198,5 +203,9 @@
   "app.launchModelName": "模型名稱",
   "app.launchExtra": "額外參數",
   "app.launchExtraPlaceholder": "例如 --resume",
-  "app.resizeDetail": "調整編輯頁寬度"
+  "app.resizeDetail": "調整編輯頁寬度",
+  "git.title": "目前目錄的 git 狀態",
+  "git.dirty": "有未提交的變更",
+  "git.detached": "分離的 HEAD",
+  "git.noUpstream": "無遠端追蹤"
 }

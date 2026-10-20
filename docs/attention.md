@@ -79,7 +79,7 @@
 
 「待處理」不在側欄 drawer，而是仿 ⌘⇧P 的頂部浮層（`#attention-drop`，鈴鐺與 rail 鈴鐺都是 toggle）。
 - 終端機 NSView 在 WebView 之上，靠 `overlay-cutout` 顯示；關閉時一定要送全零取消遮罩。
-- 與片段面板共用單一 `cutoutRequests[label]`，不可同時開：開一個前先 `close(false)` 另一個（見 `toggleAttention`、`toggle-palette`）。
+- 與片段面板、用量浮層共用 `default` slot（`cutoutRequests[label]["default"]`），不可同時開；檔案浮層用獨立的 `files` slot，可與它們同時存在：開一個前先 `close(false)` 另一個（見 `toggleAttention`、`toggle-palette`）。
 - 鍵盤：↑↓ 選卡片、Enter 前往、⌫ 忽略、Esc 關閉；輸入法組字中不處理。字體刻意放大（標題 16px／內文 14px），改 CSS 時別縮回去。
 - 驗收：兩個鈴鐺皆可開關、浮層不被終端機蓋住且可點、關閉後終端機整面可點並取回焦點、與 ⌘⇧P 互斥。
 - 重繪（`renderAttention`）會每 1.5 秒被掃描觸發：內容沒變就不重建（簽章比對，含問題與選項），重建時要保留清單與各卡片 `.alert-body` 的捲動位置與「畫面內容」`<details>` 的展開狀態（預設收合，記在 `expandedBodies`）；重建後把焦點拉回浮層（被按的按鈕已消失），最後一張被忽略時自動關閉浮層。⌘⇧P 在浮層開著時只關浮層。

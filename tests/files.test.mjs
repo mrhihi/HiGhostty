@@ -8,7 +8,9 @@ import {
   DEFAULT_COLUMN_WIDTH,
   pruneColumnWidths,
   rememberColumnWidth,
-  clampWidth,
+  clampDropHeight,
+  defaultDropHeight,
+  shellEscape,
   fileKindLabel,
   parentOf,
   previewTarget,
@@ -24,18 +26,16 @@ import {
   sortEntries,
   stemLength,
   toggleExpanded,
-  toggleFull,
   toggleOpen,
   topLevelPaths,
 } from "../src/files.ts";
 import { useLocale } from "./i18n-helper.mjs";
 useLocale();
 
-test("closing the panel also leaves full mode", () => {
-  const state = toggleFull(initialFiles());
+test("closing the panel clears open", () => {
+  const state = toggleOpen(initialFiles());
   assert.equal(state.open, true);
-  assert.equal(state.full, true);
-  assert.deepEqual(toggleOpen(state), { ...state, open: false, full: false });
+  assert.deepEqual(toggleOpen(state), { ...state, open: false });
 });
 
 test("the panel follows cwd until browsing elsewhere", () => {
@@ -88,8 +88,9 @@ test("rename selects the stem", () => {
 
 test("helpers", () => {
   assert.equal(shellQuote("/a b/it's"), `'/a b/it'\\''s'`);
-  assert.equal(clampWidth(100, 1000), 240);
-  assert.equal(clampWidth(900, 1000), 700);
+  assert.equal(clampDropHeight(50, 1000), 160);
+  assert.equal(clampDropHeight(950, 1000), 850);
+  assert.equal(defaultDropHeight(800), 400);
   assert.equal(clampPreviewHeight(10, 800), 80);
   assert.equal(clampPreviewHeight(300, 800), 300);
   assert.equal(clampPreviewHeight(790, 800), 560);
@@ -161,7 +162,7 @@ test("pruning forgets widths of folders missing from the listing", () => {
 test("saveFiles and restoreFiles keep path and expanded folders", async () => {
   const { saveFiles, restoreFiles, initialFiles, sameSaved } = await import("../src/files.ts");
   assert.equal(saveFiles(initialFiles()), undefined);
-  const state = { open: true, full: true, path: "/a/b", follow: false, expanded: ["/a/b/c", "/a/b/c/d"], columnRoot: "/a", view: "columns" };
+  const state = { open: true, path: "/a/b", follow: false, expanded: ["/a/b/c", "/a/b/c/d"], columnRoot: "/a", view: "columns" };
   const saved = saveFiles(state);
   assert.deepEqual(restoreFiles(JSON.parse(JSON.stringify(saved))), state);
   assert.ok(sameSaved(saved, saveFiles({ ...state })));
@@ -171,7 +172,7 @@ test("saveFiles and restoreFiles keep path and expanded folders", async () => {
 test("restoreFiles drops malformed fields and old open/full-only data", async () => {
   const { restoreFiles } = await import("../src/files.ts");
   assert.equal(restoreFiles(undefined), undefined);
-  assert.deepEqual(restoreFiles({ open: true, full: false }), { open: true, full: false, path: undefined, follow: true, expanded: [], columnRoot: undefined, view: undefined });
+  assert.deepEqual(restoreFiles({ open: true, full: false }), { open: true, path: undefined, follow: true, expanded: [], columnRoot: undefined, view: undefined });
   assert.deepEqual(restoreFiles({ open: true, full: false, path: "/a", expanded: ["/a/x", "/other", 5] }).expanded, ["/a/x"]);
   assert.equal(restoreFiles({ open: true, path: "rel" }).path, undefined);
 });
@@ -188,4 +189,13 @@ test("a popped-out panel is hidden in the tab, saved, and cleared when closed or
   assert.equal(shownInTab(setDetached(out, false)), true);
   assert.equal(toggleOpen(out).open, false);
   assert.equal("detached" in toggleOpen(out), false);
+});
+
+test("shellEscape backslash-escapes only what the shell needs", () => {
+  assert.equal(shellEscape("/Users/me/plain-file_1.txt"), "/Users/me/plain-file_1.txt");
+  assert.equal(shellEscape("/a b/c(1).txt"), "/a\\ b/c\\(1\\).txt");
+  assert.equal(shellEscape("it's $HOME & more"), "it\\'s\\ \\$HOME\\ \\&\\ more");
+  assert.equal(shellEscape("/專案/文件 一.md"), "/專案/文件\\ 一.md");
+  assert.equal(shellEscape("a\nb"), "$'a\\nb'");
+  assert.equal(shellEscape("a\nb'c"), "$'a\\nb\\'c'");
 });

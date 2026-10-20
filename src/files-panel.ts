@@ -1,4 +1,4 @@
-// Per-tab files panel shown beside (or instead of) the terminal. Pure state
+// Per-tab files panel: a drop-down overlay at the top of the workspace (or its own window). Pure state
 // lives in files.ts; this module owns the DOM and talks to the native layer.
 import { invoke } from "@tauri-apps/api/core";
 import { popupMenu } from "./context-menu";
@@ -7,12 +7,12 @@ import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import {
   clampColumnWidth,
   clampPreviewHeight,
-  clampWidth,
+  clampDropHeight,
+  defaultDropHeight,
   columnChain,
   columnRootFor,
   DEFAULT_COLUMN_WIDTH,
   DEFAULT_PREVIEW_HEIGHT,
-  DEFAULT_WIDTH,
   fileKindLabel,
   formatDate,
   formatSize,
@@ -34,7 +34,6 @@ import {
   sortEntries,
   stemLength,
   toggleExpanded,
-  toggleFull,
   toggleOpen,
   topLevelPaths,
   type FileEntry,
@@ -61,7 +60,7 @@ export type FilesHost = {
   insertIntoTerminal(text: string): Promise<void>;
   focusTerminal(): void;
   layoutChanged(): void;
-  // The tab's panel was opened, closed, resized to full, moved or its folders expanded: remember it for next launch.
+  // The tab's panel was opened, closed, moved or its folders expanded: remember it for next launch.
   visibilityChanged(tab: FilesTab): void;
   notify(error: unknown): void;
   // The panel runs in its own window (files-window.ts) instead of beside a terminal.
@@ -82,10 +81,9 @@ type MenuEntry = { text: string; action?: () => unknown; enabled?: boolean; item
 
 const extraIcons = {
   follow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
-  expand: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>',
   popOut: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>',
   dock: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 20H4v-6M4 20l9-9M6 10V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-4"/></svg>',
-  shrink: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7"/></svg>',
+  collapse: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>',
   list: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>',
   columns: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></svg>',
   link: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
@@ -95,7 +93,6 @@ export function initFilesPanel(host: FilesHost) {
   const { icons } = host;
   const workspace = document.getElementById("workspace")!;
   const panel = document.getElementById("files")!;
-  const resizer = document.getElementById("files-resizer")!;
   panel.innerHTML = `<div class="files-heading">
 <button id="files-up" class="icon-btn" title="Enclosing Folder (⌘↑)" aria-label="Enclosing Folder" data-i18n-title="files.up.title" data-i18n-aria-label="files.up.label">${icons.up}</button>
 <nav id="files-crumbs" class="files-crumbs" aria-label="Current Location" data-i18n-aria-label="files.crumbs.label"></nav>
@@ -103,12 +100,13 @@ export function initFilesPanel(host: FilesHost) {
 <div class="files-view-switch" role="group" aria-label="View Mode" data-i18n-aria-label="files.viewMode"><button id="files-view-list" class="icon-btn" title="List" aria-label="List" data-i18n-title="files.viewList" data-i18n-aria-label="files.viewList">${extraIcons.list}</button><button id="files-view-columns" class="icon-btn" title="Columns" aria-label="Columns" data-i18n-title="files.viewColumns" data-i18n-aria-label="files.viewColumns">${extraIcons.columns}</button></div>
 <button id="files-hidden" class="icon-btn" title="Show Hidden Files" aria-label="Show Hidden Files" data-i18n-title="files.showHidden" data-i18n-aria-label="files.showHidden" aria-pressed="false">${icons.eye}</button>
 <button id="files-popout" class="icon-btn" title="Open in Window" aria-label="Open in Window" data-i18n-title="files.popOut" data-i18n-aria-label="files.popOut">${extraIcons.popOut}</button>
-<button id="files-full" class="icon-btn" title="Full Width (⇧⌘F)" aria-label="Full Width">${extraIcons.expand}</button>
-<button id="files-close" class="icon-btn" title="Close (⌘O / ⌘0)" aria-label="Close Files Panel" data-i18n-title="files.close.title" data-i18n-aria-label="files.close.label">${icons.close}</button>
+<button id="files-close" class="icon-btn" title="Collapse (⌘O / ⌘0)" aria-label="Collapse Files Panel" data-i18n-title="${host.standalone ? "files.close.title" : "files.collapse.title"}" data-i18n-aria-label="${host.standalone ? "files.close.label" : "files.collapse.label"}">${host.standalone ? icons.close : extraIcons.collapse}</button>
 </div>
 <div class="files-columns"><button data-sort="name" data-i18n="files.col.name">Name</button><button data-sort="size" data-i18n="files.col.size">Size</button><button data-sort="modified" data-i18n="files.col.modified">Date Modified</button></div>
 <div id="files-split"><div id="files-body"><div id="files-list" role="tree" tabindex="0" aria-label="Files" data-i18n-aria-label="files.list.label" aria-multiselectable="true"></div><div class="col-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Column" data-i18n-aria-label="files.resizeColumn"></div><div class="col-child" aria-label="Folder Contents" data-i18n-aria-label="files.folderContents"></div><div class="col-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Column" data-i18n-aria-label="files.resizeColumn"></div></div><div id="files-preview-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize Preview Height" data-i18n-aria-label="files.resizePreview"></div><div class="col-preview" aria-label="Preview" data-i18n-aria-label="files.preview"></div></div>
-<div id="files-status" role="status" hidden></div>`;
+<div id="files-status" role="status" hidden></div>
+<div id="files-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize Files Panel" data-i18n-aria-label="files.resizeHeight"></div>`;
+  const resizer = document.getElementById("files-resizer")!;
   const $ = (id: string) => document.getElementById(id)!;
   const list = $("files-list");
   const body = $("files-body");
@@ -130,7 +128,7 @@ export function initFilesPanel(host: FilesHost) {
   let stampKey = "";
   let showHidden = false;
   let sort: Sort = { key: "name", descending: false };
-  let width = DEFAULT_WIDTH;
+  let height = 0;
   let previewHeight = DEFAULT_PREVIEW_HEIGHT;
   let view: FilesView = "list";
   // Last view the user picked; new tabs and tabs without a saved view start with it.
@@ -148,7 +146,7 @@ export function initFilesPanel(host: FilesHost) {
     view = defaultView = localStorage.getItem("files-view") === "columns" ? "columns" : "list";
     showHidden = localStorage.getItem("show-hidden") === "true";
     sort = { ...sort, ...JSON.parse(localStorage.getItem("files-sort") || "{}") };
-    width = Number(localStorage.getItem("files-width")) || DEFAULT_WIDTH;
+    height = Number(localStorage.getItem("files-height")) || 0;
     previewHeight = Number(localStorage.getItem("files-preview-height")) || DEFAULT_PREVIEW_HEIGHT;
     const saved = JSON.parse(localStorage.getItem("files-column-widths") || "{}");
     if (saved && typeof saved === "object") columnWidths = saved;
@@ -177,24 +175,33 @@ export function initFilesPanel(host: FilesHost) {
     else status("");
   }
 
+  // The drop-down covers the native terminals, so the native layer is told where the hole is (slot "files").
+  let cutoutKey = "";
+  function reportCutout(restoreFocus = false) {
+    if (host.standalone) return;
+    const box = panel.getBoundingClientRect();
+    const open = !panel.hidden && box.height > 0;
+    const key = open ? [box.x, box.y, box.width, box.height].join(",") : "";
+    if (!restoreFocus && key === cutoutKey) return;
+    cutoutKey = key;
+    host.native({ op: "overlay-cutout", slot: "files", x: box.x - 8, y: box.y - 8, width: open ? box.width + 16 : 0, height: open ? box.height + 16 : 0, viewportWidth: window.innerWidth, restoreFocus }).catch(host.notify);
+  }
+  if (!host.standalone) new ResizeObserver(() => reportCutout()).observe(panel);
+  const workspaceHeight = () => workspace.clientHeight || window.innerHeight;
+
   function applyLayout(notifyHost = true) {
     const files = state();
-    const open = shownInTab(files), full = open && !!files?.full;
+    const open = shownInTab(files);
     workspace.classList.toggle("files-open", open);
-    workspace.classList.toggle("files-full", full);
     panel.hidden = !open;
-    resizer.hidden = !open || full;
-    width = clampWidth(width, window.innerWidth);
-    workspace.style.setProperty("--files-width", width + "px");
+    resizer.hidden = !!host.standalone;
+    height = height ? clampDropHeight(height, workspaceHeight()) : defaultDropHeight(workspaceHeight());
+    panel.style.setProperty("--files-height", height + "px");
     previewHeight = clampPreviewHeight(previewHeight, panel.clientHeight || window.innerHeight);
     panel.style.setProperty("--preview-height", previewHeight + "px");
     $("files-popout").innerHTML = host.standalone ? extraIcons.dock : extraIcons.popOut;
     $("files-popout").title = t(host.standalone ? "files.dock" : "files.popOut");
     $("files-popout").setAttribute("aria-label", t(host.standalone ? "files.dock" : "files.popOut"));
-    $("files-full").hidden = !!host.standalone;
-    $("files-full").innerHTML = full ? extraIcons.shrink : extraIcons.expand;
-    $("files-full").title = t(full ? "files.full.exitTitle" : "files.full.title");
-    $("files-full").setAttribute("aria-label", t("files.full.label"));
     panel.classList.toggle("view-columns", view === "columns");
     $("files-view-list").classList.toggle("active", view === "list");
     $("files-view-columns").classList.toggle("active", view === "columns");
@@ -208,6 +215,7 @@ export function initFilesPanel(host: FilesHost) {
       toggleButton.setAttribute("aria-pressed", String(open));
       (toggleButton as HTMLButtonElement).disabled = !host.activeTab();
     }
+    reportCutout();
     if (notifyHost) host.layoutChanged();
   }
 
@@ -714,8 +722,6 @@ export function initFilesPanel(host: FilesHost) {
     await host.native({ op: "files-open", paths, app });
   }
   async function editInTerminal(entry: FileEntry) {
-    const files = state();
-    if (files?.full) { update(toggleFull(files)); applyLayout(); }
     // Run through sh so ${EDITOR} works the same under zsh, bash and fish.
     await host.editInTerminal(parentOf(entry.path), `sh -c '\${EDITOR:-vi} "$1"' sh ${shellQuote(entry.path)}`);
   }
@@ -817,6 +823,28 @@ export function initFilesPanel(host: FilesHost) {
     setSelection(select(selection, path, order, { toggle: event.metaKey, range: event.shiftKey }), false);
     followPreview();
   });
+  // Dragging rows out of the panel starts a native drag session (files-drag) carrying file URLs:
+  // a terminal pastes the escaped paths, Finder copies. The WebView's own HTML5 drag can't do that.
+  panel.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || event.detail > 1 || renaming) return;
+    const target = event.target as Element;
+    const element = target.closest<HTMLElement>(".file-row");
+    if (!element || target.closest(".file-disclosure, input")) return;
+    const path = element.dataset.path ?? miniEntries.get(element)?.path;
+    if (!path) return;
+    const startX = event.clientX, startY = event.clientY;
+    const move = (e: MouseEvent) => {
+      if (!(e.buttons & 1)) { stop(); return; }
+      if (Math.hypot(e.clientX - startX, e.clientY - startY) < 5) return;
+      stop();
+      // The mousedown above already selected a list row; side-column rows drag alone.
+      const paths = element.dataset.path && selection.paths.includes(path) ? [...selection.paths] : [path];
+      host.native({ op: "files-drag", paths }).catch(host.notify);
+    };
+    const stop = () => { document.removeEventListener("mousemove", move, true); document.removeEventListener("mouseup", stop, true); };
+    document.addEventListener("mousemove", move, true);
+    document.addEventListener("mouseup", stop, true);
+  });
   list.addEventListener("dblclick", (event) => {
     const element = (event.target as Element).closest<HTMLElement>(".file-row");
     const entry = element ? entries.get(element.dataset.path!) : undefined;
@@ -847,7 +875,7 @@ export function initFilesPanel(host: FilesHost) {
       },
       " ": toggleQuickLook,
       Enter: () => rename(),
-      Escape: () => (selection.paths.length ? setSelection({ paths: [] }) : host.focusTerminal()),
+      Escape: () => (host.standalone ? (selection.paths.length ? setSelection({ paths: [] }) : undefined) : close()),
     };
     const metaCommands: Record<string, () => unknown> = {
       c: () => copy(false),
@@ -859,7 +887,6 @@ export function initFilesPanel(host: FilesHost) {
     };
     let fn: (() => unknown) | undefined;
     if (meta && event.shiftKey && key.toLowerCase() === "n") fn = () => create("folder");
-    else if (meta && event.shiftKey && key.toLowerCase() === "f") fn = toggleFullMode;
     else if (meta && !event.shiftKey && !event.altKey && !event.ctrlKey && (key.length === 1 ? key.toLowerCase() : key) in metaCommands) fn = metaCommands[key.length === 1 ? key.toLowerCase() : key];
     else if (key in commands && !event.altKey && !event.ctrlKey && (!meta || key.startsWith("Arrow"))) fn = commands[key];
     if (!fn) return;
@@ -913,22 +940,20 @@ export function initFilesPanel(host: FilesHost) {
     applyLayout();
     load().catch(host.notify);
   };
-  $("files-full").onclick = () => toggleFullMode();
   $("files-popout").onclick = () => host.popOut?.();
   $("files-close").onclick = () => (host.standalone ? host.closeWindow?.() : close());
   resizer.addEventListener("pointerdown", (event) => {
     resizer.setPointerCapture(event.pointerId);
     resizer.classList.add("dragging");
-    const right = workspace.getBoundingClientRect().right;
+    const top = panel.getBoundingClientRect().top;
     const move = (e: PointerEvent) => {
-      width = clampWidth(right - e.clientX, window.innerWidth);
-      workspace.style.setProperty("--files-width", width + "px");
-      host.layoutChanged();
+      height = clampDropHeight(e.clientY - top, workspaceHeight());
+      panel.style.setProperty("--files-height", height + "px");
     };
     const up = () => {
       resizer.classList.remove("dragging");
       resizer.removeEventListener("pointermove", move);
-      try { localStorage.setItem("files-width", String(width)); } catch {}
+      try { localStorage.setItem("files-height", String(height)); } catch {}
     };
     resizer.addEventListener("pointermove", move);
     resizer.addEventListener("pointerup", up, { once: true });
@@ -986,6 +1011,12 @@ export function initFilesPanel(host: FilesHost) {
     applyColumnWidths();
   });
   window.addEventListener("focus", () => { if (isOpen()) load().catch(host.notify); });
+  // Esc collapses the drop-down; losing focus does not (the panel can stay open as a reference).
+  if (!host.standalone) {
+    panel.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !event.isComposing && !renaming && !quickLook && event.target !== list) { event.preventDefault(); close(); }
+    });
+  }
   // Pick up changes made elsewhere (for example by commands in the terminal).
   setInterval(async () => {
     const files = state();
@@ -1018,16 +1049,8 @@ export function initFilesPanel(host: FilesHost) {
     update(toggleOpen(files));
     if (quickLook) toggleQuickLook().catch(host.notify);
     applyLayout();
+    reportCutout(true);
     host.focusTerminal();
-  }
-  function toggleFullMode() {
-    const files = state();
-    if (!files || files.detached) return;
-    update(toggleFull(files));
-    applyLayout();
-    if (state()!.full) focusList().catch(host.notify);
-    else host.focusTerminal();
-    if (renderedPath !== state()!.path) load().catch(host.notify);
   }
   onLocaleChange(() => {
     applyI18n(panel);
@@ -1043,14 +1066,18 @@ export function initFilesPanel(host: FilesHost) {
       else if (hasFocus()) close();
       else await focusList();
     },
+    // Esc from outside the panel (body, header button): collapse it if it is showing.
+    collapse(): boolean {
+      if (host.standalone || !isOpen()) return false;
+      close();
+      return true;
+    },
     // Header button: a plain open/close switch (the click itself moves focus).
     async toggleOpen() {
       if (state()?.detached) host.focusDetached?.();
       else if (isOpen()) close();
       else await openPanel(true);
     },
-    toggleFull: toggleFullMode,
-    isFull: () => !!state()?.open && !!state()?.full,
     // A tab's saved panel state was applied after it became active: show it on the next sync.
     invalidate() { shownTab = undefined; },
     // Called before every terminal layout: when the active tab changed, show
@@ -1068,8 +1095,7 @@ export function initFilesPanel(host: FilesHost) {
       if (isOpen()) {
         const cwd = host.cwd();
         if (cwd) update(onCwd(state()!, cwd));
-        // In full mode the terminals are hidden, so the list takes the keyboard.
-        load().then(() => (state()?.full ? focusList() : undefined)).catch(host.notify);
+        load().catch(host.notify);
       }
     },
     // The focused terminal of the active tab changed directory.

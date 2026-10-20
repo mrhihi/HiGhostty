@@ -12,6 +12,7 @@ use std::{
 use tauri::{Emitter, Manager};
 mod control;
 mod files;
+mod git;
 mod locales;
 mod preview;
 mod snippets;
@@ -141,6 +142,20 @@ fn save_window_position(window: &tauri::Window) {
     if let Ok(pos) = window.outer_position() {
         update_window_state(window.app_handle(), json!({"x": pos.x, "y": pos.y}));
     }
+}
+/// 縮放／移動事件連續觸發，且最大化、全螢幕的過渡中旗標尚未翻轉；等穩定後才判斷並寫入。
+fn schedule_window_save(window: &tauri::Window) {
+    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    use std::sync::atomic::Ordering;
+    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let window = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if GENERATION.load(Ordering::SeqCst) == generation {
+            save_window_size(&window);
+            save_window_position(&window);
+        }
+    });
 }
 /// 上次位置仍有一部分落在某個螢幕內才採用（螢幕拔掉後退回置中）。
 fn load_window_position(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Option<tauri::PhysicalPosition<i32>> {
@@ -713,10 +728,8 @@ fn main() {
     tauri::Builder::default()
         .on_window_event(|window, event| {
             if window.label() == "main" {
-                match event {
-                    tauri::WindowEvent::Resized(_) => save_window_size(window),
-                    tauri::WindowEvent::Moved(_) => save_window_position(window),
-                    _ => {}
+                if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
+                    schedule_window_save(window);
                 }
             }
         })
@@ -760,6 +773,7 @@ fn main() {
             tools::load_launch_tools,
             tools::save_launch_tools,
             tools::open_with_app,
+            git::git_status,
             usage::usage_codex,
             usage::usage_claude,
             snippets::save_snippets,

@@ -125,11 +125,12 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
 @property NSTimeInterval lastPerformKeyEvent;
 @property BOOL hasLastPerformKeyEvent;
 // Area (in this view's coordinates) hidden so the web overlay beneath shows through.
-@property NSRect cutout;
+@property (copy) NSArray<NSValue *> *cutouts; // overlay holes (disjoint), view coordinates
+
 @end
 @implementation HGSurface
 - (NSView *)hitTest:(NSPoint)point {
-    if(!NSIsEmptyRect(self.cutout)&&NSPointInRect([self convertPoint:point fromView:self.superview],self.cutout))return nil;
+    if(self.cutouts.count){NSPoint local=[self convertPoint:point fromView:self.superview];for(NSValue *hole in self.cutouts)if(NSPointInRect(local,hole.rectValue))return nil;}
     return [super hitTest:point];
 }
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
@@ -145,7 +146,7 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
         NSArray<NSURL *> *urls=[sender.draggingPasteboard readObjectsForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
         if(!urls.count||!_surface)return NO;
         NSMutableArray<NSString *> *quoted=[NSMutableArray array];
-        for(NSURL *url in urls){NSString *path=url.path;if(!path.length)continue;[quoted addObject:[NSString stringWithFormat:@"'%@'",[path stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]]];}
+        for(NSURL *url in urls){NSString *path=url.path;if(!path.length)continue;[quoted addObject:HGEscapePath(path)];}
         if(!quoted.count)return NO;
         NSString *text=[quoted componentsJoinedByString:@" "];
         ghostty_surface_text(_surface,text.UTF8String,[text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
@@ -574,6 +575,8 @@ static void confirmClipboard(void *data,const char *text,void *state,ghostty_cli
 }
 static void writeClipboard(void *data,ghostty_clipboard_e clipboard,const ghostty_clipboard_content_s *contents,size_t count,bool confirm) {
     HGSurface *surface=(__bridge HGSurface *)data;
+    // copy-on-select 寫的是 SELECTION；macOS 沒有獨立選取剪貼簿，寫進系統剪貼簿會讓誤選蓋掉資料，所以忽略。
+    if(clipboard==GHOSTTY_CLIPBOARD_SELECTION){(void)surface;return;}
     if(confirm){NSAlert *alert=[NSAlert new];alert.messageText=L(@"native.clipboardWriteTitle",@"Allow the terminal to write to the clipboard?");[alert addButtonWithTitle:L(@"native.allow",@"Allow")];[alert addButtonWithTitle:L(@"native.cancel",@"Cancel")];if([alert runModal]!=NSAlertFirstButtonReturn)return;}
     for(size_t i=0;i<count;i++)if(strcmp(contents[i].mime,"text/plain")==0){[NSPasteboard.generalPasteboard clearContents];[NSPasteboard.generalPasteboard setString:str(contents[i].data) forType:NSPasteboardTypeString];break;}
     (void)surface;
@@ -888,24 +891,41 @@ static NSDictionary *destroySurface(HGSurface *surface,BOOL force) {
 static NSView *findWebView(NSView *view) {if([view isKindOfClass:NSClassFromString(@"WKWebView")])return view;for(NSView *child in view.subviews){NSView *found=findWebView(child);if(found)return found;}return nil;}
 // The web overlay (command palette) must appear above native terminals, so the
 // overlapping part of each terminal is masked out instead of resizing it.
-static NSMutableDictionary *cutoutRequests;
+// cutoutRequests[window label][slot] = overlay-cutout request. Slots let several overlays
+// (palette / attention / usage share "default"; the files drop-down uses "files") be open together.
+static NSMutableDictionary<NSString *,NSMutableDictionary *> *cutoutRequests;
+// rect minus hole, as up to four disjoint pieces.
+static void subtractRect(NSRect rect,NSRect hole,NSMutableArray<NSValue *> *out) {
+    NSRect cut=NSIntersectionRect(rect,hole);
+    if(NSIsEmptyRect(cut)){[out addObject:[NSValue valueWithRect:rect]];return;}
+    if(cut.origin.y>rect.origin.y)[out addObject:[NSValue valueWithRect:NSMakeRect(rect.origin.x,rect.origin.y,rect.size.width,cut.origin.y-rect.origin.y)]];
+    if(NSMaxY(cut)<NSMaxY(rect))[out addObject:[NSValue valueWithRect:NSMakeRect(rect.origin.x,NSMaxY(cut),rect.size.width,NSMaxY(rect)-NSMaxY(cut))]];
+    if(cut.origin.x>rect.origin.x)[out addObject:[NSValue valueWithRect:NSMakeRect(rect.origin.x,cut.origin.y,cut.origin.x-rect.origin.x,cut.size.height)]];
+    if(NSMaxX(cut)<NSMaxX(rect))[out addObject:[NSValue valueWithRect:NSMakeRect(NSMaxX(cut),cut.origin.y,NSMaxX(rect)-NSMaxX(cut),cut.size.height)]];
+}
 static void applyCutout(HGSurface *s,NSView *web) {
-    NSRect hole=NSZeroRect;
-    NSDictionary *cutoutRequest=cutoutRequests[s.owner];
-    if(cutoutRequest&&web&&!s.hidden){
-        double ratio=web.bounds.size.width/[cutoutRequest[@"viewportWidth"] doubleValue];
-        if(isfinite(ratio)&&ratio>0){
+    // Disjoint holes, so the even-odd mask doesn't un-cut where two overlays overlap.
+    NSMutableArray<NSValue *> *holes=[NSMutableArray array];
+    if(web&&!s.hidden){
+        for(NSDictionary *cutoutRequest in cutoutRequests[s.owner].allValues){
+            double ratio=web.bounds.size.width/[cutoutRequest[@"viewportWidth"] doubleValue];
+            if(!isfinite(ratio)||ratio<=0)continue;
             NSRect rect=NSMakeRect([cutoutRequest[@"x"] doubleValue]*ratio,[cutoutRequest[@"y"] doubleValue]*ratio,[cutoutRequest[@"width"] doubleValue]*ratio,[cutoutRequest[@"height"] doubleValue]*ratio);
             if(!web.isFlipped)rect.origin.y=web.bounds.size.height-rect.origin.y-rect.size.height;
             rect=[web convertRect:rect toView:s.superview];
-            hole=NSIntersectionRect([s convertRect:rect fromView:s.superview],s.bounds);
+            rect=NSIntersectionRect([s convertRect:rect fromView:s.superview],s.bounds);
+            if(NSIsEmptyRect(rect))continue;
+            NSMutableArray<NSValue *> *pieces=[NSMutableArray arrayWithObject:[NSValue valueWithRect:rect]];
+            for(NSValue *old in holes){NSMutableArray<NSValue *> *next=[NSMutableArray array];for(NSValue *piece in pieces)subtractRect(piece.rectValue,old.rectValue,next);pieces=next;}
+            [holes addObjectsFromArray:pieces];
         }
     }
-    s.cutout=hole;
+    s.cutouts=holes;
     s.wantsLayer=YES;
-    if(NSIsEmptyRect(hole)){s.layer.mask=nil;return;}
+    if(!holes.count){s.layer.mask=nil;return;}
     CGMutablePathRef path=CGPathCreateMutable();
-    CGPathAddRect(path,NULL,NSRectToCGRect(s.bounds));CGPathAddRect(path,NULL,NSRectToCGRect(hole));
+    CGPathAddRect(path,NULL,NSRectToCGRect(s.bounds));
+    for(NSValue *hole in holes)CGPathAddRect(path,NULL,NSRectToCGRect(hole.rectValue));
     CAShapeLayer *mask=[CAShapeLayer layer];mask.frame=s.bounds;mask.path=path;mask.fillRule=kCAFillRuleEvenOdd;
     CGPathRelease(path);
     s.layer.mask=mask;
@@ -934,9 +954,9 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
         else if([op isEqualToString:@"preferred-languages"])result=@{@"languages":NSLocale.preferredLanguages ?: @[]};
         else if([op isEqualToString:@"pick-file"]||[op isEqualToString:@"save-file"]){
             BOOL saving=[op isEqualToString:@"save-file"];NSSavePanel *panel=saving?[NSSavePanel savePanel]:[NSOpenPanel openPanel];
-            UTType *json=[UTType typeWithFilenameExtension:@"json"];if(json)panel.allowedContentTypes=@[json];
+            if(![req[@"any"] boolValue]){UTType *json=[UTType typeWithFilenameExtension:@"json"];if(json)panel.allowedContentTypes=@[json];}
             if(saving){NSString *name=req[@"name"];if([name isKindOfClass:NSString.class])panel.nameFieldStringValue=name;}
-            else{NSOpenPanel *open=(NSOpenPanel *)panel;open.canChooseFiles=YES;open.canChooseDirectories=NO;open.allowsMultipleSelection=NO;}
+            else{NSOpenPanel *open=(NSOpenPanel *)panel;open.canChooseFiles=YES;open.canChooseDirectories=NO;open.allowsMultipleSelection=NO;NSString *dir=req[@"dir"];if([dir isKindOfClass:NSString.class])open.directoryURL=[NSURL fileURLWithPath:dir isDirectory:YES];}
             NSModalResponse response=[panel runModal];
             result=@{@"path":response==NSModalResponseOK?panel.URL.path:(id)NSNull.null};
         }
@@ -989,7 +1009,9 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
         }else if([op isEqualToString:@"overlay-cutout"]){
             NSView *web=findWebView(window.contentView);
             if(!cutoutRequests)cutoutRequests=[NSMutableDictionary dictionary];
-            if([req[@"width"] doubleValue]>0&&[req[@"height"] doubleValue]>0)cutoutRequests[label]=req;else [cutoutRequests removeObjectForKey:label];
+            NSString *slot=[req[@"slot"] isKindOfClass:NSString.class]?req[@"slot"]:@"default";
+            NSMutableDictionary *slots=cutoutRequests[label];if(!slots)cutoutRequests[label]=slots=[NSMutableDictionary dictionary];
+            if([req[@"width"] doubleValue]>0&&[req[@"height"] doubleValue]>0)slots[slot]=req;else [slots removeObjectForKey:slot];
             for(HGSurface *s in surfaces.allValues)if([s.owner isEqualToString:label])applyCutout(s,web);
             // Palette closed: never leave the keyboard focus in the WebView, or surface-level bindings (⌘D…) stop working.
             if([req[@"restoreFocus"] boolValue]&&![req[@"width"] doubleValue]&&web&&window.firstResponder==web){HGSurface *f=focused(label);if(f&&!f.hidden)[window makeFirstResponder:f];}

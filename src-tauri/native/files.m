@@ -9,6 +9,27 @@ static NSPasteboardType const HGCutType = @"com.highostty.cut";
 
 #pragma mark - Filesystem (any thread)
 
+NSString *HGEscapePath(NSString *path) {
+    NSMutableString *out = [NSMutableString string];
+    BOOL control = NO;
+    for (NSUInteger i = 0; i < path.length; i++) { unichar c = [path characterAtIndex:i]; if (c < 0x20 || c == 0x7f) { control = YES; break; } }
+    for (NSUInteger i = 0; i < path.length; i++) {
+        unichar c = [path characterAtIndex:i];
+        if (control) {
+            if (c == '\\' || c == '\'') [out appendFormat:@"\\%C", c];
+            else if (c == '\n') [out appendString:@"\\n"];
+            else if (c == '\t') [out appendString:@"\\t"];
+            else if (c < 0x20 || c == 0x7f) [out appendFormat:@"\\x%02x", c];
+            else [out appendFormat:@"%C", c];
+        } else {
+            BOOL safe = c >= 0x80 || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || strchr("_@%+=:,./~-", (int)c) != NULL;
+            if (!safe) [out appendString:@"\\"];
+            [out appendFormat:@"%C", c];
+        }
+    }
+    return control ? [NSString stringWithFormat:@"$'%@'", out] : out;
+}
+
 static NSString *splitExtension(NSString *name, NSString **extension) {
     NSRange dot = [name rangeOfString:@"." options:NSBackwardsSearch];
     // Dotfiles such as ".env" have no extension.
@@ -248,6 +269,59 @@ static NSArray<NSURL *> *fileURLs(NSArray *paths) {
     return urls;
 }
 
+#pragma mark - Dragging out of the panel (main thread)
+
+// Drag source for files-drag: the terminal (a file-URL drop target) pastes escaped paths, Finder copies.
+@interface HGFileDragSource : NSObject <NSDraggingSource>
+@end
+@implementation HGFileDragSource
+- (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+    return NSDragOperationCopy;
+}
+@end
+static HGFileDragSource *dragSource;
+static NSView *webViewIn(NSView *view) {
+    if ([view isKindOfClass:NSClassFromString(@"WKWebView")]) return view;
+    for (NSView *child in view.subviews) { NSView *found = webViewIn(child); if (found) return found; }
+    return nil;
+}
+static NSDictionary *beginDrag(NSWindow *window, NSArray<NSURL *> *urls) {
+    if (!urls.count) return @{@"error": @"沒有選取項目"};
+    NSView *web = webViewIn(window.contentView);
+    if (!web) return @{@"error": @"找不到 WebView"};
+    // The session needs a mouse event; the one being handled is normally still current.
+    NSEvent *event = NSApp.currentEvent;
+    if (!event || (event.type != NSEventTypeLeftMouseDragged && event.type != NSEventTypeLeftMouseDown)) {
+        event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged location:window.mouseLocationOutsideOfEventStream modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+    }
+    if (!dragSource) dragSource = [HGFileDragSource new];
+    NSPoint point = [web convertPoint:event.locationInWindow fromView:nil];
+    NSMutableArray<NSDraggingItem *> *items = [NSMutableArray array];
+    NSMutableArray<NSString *> *escaped = [NSMutableArray array];
+    for (NSURL *url in urls) [escaped addObject:HGEscapePath(url.path)];
+    NSInteger index = 0;
+    for (NSURL *url in urls) {
+        NSPasteboardItem *pasteboardItem = [NSPasteboardItem new];
+        [pasteboardItem setString:url.absoluteString forType:NSPasteboardTypeFileURL];
+        // Text-only targets (editors) get the escaped paths once, on the first item.
+        if (index == 0) [pasteboardItem setString:[escaped componentsJoinedByString:@" "] forType:NSPasteboardTypeString];
+        NSDraggingItem *item = [[NSDraggingItem alloc] initWithPasteboardWriter:pasteboardItem];
+        NSImage *icon = [NSWorkspace.sharedWorkspace iconForFile:url.path];
+        icon.size = NSMakeSize(32, 32);
+        item.draggingFrame = NSMakeRect(point.x - 16 + index * 6, point.y - 16 + index * 6, 32, 32);
+        item.imageComponentsProvider = ^NSArray<NSDraggingImageComponent *> *{
+            NSDraggingImageComponent *component = [NSDraggingImageComponent draggingImageComponentWithKey:NSDraggingImageComponentIconKey];
+            component.contents = icon;
+            component.frame = NSMakeRect(0, 0, 32, 32);
+            return @[component];
+        };
+        [items addObject:item];
+        if (++index >= 8) break;
+    }
+    [web beginDraggingSessionWithItems:items event:event source:dragSource];
+    return @{};
+}
+
 #pragma mark - Main-thread commands
 
 static NSDictionary *writePasteboard(NSArray<NSURL *> *urls, BOOL cut) {
@@ -258,14 +332,14 @@ static NSDictionary *writePasteboard(NSArray<NSURL *> *urls, BOOL cut) {
     NSMutableArray<NSString *> *quoted = [NSMutableArray array], *paths = [NSMutableArray array];
     for (NSURL *url in urls) {
         [paths addObject:url.path];
-        [quoted addObject:[NSString stringWithFormat:@"'%@'", [url.path stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]]];
+        [quoted addObject:HGEscapePath(url.path)];
     }
     for (NSURL *url in urls) {
         NSPasteboardItem *item = [NSPasteboardItem new];
         [item setString:url.absoluteString forType:NSPasteboardTypeFileURL];
         [items addObject:item];
     }
-    // Text targets (including the terminal) receive shell-quoted paths, matching
+    // Text targets (including the terminal) receive shell-escaped paths, matching
     // what dragging files onto a terminal inserts.
     [items.firstObject setString:[quoted componentsJoinedByString:@" "] forType:NSPasteboardTypeString];
     if (cut) [items.firstObject setString:[paths componentsJoinedByString:@"\n"] forType:HGCutType];
@@ -304,6 +378,7 @@ NSDictionary *HGFilesCommand(NSWindow *window, NSDictionary *req, void (^emitEve
             [NSPasteboard.generalPasteboard clearContents];
             return [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString] ? @{} : @{@"error": @"無法寫入剪貼簿"};
         }
+        if ([op isEqualToString:@"files-drag"]) return beginDrag(window, fileURLs(req[@"paths"]));
         if ([op isEqualToString:@"files-open"]) return openPaths(fileURLs(req[@"paths"]), req[@"app"]);
         if ([op isEqualToString:@"files-reveal"]) { [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:fileURLs(req[@"paths"])]; return @{}; }
         if ([op isEqualToString:@"files-quicklook"] || [op isEqualToString:@"files-quicklook-update"]) {
