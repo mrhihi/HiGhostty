@@ -52,6 +52,13 @@ async function main() {
   });
   await listen<{ cwd: string }>("files-cwd", ({ payload }) => { cwd = payload.cwd; panel.cwdChanged(payload.cwd).catch(notify); });
   await listen<{ type: string; key?: string; shift?: boolean }>("native-event", ({ payload }) => panel.handleEvent(payload));
+  // Drops from Finder etc.: move or copy into the folder under the pointer, like in the tab panel.
+  await getCurrentWindow().onDragDropEvent(async ({ payload }) => {
+    const dpr = window.devicePixelRatio || 1;
+    const destination = "position" in payload ? panel.dropTarget(document.elementFromPoint(payload.position.x / dpr, payload.position.y / dpr)) : undefined;
+    panel.highlightDrop(payload.type === "drop" || payload.type === "leave" ? undefined : destination);
+    if (payload.type === "drop" && destination) await panel.drop(payload.paths, destination).catch(notify);
+  });
   // The close button returns the panel to a closed tab panel rather than leaving it popped out.
   await getCurrentWindow().onCloseRequested((event) => { event.preventDefault(); dock(true); });
   // Remember the window size for the next pop-out.

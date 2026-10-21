@@ -1110,6 +1110,7 @@ export function initFilesPanel(host: FilesHost) {
     },
     handleEvent(event: { type: string; key?: string; shift?: boolean }) {
       if (event.type === "quicklook-closed") quickLook = false;
+      if (event.type === "files-drag-ended" && isOpen()) load().catch((error) => status(String(error)));
       if (event.type === "quicklook-key" && event.key) {
         setSelection(moveSelection(selection, order, event.key === "ArrowDown" ? 1 : -1, !!event.shift));
         followPreview();
@@ -1118,16 +1119,26 @@ export function initFilesPanel(host: FilesHost) {
     // Finder drops: copy into the folder under the pointer, or the panel's folder.
     dropTarget(element: Element | null): string | undefined {
       if (!isOpen() || !element?.closest("#files")) return undefined;
-      const entry = entries.get(element.closest<HTMLElement>(".file-row")?.dataset.path || "");
-      return entry?.is_dir ? entry.path : state()?.path;
+      const row = element.closest<HTMLElement>(".file-row");
+      const entry = row ? entries.get(row.dataset.path || "") ?? miniEntries.get(row) : undefined;
+      if (entry?.is_dir) return entry.path;
+      // Blank space in a column drops into the folder that column lists (not the current folder).
+      return element.closest<HTMLElement>("[data-dir]")?.dataset.dir || state()?.path;
     },
     async drop(paths: string[], destination: string) {
       let result: OpResult | undefined, error: unknown;
-      try { result = await run({ op: "copy", sources: paths, destination }); } catch (e) { error = e; }
+      try {
+        // Finder's rule (⌥ copy, ⌘ move, same volume moves), decided natively from the modifier keys.
+        const mode = await host.native({ op: "files-drop-mode", sources: paths, destination }).catch(() => undefined) as { move?: boolean } | undefined;
+        result = await run({ op: mode?.move ? "move" : "copy", sources: paths, destination });
+      } catch (e) { error = e; }
       await afterChange(result, error);
     },
     highlightDrop(destination: string | undefined) {
-      panel.classList.toggle("drop-target-list", !!destination && destination === state()?.path);
+      const columns = [...body.querySelectorAll<HTMLElement>("[data-dir]")];
+      const column = destination ? columns.find((c) => c.dataset.dir === destination) : undefined;
+      for (const c of columns) c.classList.toggle("drop-target-list", c === column && columns.length > 1);
+      panel.classList.toggle("drop-target-list", !!destination && destination === state()?.path && columns.length <= 1);
       for (const element of list.querySelectorAll<HTMLElement>(".file-row.is-dir")) element.classList.toggle("drop-target", element.dataset.path === destination);
     },
   };

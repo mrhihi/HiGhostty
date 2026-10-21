@@ -125,6 +125,7 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
 @property NSTimeInterval lastPerformKeyEvent;
 @property BOOL hasLastPerformKeyEvent;
 // Area (in this view's coordinates) hidden so the web overlay beneath shows through.
+@property (weak) NSView *dragWeb; // WebView currently receiving a forwarded drag
 @property (copy) NSArray<NSValue *> *cutouts; // overlay holes (disjoint), view coordinates
 
 @end
@@ -133,16 +134,44 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
     if(self.cutouts.count){NSPoint local=[self convertPoint:point fromView:self.superview];for(NSValue *hole in self.cutouts)if(NSPointInRect(local,hole.rectValue))return nil;}
     return [super hitTest:point];
 }
-- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
-    @try { return [sender.draggingPasteboard.types containsObject:NSPasteboardTypeFileURL] ? NSDragOperationCopy : NSDragOperationNone; }
-    @catch(NSException *exception) { [self reportInputException:exception]; return NSDragOperationNone; }
+// Drags over an overlay hole (files panel etc.) belong to the WebView beneath, not to the terminal.
+static NSView *findWebView(NSView *view); // defined below
+- (NSView *)webForDrag:(id<NSDraggingInfo>)sender {
+    if(!self.cutouts.count)return nil;
+    NSPoint local=[self convertPoint:sender.draggingLocation fromView:nil];
+    for(NSValue *hole in self.cutouts)if(NSPointInRect(local,hole.rectValue))return findWebView(self.window.contentView);
+    return nil;
+}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender { return [self draggingUpdated:sender]; }
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+    @try {
+        NSView *web=[self webForDrag:sender];
+        if(web!=_dragWeb){
+            if(_dragWeb)[(id<NSDraggingDestination>)_dragWeb draggingExited:sender];
+            _dragWeb=web;
+            if(web){[(id<NSDraggingDestination>)web draggingEntered:sender];return HGFilesDropOperation(sender);}
+        }
+        if(web){[(id<NSDraggingDestination>)web draggingUpdated:sender];return HGFilesDropOperation(sender);}
+        return [sender.draggingPasteboard.types containsObject:NSPasteboardTypeFileURL] ? NSDragOperationCopy : NSDragOperationNone;
+    } @catch(NSException *exception) { [self reportInputException:exception]; return NSDragOperationNone; }
+}
+- (void)draggingExited:(id<NSDraggingInfo>)sender {
+    @try { if(_dragWeb)[(id<NSDraggingDestination>)_dragWeb draggingExited:sender]; } @catch(NSException *exception) { [self reportInputException:exception]; }
+    _dragWeb=nil;
 }
 - (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
-    @try { return [sender.draggingPasteboard.types containsObject:NSPasteboardTypeFileURL]; }
-    @catch(NSException *exception) { [self reportInputException:exception]; return NO; }
+    @try {
+        if(_dragWeb)return [(id<NSDraggingDestination>)_dragWeb prepareForDragOperation:sender];
+        return [sender.draggingPasteboard.types containsObject:NSPasteboardTypeFileURL];
+    } @catch(NSException *exception) { [self reportInputException:exception]; return NO; }
+}
+- (void)concludeDragOperation:(id<NSDraggingInfo>)sender {
+    NSView *web=_dragWeb;_dragWeb=nil;
+    @try { if(web)[(id<NSDraggingDestination>)web concludeDragOperation:sender]; } @catch(NSException *exception) { [self reportInputException:exception]; }
 }
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
     @try {
+        if(_dragWeb)return [(id<NSDraggingDestination>)_dragWeb performDragOperation:sender];
         NSArray<NSURL *> *urls=[sender.draggingPasteboard readObjectsForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
         if(!urls.count||!_surface)return NO;
         NSMutableArray<NSString *> *quoted=[NSMutableArray array];
@@ -301,6 +330,14 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
         HG_INPUT_TRACE(@"key-down-no-surface",event,nil,NO);
         return;
     }
+    // 選取不即時複製；打字會清除選取，所以先複製。Esc 只清除、不複製；⌘ 組合（⌘C／⌘V）自己處理。
+    if(event.keyCode==53&&!(event.modifierFlags&(NSEventModifierFlagCommand|NSEventModifierFlagControl|NSEventModifierFlagOption|NSEventModifierFlagShift))&&!self.hasMarkedText&&ghostty_surface_has_selection(_surface)) {
+        // Esc 只清除選取、不複製也不送給程式（送出去會讓 shell／TUI 進入奇怪狀態）。沒有 clear_selection，借用不移動的左鍵點擊清除。
+        ghostty_surface_mouse_button(_surface,GHOSTTY_MOUSE_PRESS,GHOSTTY_MOUSE_LEFT,0);
+        ghostty_surface_mouse_button(_surface,GHOSTTY_MOUSE_RELEASE,GHOSTTY_MOUSE_LEFT,0);
+        return;
+    }
+    if(event.keyCode!=53&&!(event.modifierFlags&NSEventModifierFlagCommand))[self copySelectionBeforeClear];
     BOOL markedBefore=self.hasMarkedText;
     NSString *layoutBefore=markedBefore?nil:keyboardLayoutID();
     ghostty_input_action_e action=event.isARepeat?GHOSTTY_ACTION_REPEAT:GHOSTTY_ACTION_PRESS;
@@ -334,6 +371,10 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
     } @finally {
         activeKeyTexts=previousKeyTexts;
     }
+}
+- (void)copySelectionBeforeClear {
+    @try { if(_surface&&ghostty_surface_has_selection(_surface))ghostty_surface_binding_action(_surface,"copy_to_clipboard",strlen("copy_to_clipboard")); }
+    @catch(NSException *exception) { [self reportInputException:exception]; }
 }
 - (void)runBinding:(const char *)action {
     @try { if(_surface)ghostty_surface_binding_action(_surface,action,strlen(action)); }
@@ -491,6 +532,7 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
 - (void)mouseButton:(NSEvent *)event pressed:(BOOL)pressed {
     if(!_surface)return;
     if(pressed)[self.window makeFirstResponder:self];
+    if(pressed&&event.buttonNumber==0)[self copySelectionBeforeClear]; // 點擊會取消選取：取消時才複製
     [self mouseMoved:event];
     ghostty_input_mouse_button_e button=event.buttonNumber==0?GHOSTTY_MOUSE_LEFT:event.buttonNumber==1?GHOSTTY_MOUSE_RIGHT:event.buttonNumber==2?GHOSTTY_MOUSE_MIDDLE:GHOSTTY_MOUSE_UNKNOWN;
     ghostty_surface_mouse_button(_surface,pressed?GHOSTTY_MOUSE_PRESS:GHOSTTY_MOUSE_RELEASE,button,mods(event.modifierFlags));
@@ -731,7 +773,7 @@ static NSDictionary *initialize(NSWindow *window,NSString *label,NSString *resou
         if(!locale||strcmp(locale,"C")==0||strcmp(locale,"POSIX")==0){setenv("LANG","en_US.UTF-8",1);setenv("LC_CTYPE","UTF-8",1);if(getenv("LC_ALL"))setenv("LC_ALL","en_US.UTF-8",1);}
         if(ghostty_init(0,NULL)!=GHOSTTY_SUCCESS)return @{@"error":@"Ghostty 初始化失敗"};
         config=ghostty_config_new();ghostty_config_load_default_files(config);ghostty_config_load_recursive_files(config);ghostty_config_finalize(config);
-        ghostty_runtime_config_s runtime={.wakeup_cb=wakeup,.action_cb=nativeAction,.read_clipboard_cb=readClipboard,.confirm_read_clipboard_cb=confirmClipboard,.write_clipboard_cb=writeClipboard,.close_surface_cb=closeSurface};
+        ghostty_runtime_config_s runtime={.supports_selection_clipboard=true,.wakeup_cb=wakeup,.action_cb=nativeAction,.read_clipboard_cb=readClipboard,.confirm_read_clipboard_cb=confirmClipboard,.write_clipboard_cb=writeClipboard,.close_surface_cb=closeSurface};
         engine=ghostty_app_new(&runtime,config);if(!engine)return @{@"error":@"無法建立 Ghostty app"};
         configureGlobalKeys();
         localMonitor=[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event){

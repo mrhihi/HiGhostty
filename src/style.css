@@ -69,6 +69,7 @@ main { display: flex; height: calc(100dvh - 68px); min-width: 0; }
 .compact-hidden { width: 0 !important; }
 .panel-content[hidden] { display: none; }
 .drawer-heading { min-height: 32px; display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.drawer-heading .icon-btn[aria-pressed="false"] { opacity: .45; }
 .drawer-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 600; }
 .detail-heading { margin-bottom: 12px; }
 .icon-btn { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border-radius: var(--radius-row); color: var(--text-muted); }
@@ -148,7 +149,7 @@ body:not(.term-pointer) .row:hover { background: var(--hover); }
 .favorite-icon { display: grid; color: var(--text-muted); }
 /* Tab row end: the ⌘N hint at rest; the "more" button floats over it on hover so the label never reflows. */
 .tab-row { position: relative; cursor: pointer; }
-.tab-slot { flex: 0 0 auto; position: relative; display: flex; align-items: center; justify-content: flex-end; min-width: 22px; height: 22px; margin-left: auto; }
+.tab-slot { flex: 0 0 auto; position: relative; display: flex; align-items: center; justify-content: flex-end; width: 28px; height: 22px; margin-left: auto; }
 .tab-key { font-family: inherit; font-size: 13px; line-height: 1; color: var(--text-faint); letter-spacing: .02em; transition: opacity 100ms; }
 .row.selected .tab-key { color: var(--text-muted); }
 .tab-more { position: absolute; right: -4px; top: 50%; width: 24px; height: 24px; flex-basis: 24px; transform: translateY(-50%); opacity: 0; pointer-events: none; transition: opacity 100ms; }
@@ -341,12 +342,20 @@ pre { white-space: pre-wrap; max-height: 240px; overflow: auto; }
 .tab-row.has-alert .row-label { font-weight: 600; }
 .tab-status { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-muted); opacity: 0.85; }
 .ai-mark { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; font-size: 12px; line-height: 1; color: var(--group-color, var(--accent)); }
+/* The icon is wider than the status dot it replaces; negative side margins keep the same footprint so names stay aligned across rows. */
+.ai-mark { margin: 0 -3px; }
+.group-children .ai-mark { margin: 0 -4px; }
 .ai-mark.exited { opacity: .45; }
 .tab-row.has-alert .ai-mark { color: var(--attention); animation: alert-pulse 1.4s ease-in-out infinite; }
 .row.tab-row.child .ai-mark { opacity: .8; }
 @media (prefers-reduced-motion: reduce) { .tab-row.has-alert .ai-mark { animation: none; } }
 .ai-mark svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .tmux-mark { flex: 0 0 auto; padding: 0 5px; border: 1px solid var(--border, currentColor); border-radius: 4px; color: var(--text-faint); font-size: 11px; line-height: 15px; letter-spacing: .02em; }
+/* In a tab row the mark shrinks to a superscript at the name's top right; the label stops stretching so it sits right next to the name. */
+.row-label:has(+ .tmux-mark) { flex: 0 1 auto; }
+.row-label + .tmux-mark { margin: -8px auto 0 -7px; padding: 0 3px; border-radius: 3px; font-size: 8px; line-height: 11px; }
+/* The mark's auto margin already takes the free space; a second auto margin on the slot would split it and leave git/status stranded mid-row. */
+.row:has(.row-label + .tmux-mark) .tab-slot { margin-left: 0; }
 .alert-pill { flex: 0 0 auto; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border-radius: 8px; background: var(--attention); color: #241a05; font-size: 12px; font-weight: 700; }
 .tab-row.has-alert[data-alert="maybe"] .alert-pill { background: transparent; color: var(--attention); border: 1px solid rgb(255 198 107 / .5); }
 @keyframes alert-pulse { 50% { opacity: .35; } }
@@ -549,5 +558,7 @@ body.files-window #files { position: static; transform: none; width: auto; heigh
 .launch-tool-row select { grid-column: span 1; }
 .launch-tool-row .ghost-btn { grid-column: 1 / -1; justify-self: end; }
 .launch-model-label { grid-column: 1 / -1; color: var(--text); font-weight: 600; }
+.tab-git { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--accent); }
+.tab-git.dirty { color: var(--danger); }
 .git-strip { position: absolute; left: 0; right: 0; bottom: 0; height: 20px; line-height: 20px; padding: 0 8px; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--accent); background: rgb(119 223 192 / .16); user-select: none; -webkit-user-select: none; pointer-events: none; }
 .git-strip.dirty { color: var(--danger); background: var(--danger-soft); }

@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
+    path::Path,
     io::{BufRead, Read, Write},
     os::{
         fd::AsRawFd,
@@ -72,6 +73,7 @@ struct Server {
     thread: std::thread::JoinHandle<()>,
 }
 static MODE: Mutex<Mode> = Mutex::new(Mode::Readonly);
+static ACTIVE_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
 static SERVER: Mutex<Option<Server>> = Mutex::new(None);
 /// One window's answer: (window label, claim, reply).
 type Answer = (String, String, Value);
@@ -98,18 +100,27 @@ fn read_mode(app: &tauri::AppHandle) -> Mode {
 /// Where the socket lives. The data directory normally; a short per-user path in the
 /// temp dir when that would not fit in sun_path (a long HIGHOSTTY_DATA_DIR).
 pub fn socket_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = super::data_dir(app)?;
-    let path = dir.join("ctl.sock");
+    if let Some(path) = lock(&ACTIVE_SOCKET).clone() {
+        return Ok(path);
+    }
+    socket_dir_path(app, "ctl.sock")
+}
+/// Socket paths of the same data directory differ only by file name.
+fn socket_dir_path(app: &tauri::AppHandle, file: &str) -> Result<PathBuf, String> {
+    socket_in(&super::data_dir(app)?, file)
+}
+fn socket_in(dir: &Path, file: &str) -> Result<PathBuf, String> {
+    let path = dir.join(file);
     if path.as_os_str().len() <= MAX_SOCKET_PATH {
         return Ok(path);
     }
     let mut hasher = DefaultHasher::new();
-    dir.hash(&mut hasher);
+    dir.to_path_buf().hash(&mut hasher);
     let uid = unsafe { libc::geteuid() };
     let short = std::env::temp_dir().join(format!("highostty-{uid}-{:08x}", hasher.finish() as u32));
     std::fs::create_dir_all(&short).map_err(super::err)?;
     std::fs::set_permissions(&short, std::fs::Permissions::from_mode(0o700)).map_err(super::err)?;
-    Ok(short.join("ctl.sock"))
+    Ok(short.join(file))
 }
 
 /// Environment for a new terminal surface. Always set, even when the mode is off, so
@@ -209,13 +220,17 @@ fn stop() {
     }
 }
 fn start(app: &tauri::AppHandle) -> Result<(), String> {
-    let path = socket_path(app)?;
+    // A second instance on the same data directory gets its own socket (and hands it to its
+    // terminals through HIGHOSTTY_SOCKET) instead of leaving its agents talking to the first one.
+    let mut path = socket_dir_path(app, "ctl.sock")?;
     if UnixStream::connect(&path).is_ok() {
-        return Err("另一個 HiGhostty 正在使用控制 socket".into());
+        path = socket_dir_path(app, &format!("ctl-{}.sock", std::process::id()))?;
     }
+    remove_stale_sockets(&path);
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).map_err(super::err)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(super::err)?;
+    *lock(&ACTIVE_SOCKET) = Some(path.clone());
     let stop = Arc::new(AtomicBool::new(false));
     let app = app.clone();
     let flag = stop.clone();
@@ -236,6 +251,19 @@ fn start(app: &tauri::AppHandle) -> Result<(), String> {
     });
     *lock(&SERVER) = Some(Server { stop, path, thread });
     Ok(())
+}
+
+/// Sockets left by instances that crashed (`ctl-<pid>.sock` nobody listens on).
+fn remove_stale_sockets(current: &Path) {
+    let Some(dir) = current.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("ctl-") && name.ends_with(".sock") && UnixStream::connect(entry.path()).is_err() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn failure(code: &str, message: &str) -> Value {
@@ -283,6 +311,10 @@ fn handle(app: &tauri::AppHandle, request: &Value) -> Value {
     let mode = current_mode();
     if mode == Mode::Off {
         return failure("disabled", "agent 控制指令已關閉；請在 HiGhostty 設定開啟");
+    }
+    if let Some(args) = request.get("launch").and_then(Value::as_array) {
+        let args: Vec<Value> = args.iter().filter(|a| a.is_string()).take(256).cloned().collect();
+        return super::open_in_running(app, args);
     }
     let argv_ok = request
         .get("argv")
@@ -520,6 +552,23 @@ fn read_input(reader: impl std::io::Read) -> Result<String, String> {
         return Err("stdin 超過 256 KiB".into());
     }
     String::from_utf8(bytes).map_err(|_| "stdin 不是 UTF-8".into())
+}
+
+/// Hand `--tab`/`--dir` launch arguments to an already running instance (its default socket).
+/// False when none answers (not running, or its control mode is off): the caller starts a new one.
+pub fn forward_launch(args: &[String]) -> bool {
+    let Some(dir) = super::plain_data_dir() else { return false };
+    let Ok(socket) = socket_in(&dir, "ctl.sock") else { return false };
+    let Ok(mut stream) = UnixStream::connect(socket) else { return false };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    if stream.write_all(format!("{}\n", json!({ "launch": args })).as_bytes()).is_err() {
+        return false;
+    }
+    let mut reply = String::new();
+    if std::io::BufReader::new(&stream).read_line(&mut reply).is_err() {
+        return false;
+    }
+    serde_json::from_str::<Value>(&reply).is_ok_and(|v| v.get("ok").and_then(Value::as_bool) == Some(true))
 }
 
 /// `highostty ctl <words…>`: send argv to the running app, print its reply, exit.

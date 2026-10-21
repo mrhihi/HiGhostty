@@ -76,7 +76,7 @@
 - 設定頁「agent 控制指令」：關閉／唯讀（預設）／完整。關閉時不監聽 socket（檔案移除）；唯讀拒絕 `write: true` 的指令（回 `forbidden`）。設定存在資料目錄的 `control.json`。
 - socket 在資料目錄（`ctl.sock`，0600；路徑超過 100 位元組時改放 `$TMPDIR/highostty-<uid>-<hash>/`，目錄 0700），伺服器以 `getpeereid` 只接受同一使用者。
 - 沒有 token：token 會出現在 tmux 的命令列（`ps` 看得到），而同使用者的程式本來就能讀資料目錄，token 擋不住任何人；實際的限制是模式設定。
-- 另一個 HiGhostty 執行個體已佔用 socket 時，本執行個體不會搶，設定頁切換時會顯示錯誤。
+- 同一資料目錄已有另一個 HiGhostty 佔用 `ctl.sock` 時，本執行個體改用 `ctl-<pid>.sock`，並透過 `HIGHOSTTY_SOCKET` 交給自己的終端機，不搶也不共用；正常結束時移除，崩潰遺留且無人監聽的 `ctl-*.sock` 於下次啟動清掉。
 
 ## tmux 頁籤
 - tmux 的 pane 不會繼承 tmux client 的環境，所以 `tmuxCommand` 對新建的 session 加 `-e`（tmux 3.2 起；`control_env` 檢查版本，過舊就不注入）。pane 內有 `HIGHOSTTY_ENV`、`HIGHOSTTY_SOCKET`、`HIGHOSTTY_CLI`、`HIGHOSTTY_TMUX_SESSION`，沒有 `HIGHOSTTY_SURFACE_ID`（每次啟動都會變）。
@@ -93,7 +93,7 @@
 3d. 在視窗 B 的終端機跑 claude／codex，`ctl agent list` 看得到它與狀態；`ctl agent wait <id> --until blocked` 在出現權限詢問時返回。
 4. 設定改「關閉」→ `ls <資料目錄>/ctl.sock` 不存在、`ctl ping` exit 2；改回「唯讀」或「完整」→ 已開著的終端機立即可用，不必重開。
 5. tmux 頁籤：`env | grep HIGHOSTTY` 有 `HIGHOSTTY_TMUX_SESSION`，`ctl whoami` 成功；結束 app 重開（session 恢復）後 `ctl whoami` 仍成功。
-6. 兩個 HiGhostty 同時執行（不同 `HIGHOSTTY_DATA_DIR`）互不干擾；同一資料目錄的第二個執行個體切換設定時顯示「另一個 HiGhostty 正在使用控制 socket」。
+6. 兩個 HiGhostty 同時執行（不同 `HIGHOSTTY_DATA_DIR`）互不干擾；同一資料目錄的第二個執行個體使用自己的 `ctl-<pid>.sock`，其終端機內的 `highostty ctl` 控制的是第二個執行個體，而非第一個。
 7. 在 app 外的終端機執行 `HIGHOSTTY_CLI ctl ping`（沒有 `HIGHOSTTY_SOCKET`）→ exit 2，訊息說明不在 HiGhostty 內。
 8. `ctl ping --timeout 300`、`ctl ping --bogus`（`bad_args`）行為正確。
 9. 寫入類（設定為「完整」）：`ctl tab new -- "sleep 30; echo ready"` 回傳 `background:true`，目前頁籤與焦點不變、頁籤列多一個頁籤；切過去看到命令正在執行。`--focus` 會切過去；`--tmux` 的頁籤也能開。
@@ -115,3 +115,7 @@
 24. 「複製 skill 內容」後貼到文字編輯器是完整的 SKILL.md。
 25. 端到端：在 Claude Code 裡說「用 HiGhostty 看一下另一個頁籤在跑什麼」，Claude 會載入 skill、先檢查 `HIGHOSTTY_ENV`、用 `ctl tab list` 與 `surface read` 回答；在唯讀模式要求它開頁籤時，它應回報 `forbidden` 並請你改設定，而不是繞過。
 5. 預覽窗：在唯讀模式下 `ctl preview open README.md` 回 `{path,side:"bottom",kind:"markdown"}`，終端機下方出現預覽；`ctl preview status` 回同一份；`ctl preview open 目錄` 回 `bad_args`；`ctl preview close` 後預覽消失。細節驗收見 `docs/preview.md`。
+
+## 啟動參數轉交
+
+`highostty --tab/--dir`（不含 `--new`）會連上資料目錄的 `ctl.sock`，送出 `{"launch": [參數…]}`；伺服器（Off 模式不回應）通知焦點視窗開啟，CLI 立即結束。連不上或失敗就退回正常啟動。第二個實例使用的 `ctl-<pid>.sock` 不會被轉交。

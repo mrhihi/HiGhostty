@@ -24,6 +24,10 @@ export function gitSummary(info: GitInfo, labels: GitLabels): string {
   return parts.join("  ");
 }
 
+// Tab row version: "main ●3" / "main ✓", no upstream or ahead/behind text.
+export const tabGitText = (info: GitInfo, detached: string): string =>
+  `${info.detached ? detached : info.branch} ${info.changed ? `●${info.changed}` : "✓"}`;
+
 export const isDirty = (info: GitInfo): boolean => info.changed > 0;
 
 export function sameGit(a: GitInfo | null | undefined, b: GitInfo | null | undefined): boolean {

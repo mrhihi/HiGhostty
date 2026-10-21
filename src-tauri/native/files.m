@@ -271,12 +271,18 @@ static NSArray<NSURL *> *fileURLs(NSArray *paths) {
 
 #pragma mark - Dragging out of the panel (main thread)
 
-// Drag source for files-drag: the terminal (a file-URL drop target) pastes escaped paths, Finder copies.
+// Drag source for files-drag: the terminal (a file-URL drop target) pastes escaped paths. Other targets
+// (Finder, desktop, file managers) pick copy / move / alias like for Finder's own drags, and do the work.
 @interface HGFileDragSource : NSObject <NSDraggingSource>
+@property(nonatomic, copy) void (^emitEvent)(NSDictionary *event);
 @end
 @implementation HGFileDragSource
 - (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
-    return NSDragOperationCopy;
+    return NSDragOperationCopy | NSDragOperationMove | NSDragOperationLink | NSDragOperationGeneric;
+}
+// A move or copy by another app changes the folder on disk; let the panel reload right away.
+- (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)screenPoint operation:(NSDragOperation)operation {
+    if (operation != NSDragOperationNone && self.emitEvent) self.emitEvent(@{@"type": @"files-drag-ended"});
 }
 @end
 static HGFileDragSource *dragSource;
@@ -285,7 +291,7 @@ static NSView *webViewIn(NSView *view) {
     for (NSView *child in view.subviews) { NSView *found = webViewIn(child); if (found) return found; }
     return nil;
 }
-static NSDictionary *beginDrag(NSWindow *window, NSArray<NSURL *> *urls) {
+static NSDictionary *beginDrag(NSWindow *window, NSArray<NSURL *> *urls, void (^emitEvent)(NSDictionary *event)) {
     if (!urls.count) return @{@"error": @"沒有選取項目"};
     NSView *web = webViewIn(window.contentView);
     if (!web) return @{@"error": @"找不到 WebView"};
@@ -295,6 +301,7 @@ static NSDictionary *beginDrag(NSWindow *window, NSArray<NSURL *> *urls) {
         event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged location:window.mouseLocationOutsideOfEventStream modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
     }
     if (!dragSource) dragSource = [HGFileDragSource new];
+    dragSource.emitEvent = emitEvent;
     NSPoint point = [web convertPoint:event.locationInWindow fromView:nil];
     NSMutableArray<NSDraggingItem *> *items = [NSMutableArray array];
     NSMutableArray<NSString *> *escaped = [NSMutableArray array];
@@ -323,6 +330,34 @@ static NSDictionary *beginDrag(NSWindow *window, NSArray<NSURL *> *urls) {
 }
 
 #pragma mark - Main-thread commands
+
+// Finder's rule for a drop: ⌥ copies, ⌘ moves, otherwise moving within one volume and copying across volumes.
+static BOOL dropShouldMove(NSEventModifierFlags flags, NSArray<NSURL *> *sources, NSURL *destination);
+static NSEventModifierFlags liveModifiers(void) {
+    // Live keyboard state: +[NSEvent modifierFlags] lags behind during a drag session.
+    CGEventFlags live = CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState);
+    return ((live & kCGEventFlagMaskAlternate) ? NSEventModifierFlagOption : 0) | ((live & kCGEventFlagMaskCommand) ? NSEventModifierFlagCommand : 0);
+}
+static NSString *dropHint;
+NSDragOperation HGFilesDropOperation(id<NSDraggingInfo> sender) {
+    NSDragOperation mask = sender.draggingSourceOperationMask;
+    if (!dropHint.length || !(mask & NSDragOperationMove)) return NSDragOperationCopy;
+    NSArray<NSURL *> *urls = [sender.draggingPasteboard readObjectsForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}] ?: @[];
+    return dropShouldMove(liveModifiers(), urls, [NSURL fileURLWithPath:dropHint]) ? NSDragOperationMove : NSDragOperationCopy;
+}
+static BOOL dropShouldMove(NSEventModifierFlags flags, NSArray<NSURL *> *sources, NSURL *destination) {
+    if (flags & NSEventModifierFlagOption) return NO;
+    if (flags & NSEventModifierFlagCommand) return YES;
+    id destinationVolume = nil;
+    [destination getResourceValue:&destinationVolume forKey:NSURLVolumeIdentifierKey error:nil];
+    if (!destinationVolume || !sources.count) return NO;
+    for (NSURL *source in sources) {
+        id volume = nil;
+        [source getResourceValue:&volume forKey:NSURLVolumeIdentifierKey error:nil];
+        if (![volume isEqual:destinationVolume]) return NO;
+    }
+    return YES;
+}
 
 static NSDictionary *writePasteboard(NSArray<NSURL *> *urls, BOOL cut) {
     if (!urls.count) return @{@"error": @"沒有選取項目"};
@@ -378,7 +413,12 @@ NSDictionary *HGFilesCommand(NSWindow *window, NSDictionary *req, void (^emitEve
             [NSPasteboard.generalPasteboard clearContents];
             return [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString] ? @{} : @{@"error": @"無法寫入剪貼簿"};
         }
-        if ([op isEqualToString:@"files-drag"]) return beginDrag(window, fileURLs(req[@"paths"]));
+        if ([op isEqualToString:@"files-drag"]) return beginDrag(window, fileURLs(req[@"paths"]), emitEvent);
+        if ([op isEqualToString:@"files-drop-hint"]) { dropHint = req[@"destination"]; return @{}; }
+        if ([op isEqualToString:@"files-drop-mode"]) {
+            BOOL move = dropShouldMove(liveModifiers(), fileURLs(req[@"sources"]), [NSURL fileURLWithPath:req[@"destination"] ?: @""]);
+            return @{@"move": @(move)};
+        }
         if ([op isEqualToString:@"files-open"]) return openPaths(fileURLs(req[@"paths"]), req[@"app"]);
         if ([op isEqualToString:@"files-reveal"]) { [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:fileURLs(req[@"paths"])]; return @{}; }
         if ([op isEqualToString:@"files-quicklook"] || [op isEqualToString:@"files-quicklook-update"]) {

@@ -7,13 +7,17 @@ export const AI_TOOLS: AiTool[] = [
   { id: "copilot", label: "GitHub Copilot CLI", program: "copilot", modelFlag: "--model", models: ["claude-sonnet-4.5", "claude-sonnet-4", "gpt-5"] },
   { id: "gemini", label: "Gemini CLI", program: "gemini", modelFlag: "--model", models: ["gemini-2.5-pro", "gemini-2.5-flash"] },
 ];
-export type Launch = { tool: AiTool; model: string; extra: string };
+// copyOnSelect: only Claude Code has it (undefined = follow its own settings); written as a `--settings` JSON flag so the command stays a plain string.
+export type Launch = { tool: AiTool; model: string; extra: string; copyOnSelect?: boolean };
+export const supportsCopyOnSelect = (tool: AiTool) => tool.id === "claude";
+const copyOnSelectFlag = (on: boolean) => `--settings '{"copyOnSelect":${on}}'`;
 
 // Model names go straight into a shell line, so only plain identifiers are accepted.
 export const validModel = (model: string) => /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model);
 
-export function composeLaunch(tool: AiTool, model: string, extra: string): string {
+export function composeLaunch(tool: AiTool, model: string, extra: string, copyOnSelect?: boolean): string {
   const parts = [tool.program];
+  if (copyOnSelect !== undefined && supportsCopyOnSelect(tool)) parts.push(copyOnSelectFlag(copyOnSelect));
   if (model && validModel(model)) parts.push(tool.modelFlag, model);
   if (extra.trim()) parts.push(extra.trim());
   return parts.join(" ");
@@ -25,10 +29,13 @@ export function parseLaunch(command: string | undefined): Launch | undefined {
   const text = (command ?? "").trim();
   const tool = AI_TOOLS.find((item) => text === item.program || text.startsWith(item.program + " "));
   if (!tool) return undefined;
-  const rest = text.slice(tool.program.length).trim();
+  let rest = text.slice(tool.program.length).trim();
+  let copyOnSelect: boolean | undefined;
+  const flag = supportsCopyOnSelect(tool) ? rest.match(/^--settings '\{"copyOnSelect":(true|false)\}'\s*(.*)$/s) : null;
+  if (flag) { copyOnSelect = flag[1] === "true"; rest = flag[2].trim(); }
   const match = rest.match(/^(?:--model[=\s]\s*|-m\s+)(\S+)\s*(.*)$/s);
-  if (match && validModel(match[1])) return { tool, model: match[1], extra: match[2].trim() };
-  return { tool, model: "", extra: rest };
+  if (match && validModel(match[1])) return { tool, model: match[1], extra: match[2].trim(), ...(copyOnSelect === undefined ? {} : { copyOnSelect }) };
+  return { tool, model: "", extra: rest, ...(copyOnSelect === undefined ? {} : { copyOnSelect }) };
 }
 
 // A custom command as two fields: the program (with any leading VAR=value words) and its arguments.

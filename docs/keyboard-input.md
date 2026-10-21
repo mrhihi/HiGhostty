@@ -46,6 +46,12 @@ NSApp sendEvent → tao TaoWindow sendEvent:（Rust extern "C"）→ NSWindow
    - 一次 `interpretKeyEvents:` 可能產生多段 `insertText:`（例如中文輸入法送出整句），每段都要作為該按鍵的 text 交給 `ghostty_surface_key`，Ghostty 才能正確處理 key encoding。
    - `activeKeyTexts` 為 `nil` 時（非按鍵觸發，例如輸入法選字視窗點選），才直接呼叫 `ghostty_surface_text`。
 
+## 選取與複製時機
+
+- 選取（拖曳、雙擊、三擊）本身不複製。`runtime.supports_selection_clipboard=true` 讓 Ghostty 的 copy-on-select 寫到 SELECTION，`writeClipboard` 會忽略；沒設的話它會退回寫進標準剪貼簿。
+- 選取被取消時才複製：`copySelectionBeforeClear` 在左鍵按下（`mouseButton:`）與非 Esc、非 ⌘ 的 `handleKeyDown:` 開頭呼叫。
+- Esc 取消選取不複製，也不送給程式（否則 shell／TUI 會收到 Esc 進入奇怪狀態）：`handleKeyDown:` 在有選取且無修飾鍵、無組字時吃掉 Esc，用不移動的左鍵點擊清除選取（Ghostty 沒有 clear_selection action）；⌘C／⌘V 不經過上述預先複製，避免用選取蓋掉要貼上的剪貼簿。
+
 ## 事故紀錄：2026-10-13
 
 - 症狀：`tauri dev` 下只能輸入方向鍵／Enter／Backspace；打一陣子 App 消失。
@@ -75,6 +81,7 @@ NSApp sendEvent → tao TaoWindow sendEvent:（Rust extern "C"）→ NSWindow
 - [ ] 切換輸入法（⌃Space 或 Caps Lock）後繼續輸入正常。
 - [ ] ⌃C、⌃D、⌘C／⌘V、⌘T、⌘⇧T、⌘D 正常（含焦點在分割／分組收藏終端機時 ⌘T）。
 - [ ] 方向鍵、Backspace、Tab、Esc 正常。
+- [ ] 剪貼簿先放 AAA：選取 BBB 後剪貼簿仍是 AAA；按 Esc 清除選取後仍是 AAA；點空白處或直接打字取消選取後變 BBB。
 - [ ] log 中字母 `interpret` 為 `sentChars=1`，且有修飾鍵紀錄。
 - [ ] `~/Library/Logs/DiagnosticReports` 沒有新增 `highostty-*.ips`。
 

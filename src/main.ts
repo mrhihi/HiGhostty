@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { popupMenu as showMenu } from "./context-menu";
+import { parseStartupArgs, findFavoriteByQuery, tabArgument } from "./startup";
 import { t } from "./i18n";
 import { initI18n, onLocaleChange } from "./i18n-runtime";
 import { createLanguageSection, renderLocaleEditor } from "./language-settings";
@@ -34,7 +35,7 @@ import {
 } from "./model";
 import { initFilesPanel } from "./files-panel";
 import { initPreviewPanel } from "./preview-panel";
-import { gitSummary, isDirty, sameGit, stripHeight, type GitInfo } from "./git";
+import { gitSummary, isDirty, sameGit, stripHeight, tabGitText, type GitInfo } from "./git";
 import { openPreview, previewKind, relativeToDir, resolveInDir, splitBox, togglePreviewSide, type PreviewSide, type PreviewState } from "./preview";
 import { restoreFiles, sameSaved, saveFiles, setDetached, toggleOpen, type FilesState, type SavedFiles } from "./files";
 import { initSnippets } from "./snippet-palette";
@@ -42,7 +43,7 @@ import { initAttentionDrop } from "./attention-drop";
 import { initUsageBar } from "./usage-bar";
 import { enableRowDrag } from "./row-drag";
 import { aiToolIcons, icons } from "./icons";
-import { AI_TOOLS, composeLaunch, joinCommand, parseLaunch, presetCommand, resolveIcon, presetLabel, splitCommand, type Launch } from "./launch";
+import { AI_TOOLS, composeLaunch, joinCommand, parseLaunch, presetCommand, resolveIcon, presetLabel, splitCommand, supportsCopyOnSelect, type Launch } from "./launch";
 import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDetail, togglePanel, type Detail, type DrawerState, type Panel } from "./drawer";
 import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, menuAnswerable, menuKeys, promptIdentity, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
 import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./prompt-rules";
@@ -121,7 +122,7 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 <button id="rail-attention" class="rail-btn" title="Needs attention" data-i18n-title="app.attention" aria-label="Needs attention" data-i18n-aria-label="app.attention">${icons.bell}<span id="rail-alert" hidden></span></button>
 <span class="rail-spacer"></span><button id="rail-settings" class="rail-btn" title="Settings" data-i18n-title="app.settings" aria-label="Settings" data-i18n-aria-label="app.settings">${icons.settings}</button></nav>
 <section id="drawer-primary" aria-label="Sidebar panel" data-i18n-aria-label="app.sidebarPanel"><div class="drawer-inner">
-<section id="panel-workspace" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.workspace">Workspace</strong><button id="new" class="icon-btn" title="New tab" data-i18n-title="app.newTab" aria-label="New tab" data-i18n-aria-label="app.newTab">${icons.plus}</button></div><div id="tabs" role="tree" aria-label="Workspace" data-i18n-aria-label="app.workspace"></div></section>
+<section id="panel-workspace" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.workspace">Workspace</strong><button id="tab-git-toggle" class="icon-btn" title="Show git status on tabs" data-i18n-title="app.tabGitToggle" aria-label="Show git status on tabs" data-i18n-aria-label="app.tabGitToggle" aria-pressed="true">${icons.branch}</button><button id="new" class="icon-btn" title="New tab" data-i18n-title="app.newTab" aria-label="New tab" data-i18n-aria-label="app.newTab">${icons.plus}</button></div><div id="tabs" role="tree" aria-label="Workspace" data-i18n-aria-label="app.workspace"></div></section>
 <section id="panel-favorites" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.favorites">Favorites</strong><button id="favorite-add" class="icon-btn" title="New favorite" data-i18n-title="app.addFavorite" aria-label="New favorite" data-i18n-aria-label="app.addFavorite">${icons.plus}</button><button id="favorite-group-add" class="icon-btn" title="New group" data-i18n-title="app.addGroup" aria-label="New group" data-i18n-aria-label="app.addGroup">${icons.folderPlus}</button></div><div id="favorite-add-options" class="inline-actions" hidden><button id="favorite-current-tab" class="ghost-btn wide-button"></button><button id="favorite-from-dir" class="ghost-btn wide-button" data-i18n="app.favoriteFromDir">Create favorite from folder…</button></div><div id="favorites"></div></section>
 <section id="panel-snippets" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.snippets">Snippets</strong><button id="snippet-add" class="icon-btn" title="New snippet" data-i18n-title="app.addSnippet" aria-label="New snippet" data-i18n-aria-label="app.addSnippet">${icons.plus}</button></div><div id="snippet-list"></div></section>
 <section id="panel-settings" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.settings">Settings</strong></div><div class="settings-content"><div class="settings-card"><h4>Ghostty</h4><p id="config-summary"></p><p id="config-path"></p><div class="button-row"><button id="open-config" class="ghost-btn" data-i18n="settings.openConfig">Open config file</button><button id="reload-config" class="ghost-btn" data-i18n="settings.reload">Reload</button></div></div><div class="settings-card"><h4 data-i18n="settings.window">Window</h4><p class="help" data-i18n="settings.windowHelp">Where the main window appears when the app opens. The size is always restored from last time.</p><select id="window-placement"><option value="center" data-i18n="settings.placementCenter">Center on screen</option><option value="remember" data-i18n="settings.placementRemember">Remember last position</option></select></div><div class="settings-card"><h4 data-i18n="settings.rules">Prompt detection rules</h4><p class="help" data-i18n="settings.rulesHelp">When an agent in a background tab stops to ask you something, the screen is recognized by these rules and you are notified. The rules file can add, replace or disable built-in rules.</p><p id="rules-summary"></p><div class="button-row"><button id="open-rules" class="ghost-btn" data-i18n="settings.openRules">Open rules file</button><button id="reload-rules" class="ghost-btn" data-i18n="settings.reload">Reload</button></div></div><div class="settings-card"><h4 data-i18n="settings.control">Agent control commands</h4><p class="help" data-i18n="settings.controlHelp">Lets agents inside terminals use highostty ctl to read other tabs, run in the background, and more. Read-only: view only. Full: can also open tabs and send input. Only newly opened tabs get the related environment variables.</p><select id="control-mode"><option value="off" data-i18n="settings.controlOff">Off</option><option value="readonly" data-i18n="settings.controlReadonly">Read-only</option><option value="full" data-i18n="settings.controlFull">Full</option></select><p class="help" data-i18n="settings.skillHelp">The skill teaches an agent how to use these commands. Nothing is written until you press a button: it goes into each agent's skills folder (skills/highostty/SKILL.md under ~/.claude, ~/.codex, ~/.copilot, ~/.gemini) and can be removed at any time. For other agents, copy the content into their global instructions.</p><div id="skill-list"></div><p id="skill-status"></p><div class="button-row"><button id="copy-skill" class="ghost-btn" data-i18n="settings.copySkill">Copy skill content</button></div></div><div class="settings-card"><h4 data-i18n="settings.diagnostics">Diagnostics</h4><pre id="config-diagnostics"></pre></div><div class="settings-card"><h4 data-i18n="settings.shortcuts">Shortcuts</h4><div class="shortcut-list"><kbd>⌘1～⌘9</kbd><span data-i18n="settings.sc.switchTab">Switch tabs</span><kbd>⌘⇧B</kbd><span data-i18n="settings.sc.sidebar">Toggle sidebar</span><kbd>⌘⇧P</kbd><span data-i18n="settings.sc.snippets">Snippets palette</span><kbd>⌘O / ⌘0</kbd><span data-i18n="settings.sc.files">Files panel</span><kbd>⌘T</kbd><span data-i18n="settings.sc.newTab">New tab</span><kbd>⌘⇧T</kbd><span data-i18n="settings.sc.childTab">Another tab in the same folder (child tab)</span><kbd>⌘D / ⌘⇧D</kbd><span data-i18n="settings.sc.split">Split</span></div></div></div></section>
@@ -658,6 +659,12 @@ function renderDetail() {
       host.append(help(t("app.updateLayoutHelp")));
     }
     if (item) {
+      host.append(formCaption(t("app.cap.startArgs")));
+      const argRow = document.createElement("div"); argRow.className = "path-row";
+      const argInput = document.createElement("input"); argInput.className = "mono"; argInput.readOnly = true; argInput.value = tabArgument(favorites, item); argInput.setAttribute("aria-label", t("app.cap.startArgs"));
+      const argCopy = button(t("app.copy"), () => { navigator.clipboard.writeText(`highostty ${argInput.value}`).then(() => notify(t("app.startArgsCopied"))).catch(notify); }); argCopy.className = "ghost-btn";
+      argRow.append(argInput, argCopy);
+      host.append(argRow, help(t("app.startArgsHelp")));
       host.append(formCaption(t("app.open")));
       const open = button(t("app.openSwitch"), () => openFavorite(item).then(closeAfterOpen)); open.className = "primary-btn wide-button";
       const openNew = button(t("app.openAnother"), () => openFavorite(item, true).then(closeAfterOpen)); openNew.className = "ghost-btn wide-button";
@@ -728,6 +735,9 @@ function launchPicker(command: HTMLInputElement, commandField: HTMLElement): HTM
   let custom = splitCommand(command.value);
   progInput.value = custom.program;
   const progField = labeled(t("app.launchCommand"), progInput);
+  const copySelect = document.createElement("select"); copySelect.id = "launch-copy-on-select"; copySelect.setAttribute("aria-label", t("app.launchCopyOnSelect"));
+  for (const [value, key] of [["", "app.launchCopyDefault"], ["on", "app.launchCopyOn"], ["off", "app.launchCopyOff"]] as const) { const item = document.createElement("option"); item.value = value; item.textContent = t(key); copySelect.append(item); }
+  const copyField = labeled(t("app.launchCopyOnSelect"), copySelect);
   const toolField = labeled(t("app.launchTool"), toolSelect), modelField = labeled(t("app.launchModel"), modelSelect), extraField = labeled(t("app.launchExtra"), extra);
   const option = (select: HTMLSelectElement, value: string, text: string) => { const item = document.createElement("option"); item.value = value; item.textContent = text; select.append(item); };
   const fillTools = () => {
@@ -754,6 +764,8 @@ function launchPicker(command: HTMLInputElement, commandField: HTMLElement): HTM
   const show = () => {
     const ai = !!launch;
     modelField.hidden = preview.hidden = !ai;
+    copyField.hidden = !(launch && supportsCopyOnSelect(launch.tool));
+    copySelect.value = launch?.copyOnSelect === undefined ? "" : launch.copyOnSelect ? "on" : "off";
     progField.hidden = ai;
     if (!ai) modelOther.hidden = true;
     // The command is edited as program + arguments; the real input only holds the joined text.
@@ -762,14 +774,14 @@ function launchPicker(command: HTMLInputElement, commandField: HTMLElement): HTM
     if (launch) preview.textContent = command.value;
   };
   const write = () => {
-    command.value = launch ? composeLaunch(launch.tool, launch.model, launch.extra) : joinCommand(custom.program, custom.args);
+    command.value = launch ? composeLaunch(launch.tool, launch.model, launch.extra, launch.copyOnSelect) : joinCommand(custom.program, custom.args);
     preview.textContent = command.value;
     command.dispatchEvent(new Event("input", { bubbles: true }));
   };
   toolSelect.onchange = () => {
     const tool = AI_TOOLS.find((item) => item.id === toolSelect.value);
     const args = launch?.extra ?? custom.args;
-    launch = tool ? { tool, model: "", extra: args } : undefined;
+    launch = tool ? { tool, model: "", extra: args, copyOnSelect: launch?.copyOnSelect } : undefined;
     if (!tool) { custom = { program: command.value.trim() ? splitCommand(command.value).program : "", args }; progInput.value = custom.program; }
     fillModels(); show(); write();
   };
@@ -779,12 +791,13 @@ function launchPicker(command: HTMLInputElement, commandField: HTMLElement): HTM
     else { modelOther.hidden = true; launch.model = modelSelect.value; }
     write();
   };
+  copySelect.onchange = () => { if (launch) { launch.copyOnSelect = copySelect.value === "" ? undefined : copySelect.value === "on"; write(); } };
   modelOther.oninput = () => { if (launch) { launch.model = modelOther.value.trim(); write(); } };
   extra.oninput = () => { if (launch) launch.extra = extra.value; else custom.args = extra.value; write(); };
   progInput.oninput = () => { custom.program = progInput.value; write(); };
   fillTools(); fillModels(); show();
   detectTools().then(fillTools).catch(() => {});
-  box.append(toolField, progField, modelField, modelOther, extraField, preview);
+  box.append(toolField, progField, modelField, modelOther, copyField, extraField, preview);
   return box;
 }
 const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; preview?: string }>();
@@ -1276,8 +1289,11 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
   row.append(label);
   if (tab.tmux || ids.some((id) => surfaces.get(id)?.tmuxSession)) row.append(tmuxMark());
   if (tab.status) { const note = document.createElement("span"); note.className = "tab-status"; note.textContent = tab.status; note.title = tab.status; row.append(note); }
+  const rowGit = showTabGit && surface?.cwd ? tabGit.get(surface.cwd)?.info : null;
   if (alert) { const pill = document.createElement("span"); pill.className = "alert-pill"; pill.textContent = alert.prompt?.low ? t("app.waiting") : alert.title; pill.title = alert.prompt ? [alert.prompt.question, ...alert.prompt.options].filter(Boolean).join("\n") : alert.body; row.append(pill); }
   if (ids.length > 1) { const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = String(ids.length); badge.title = t("app.splitTitle", { n: ids.length }); row.append(badge); }
+  // Git state sits at the right end of the content, just before the hotkey/menu slot.
+  if (rowGit) row.append(tabGitBadge(rowGit));
   // One slot at the row end: the ⌘N hint at rest, a floating "more" button on
   // hover. The button overlays the hint so hovering never reflows the label.
   const menu = () => popupMenu([
@@ -1377,7 +1393,10 @@ function appendWorkspaceFavoriteRow(parent: HTMLElement, item: WorkspaceFavorite
   const label = button(item.name, () => openFavorite(item), `${item.name}\n${item.tab.paths[0] || ""}`); label.className = "row-label";
   const edit = button("", () => editFavorite(item), t("app.editFavorite")); edit.className = "icon-btn row-action"; edit.innerHTML = icons.pencil;
   row.oncontextmenu = (event) => { event.preventDefault(); if (event.ctrlKey) { openFavoriteShell(item).catch(notify); return; } popupMenu(favoriteMenuItems(item)); };
-  row.append(state, label); if (item.tab.tmux) row.append(tmuxMark()); row.append(edit); parent.append(row);
+  row.append(state, label); if (item.tab.tmux) row.append(tmuxMark());
+  const favGit = showTabGit && item.tab.paths[0] ? tabGit.get(item.tab.paths[0])?.info : null;
+  if (favGit) row.append(tabGitBadge(favGit));
+  row.append(edit); parent.append(row);
 }
 function tmuxMark() { const mark = document.createElement("span"); mark.className = "tmux-mark"; mark.textContent = "tmux"; mark.title = t("app.tmuxTabMark"); return mark; }
 // A linked tab is named by its favorite; anything else keeps its own title.
@@ -1444,6 +1463,55 @@ async function refreshGit(id: string, minAgeMs = 0) {
     }
   } finally {
     gitBusy.delete(id);
+  }
+}
+
+// Tab rows show git status of the tab's own cwd (its focused pane). Results are shared per cwd, so
+// tabs in one repo cost one query; background tabs are polled slowly and one at a time.
+const TAB_GIT_ACTIVE_MS = 4000;
+const TAB_GIT_BACKGROUND_MS = 30000;
+let showTabGit = true;
+try { showTabGit = localStorage.getItem("tab-git") !== "false"; } catch {}
+const tabGit = new Map<string, { info: GitInfo | null; at: number }>();
+function tabGitBadge(info: GitInfo): HTMLElement {
+  const g = document.createElement("span");
+  g.className = "tab-git" + (isDirty(info) ? " dirty" : "");
+  g.textContent = tabGitText(info, t("git.detached"));
+  g.title = gitSummary(info, { detached: t("git.detached"), noUpstream: t("git.noUpstream") });
+  return g;
+}
+function tabCwd(tab: Tab): string | undefined {
+  return surfaces.get(tab.focused)?.cwd || undefined;
+}
+async function refreshTabGit(cwd: string, minAgeMs: number) {
+  const known = tabGit.get(cwd);
+  if (known && Date.now() - known.at < minAgeMs) return;
+  const info = await invoke<GitInfo | null>("git_status", { path: cwd }).catch(() => null);
+  tabGit.set(cwd, { info, at: Date.now() });
+  if (!sameGit(known?.info, info)) renderTabs();
+}
+let tabGitRunning = false;
+async function pollTabGit() {
+  if (tabGitRunning || !showTabGit) return;
+  tabGitRunning = true;
+  try {
+    const cwds = new Map<string, number>();
+    for (const tab of tabs) {
+      const cwd = tabCwd(tab);
+      if (cwd) cwds.set(cwd, Math.min(cwds.get(cwd) ?? Infinity, tab === active ? TAB_GIT_ACTIVE_MS : TAB_GIT_BACKGROUND_MS));
+    }
+    // Saved favorites that are not open still show git state, from their saved directory.
+    for (const item of favorites) {
+      const cwd = item.tab.paths[0];
+      if (cwd && !cwds.has(cwd)) cwds.set(cwd, TAB_GIT_BACKGROUND_MS);
+    }
+    for (const cwd of tabGit.keys()) if (!cwds.has(cwd)) tabGit.delete(cwd);
+    for (const [cwd, age] of cwds) {
+      if (closing) break;
+      await refreshTabGit(cwd, age);
+    }
+  } finally {
+    tabGitRunning = false;
   }
 }
 
@@ -2298,6 +2366,7 @@ async function handleEvent(event: NativeEvent) {
       break;
     case "quicklook-key":
     case "quicklook-closed":
+    case "files-drag-ended":
       filesPanel.handleEvent(event);
       break;
     case "toggle-palette":
@@ -2637,6 +2706,7 @@ async function start() {
     renderDrawer();
     renderTabs();
   });
+  let dropHint: string | undefined;
   await win.onDragDropEvent(async ({ payload }) => {
     const dpr = window.devicePixelRatio || 1;
     const elementAt = (position: { x: number; y: number }) => document.elementFromPoint(position.x / dpr, position.y / dpr);
@@ -2675,10 +2745,14 @@ async function start() {
       $("drawer-detail").classList.toggle("drop-target-list", kind === "group");
       $("panel-workspace").classList.toggle("drop-target-list", kind === "workspace-panel");
       item?.classList.add("drop-target-item");
-      filesPanel.highlightDrop(filesPanel.dropTarget(elementAt(payload.position)));
+      const hovered = filesPanel.dropTarget(elementAt(payload.position));
+      filesPanel.highlightDrop(hovered);
+      // Native uses the folder under the pointer to show a move or copy cursor.
+      if (hovered !== dropHint) { dropHint = hovered; native({ op: "files-drop-hint", destination: hovered ?? "" }).catch(() => {}); }
       return;
     }
     clearDropHighlight();
+    if (dropHint) { dropHint = undefined; native({ op: "files-drop-hint", destination: "" }).catch(() => {}); }
     if (payload.type !== "drop") return;
     // Files dropped on the files panel are copied into the folder under the pointer.
     const filesDestination = filesPanel.dropTarget(elementAt(payload.position));
@@ -2752,6 +2826,20 @@ async function start() {
   homePath = await invoke<string>("home");
   await loadPromptRules();
   await restoreSession();
+  // Launch arguments (--tab / --dir) open after the restored session, or arrive later from a second `highostty --tab`.
+  const openStartup = async (argv: string[]) => {
+    const startup = parseStartupArgs(argv);
+    for (const query of startup.tabs) {
+      const item = findFavoriteByQuery(favorites, query);
+      if (item) await openFavorite(item).catch(notify);
+      else notify(t("app.startupNoFavorite", { name: query }));
+    }
+    for (const path of startup.dirs) {
+      try { await newSurface(await invoke<string>("resolve_path", { path })); } catch (error) { notify(t("app.skipFolder", { path, error: String(error) })); }
+    }
+  };
+  await openStartup(await invoke<string[]>("take_startup_args"));
+  await listen<string[]>("startup-args", ({ payload }) => { eventQueue = eventQueue.then(() => openStartup(payload)).catch(notify); });
   eventQueue = eventQueue.then(openPending).catch(notify);
   await win.onCloseRequested((event) => {
     event.preventDefault();
@@ -2768,6 +2856,15 @@ async function start() {
       refreshCwd().catch(notify);
   }, 1000);
   $("bell-btn").onclick = toggleAttention;
+  const gitToggle = $("tab-git-toggle");
+  gitToggle.setAttribute("aria-pressed", String(showTabGit));
+  gitToggle.onclick = () => {
+    showTabGit = !showTabGit;
+    try { localStorage.setItem("tab-git", String(showTabGit)); } catch {}
+    gitToggle.setAttribute("aria-pressed", String(showTabGit));
+    renderTabs();
+    if (showTabGit) pollTabGit().catch(() => {});
+  };
   window.addEventListener("focus", () => clearViewed());
   setInterval(() => {
     if (document.visibilityState === "visible" && !closing) scanAttention().catch(() => {});
@@ -2775,6 +2872,10 @@ async function start() {
   // 每個可見窗格定期重查 git，抓到外部 commit／checkout／修改；快取時間內不會真的呼叫 git。
   setInterval(() => {
     if (document.visibilityState === "visible" && !closing) for (const r of lastRects) refreshGit(r.id, GIT_POLL_AGE_MS).catch(() => {});
+  }, 5000);
+  // 頁籤列的 git：只看頁籤自己的目錄；同目錄共用一次查詢，背景頁籤 30 秒、目前頁籤 4 秒，逐一執行。
+  setInterval(() => {
+    if (document.visibilityState === "visible" && !closing) pollTabGit().catch(() => {});
   }, 5000);
 }
 // agent 控制指令（highostty ctl）。Rust 把請求廣播給所有視窗，每個視窗各回一次並宣告 claim：

@@ -29,6 +29,17 @@ test("composed commands read back the same", () => {
   }
 });
 
+test("copy on select is a Claude-only --settings flag that reads back", () => {
+  assert.equal(composeLaunch(claude, "opus", "--resume", false), `claude --settings '{"copyOnSelect":false}' --model opus --resume`);
+  assert.equal(composeLaunch(claude, "", "", true), `claude --settings '{"copyOnSelect":true}'`);
+  assert.equal(composeLaunch(gemini, "", "", false), "gemini");
+  for (const on of [true, false]) {
+    const line = composeLaunch(claude, "opus", "--resume", on);
+    assert.deepEqual(parseLaunch(line), { tool: claude, model: "opus", extra: "--resume", copyOnSelect: on });
+  }
+  assert.deepEqual(parseLaunch(`claude --settings '{"copyOnSelect":false}'`), { tool: claude, model: "", extra: "", copyOnSelect: false });
+});
+
 test("model names are plain identifiers", () => {
   assert.ok(validModel("gpt-5-codex") && validModel("claude-sonnet-4.5") && validModel("a/b:c"));
   assert.ok(!validModel("a b") && !validModel("$(x)") && !validModel("-x") && !validModel(""));

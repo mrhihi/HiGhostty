@@ -34,3 +34,11 @@ test("sameGit compares every field and handles missing values", () => {
   assert.equal(sameGit(null, clean), false);
   assert.equal(sameGit(undefined, null), false);
 });
+
+test("tabGitText: compact branch and change count", async () => {
+  const { tabGitText } = await import("../src/git.ts");
+  const base = { branch: "main", detached: false, upstream: true, changed: 0, ahead: 2, behind: 0 };
+  assert.equal(tabGitText(base, "detached"), "main ✓");
+  assert.equal(tabGitText({ ...base, changed: 3 }, "detached"), "main ●3");
+  assert.equal(tabGitText({ ...base, detached: true }, "detached"), "detached ✓");
+});

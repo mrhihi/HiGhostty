@@ -704,11 +704,65 @@ fn open_directories(urls: &[tauri::Url]) -> Vec<String> {
 fn take_pending_open_paths() -> Vec<String> {
     std::mem::take(&mut *PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()))
 }
+/// `--tab`/`--dir` launch arguments, handed to the first terminal window that asks (once).
+#[tauri::command]
+fn take_startup_args() -> Vec<String> {
+    static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if TAKEN.swap(true, Ordering::SeqCst) {
+        return Vec::new();
+    }
+    std::env::args().skip(1).collect()
+}
+/// Data directory before the app (and its AppHandle) exists: what `data_dir` resolves to.
+fn plain_data_dir() -> Option<PathBuf> {
+    std::env::var_os("HIGHOSTTY_DATA_DIR").map(PathBuf::from).or_else(|| {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support/net.mrhihi.highostty"))
+    })
+}
+/// `highostty --list-tabs`: one favorite per line, `name<TAB>id`, for use with `--tab`.
+fn list_tabs() -> i32 {
+    let Some(path) = plain_data_dir().map(|dir| dir.join("workspace-favorites-v2.json")) else { return 1 };
+    let Ok(bytes) = std::fs::read(&path) else { return 0 };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        eprintln!("無法讀取 {}", path.display());
+        return 1;
+    };
+    let items = value.get("items").unwrap_or(&value).as_array().cloned().unwrap_or_default();
+    for item in items.iter().filter(|i| i.get("kind").and_then(Value::as_str) == Some("tab")) {
+        let text = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("");
+        println!("{}\t{}", text("name"), text("id"));
+    }
+    0
+}
+/// A launch request forwarded by a second `highostty --tab/--dir`: the focused window opens them.
+fn open_in_running(app: &tauri::AppHandle, args: Vec<Value>) -> Value {
+    let windows = terminal_windows(app);
+    let window = windows
+        .values()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .or_else(|| windows.get("main"))
+        .or_else(|| windows.values().next());
+    let Some(window) = window else {
+        return json!({ "ok": false, "error": { "code": "no_window", "message": "沒有終端機視窗" } });
+    };
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = window.emit("startup-args", args);
+    json!({ "ok": true })
+}
 fn main() {
     // `highostty ctl …` is the agent-facing CLI: talk to the running app and exit, no GUI.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("ctl") {
         std::process::exit(control::cli(args[1..].to_vec()));
+    }
+    // `--tab`/`--dir` go to an already running instance unless `--new` asks for a fresh one.
+    let wants_tabs = args.iter().any(|a| ["--tab", "--dir"].contains(&a.split('=').next().unwrap_or("")));
+    if wants_tabs && !args.iter().any(|a| a == "--new") && control::forward_launch(&args) {
+        return;
+    }
+    if args.iter().any(|a| a == "--list-tabs") {
+        std::process::exit(list_tabs());
     }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -779,6 +833,7 @@ fn main() {
             snippets::save_snippets,
             native,
             take_pending_open_paths,
+            take_startup_args,
             pick_directory,
             favorites,
             save_favorites,
