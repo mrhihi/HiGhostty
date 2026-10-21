@@ -114,3 +114,12 @@
 - 資訊列靠縮短送給原生的矩形高度保留空間，不用 cutout，也不會蓋住終端機。
 - git 狀態只用 `git status --porcelain=v2 -uno`，不寫入 repo；`GIT_OPTIONAL_LOCKS=0` 必須保留。
 - 改完照 `docs/git-strip.md` 的驗收清單實機操作。
+
+## TODO 浮層（⌘⇧L；`src/todo.ts`、`src/todo-drop.ts`、`src-tauri/src/todos.rs`）
+
+修改 ⌘⇧L 浮層、待辦儲存或送出格式前，先讀 `docs/todo-drop.md`。重點：
+
+- 格式化、驗證、分類過濾只放 `src/todo.ts` 並補 `tests/todo.test.mjs`；送出用 `insert-text` 貼上，**不送 Enter**。
+- 置中浮層靠 `overlay-cutout` 顯示，與其他浮層共用單一遮罩（互斥規則同上）；面板或工作區尺寸變化時要重送矩形。
+- 儲存格式與樂觀鎖照 `src-tauri/src/snippets.rs`；`todos.json` 只存在 `data_dir`。
+- 改完照 `docs/todo-drop.md` 的驗收清單實機操作。

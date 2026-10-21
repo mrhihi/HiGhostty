@@ -786,6 +786,7 @@ static NSDictionary *initialize(NSWindow *window,NSString *label,NSString *resou
                 if(relevant==(command|shift)&&[pressed isEqualToString:@"b"]){emit(lastWindow,@{@"type":@"toggle-sidebar"});return nil;}
                 if(relevant==(command|shift)&&[pressed isEqualToString:@"t"]){emit(lastWindow,@{@"type":@"duplicate-tab"});return nil;}
                 if(relevant==(command|shift)&&[pressed isEqualToString:@"p"]){emit(lastWindow,@{@"type":@"toggle-palette"});return nil;}
+                if(relevant==(command|shift)&&[pressed isEqualToString:@"l"]){emit(lastWindow,@{@"type":@"toggle-todo"});return nil;}
                 if(relevant==command&&pressed.length==1){
                     // ⌘0 toggles the files panel like ⌘O; ⌘1～⌘9 switch tabs.
                     if([pressed isEqualToString:@"0"]){emit(lastWindow,@{@"type":@"browse"});return nil;}

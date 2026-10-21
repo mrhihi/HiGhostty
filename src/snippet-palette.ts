@@ -19,8 +19,11 @@ import {
 import { t } from "./i18n";
 import { onLocaleChange } from "./i18n-runtime";
 
+// A command typed after ":" in the palette, e.g. ":todo".
+export type PaletteCommand = { name: string; title(): string; run(): void };
 export type SnippetsHost = {
   native: <T = Record<string, unknown>>(request: Record<string, unknown>) => Promise<T>;
+  commands: PaletteCommand[];
   // cwd of the active tab's focused terminal.
   cwd(): string | undefined;
   home(): string;
@@ -160,6 +163,7 @@ export function initSnippets(host: SnippetsHost) {
   const foot = el("div", "palette-foot");
   palette.append(bar, list, editor, foot);
   let results: Match[] = [];
+  let commands: PaletteCommand[] = [];
   let selected = 0;
   let confirmDelete: string | undefined;
   let editing = false;
@@ -181,7 +185,31 @@ export function initSnippets(host: SnippetsHost) {
     }
     flush();
   }
+  // A query starting with ":" lists commands instead of snippets.
+  const commandQuery = () => { const query = input.value.trim(); return query.startsWith(":") ? query.slice(1).toLowerCase() : undefined; };
   function render() {
+    const command = commandQuery();
+    if (command !== undefined) {
+      results = [];
+      commands = host.commands.filter((item) => item.name.startsWith(command));
+      selected = Math.min(selected, Math.max(0, commands.length - 1));
+      list.replaceChildren();
+      commands.forEach((item, index) => {
+        const row = el("div", "palette-row" + (index === selected ? " selected" : ""));
+        row.setAttribute("role", "option");
+        row.setAttribute("aria-selected", String(index === selected));
+        row.append(el("span", "palette-name", `:${item.name}`), el("span", "palette-text", item.title()), el("span", "palette-scope"));
+        row.onmousemove = () => { if (selected !== index) { selected = index; syncSelection(); } };
+        row.onmousedown = (event) => event.preventDefault();
+        row.onclick = () => chooseIndex(index, false).catch(host.notify);
+        list.append(row);
+      });
+      if (!commands.length) list.append(el("div", "palette-empty", t("snippets.emptyNoMatch")));
+      confirmDelete = undefined;
+      updateHints();
+      return;
+    }
+    commands = [];
     const cwd = host.cwd();
     results = filterSnippets(applicable(items, cwd, recent), input.value);
     selected = Math.min(selected, Math.max(0, results.length - 1));
@@ -226,6 +254,12 @@ export function initSnippets(host: SnippetsHost) {
     });
   }
   async function chooseIndex(index: number, run: boolean) {
+    if (commandQuery() !== undefined) {
+      const command = commands[index];
+      // Close the palette without refocusing: the command opens its own panel.
+      if (command) { close(false); command.run(); }
+      return;
+    }
     const match = results[index];
     if (!match) {
       if (input.value.trim()) openEditor(undefined, { name: input.value.trim() });
@@ -310,8 +344,9 @@ export function initSnippets(host: SnippetsHost) {
     if (editing || event.isComposing) return;
     const move = (delta: number) => {
       event.preventDefault();
-      if (!results.length) return;
-      selected = (selected + delta + results.length) % results.length;
+      const count = commandQuery() !== undefined ? commands.length : results.length;
+      if (!count) return;
+      selected = (selected + delta + count) % count;
       confirmDelete = undefined;
       syncSelection();
     };

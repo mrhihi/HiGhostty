@@ -149,6 +149,68 @@ fn read(path: &str, kind: &str) -> Result<Content, String> {
     Ok(content)
 }
 
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = text.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn page_mime(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "xhtml" => "application/xhtml+xml",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "txt" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+// `hgpage://localhost/<absolute path>`: serves an .html file and the files it links to (css, js,
+// images) so the page shows up as written. Only loaded inside a sandboxed iframe without
+// allow-same-origin, so the page's scripts get an opaque origin: no access to the app or its IPC.
+// No CORS header is sent, so those scripts cannot read these files back with fetch.
+pub fn serve_page(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    let reply = |status: u16, mime: &str, body: Vec<u8>| {
+        tauri::http::Response::builder()
+            .status(status)
+            .header("Content-Type", mime)
+            .header("Cache-Control", "no-store")
+            .body(body)
+            .unwrap_or_default()
+    };
+    let Some(path) = percent_decode(request.uri().path()) else {
+        return reply(400, "text/plain", Vec::new());
+    };
+    if !path.starts_with('/') || path.split('/').any(|part| part == "..") {
+        return reply(400, "text/plain", Vec::new());
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => reply(200, page_mime(&path), bytes),
+        Err(_) => reply(404, "text/plain", Vec::new()),
+    }
+}
+
 #[tauri::command]
 pub async fn preview_read(path: String, kind: String) -> Result<Content, String> {
     tauri::async_runtime::spawn_blocking(move || read(&path, &kind))

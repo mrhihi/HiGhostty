@@ -3,6 +3,7 @@
 // Anything that becomes HTML goes through DOMPurify before it reaches the DOM.
 import DOMPurify from "dompurify";
 import { t } from "./i18n";
+import { isMermaidLang, mermaidTheme } from "./preview";
 
 // Over this size highlighting is skipped: it blocks the UI thread on huge files.
 export const MAX_HIGHLIGHT = 512 * 1024;
@@ -240,4 +241,77 @@ export async function renderDiagram(body: HTMLElement, xml: string): Promise<Ren
     throw error;
   }
   return rendered;
+}
+
+// .html: served by the Rust `hgpage` protocol into an iframe whose sandbox has allow-scripts but not
+// allow-same-origin, so the page's scripts run with an opaque origin and cannot reach the app or its IPC.
+// Relative css/js/images load from the file's folder. Refreshes reload the frame (`update`).
+const pageUrl = (path: string, version: number): string => {
+  const base = navigator.userAgent.includes("Windows") ? "http://hgpage.localhost" : "hgpage://localhost";
+  return `${base}${encodeURI(path).replace(/[?#]/g, encodeURIComponent)}?v=${version}`;
+};
+export async function renderPage(body: HTMLElement, path: string): Promise<Rendered> {
+  const frame = document.createElement("iframe");
+  frame.className = "preview-page";
+  frame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals");
+  let version = 0;
+  const load = () => new Promise<void>((resolve) => {
+    frame.addEventListener("load", () => resolve(), { once: true });
+    frame.src = pageUrl(path, ++version);
+  });
+  body.replaceChildren(frame);
+  await load();
+  return { dispose() {}, update: () => load() };
+}
+
+let mermaidReady: Promise<typeof import("mermaid").default> | undefined;
+// mermaid.initialize is global, so renders run one at a time to keep each one's theme.
+let mermaidQueue: Promise<unknown> = Promise.resolve();
+let mermaidSeq = 0;
+
+// Turns ```mermaid blocks (and already drawn diagrams, for a theme change) under `root` into sanitized SVG.
+// A diagram that fails keeps its source block and gets a note; the rest of the document is unaffected.
+export async function renderMermaid(root: HTMLElement, light: boolean): Promise<void> {
+  const blocks = [...root.querySelectorAll<HTMLElement>("pre > code")].filter((code) => isMermaidLang(code.className));
+  const drawn = [...root.querySelectorAll<HTMLElement>(".mermaid-diagram[data-source]")];
+  if (!blocks.length && !drawn.length) return;
+  mermaidReady ??= import("mermaid").then((m) => m.default);
+  const mermaid = await mermaidReady;
+  const draw = async (source: string): Promise<string> => {
+    const run = mermaidQueue.then(async () => {
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: mermaidTheme(light), htmlLabels: false, flowchart: { htmlLabels: false } }); // SVG text labels survive DOMPurify; foreignObject does not
+      const id = `mermaid-${++mermaidSeq}`;
+      try {
+        return (await mermaid.render(id, source)).svg;
+      } finally {
+        document.getElementById(id)?.remove();
+        document.getElementById(`d${id}`)?.remove(); // mermaid leaves its error node here
+      }
+    });
+    mermaidQueue = run.catch(() => undefined);
+    return DOMPurify.sanitize(await run, { USE_PROFILES: { svg: true, svgFilters: true, html: true } });
+  };
+  const place = (target: Element, source: string, svg: string) => {
+    const div = document.createElement("div");
+    div.className = "mermaid-diagram";
+    div.dataset.source = source;
+    div.innerHTML = svg;
+    target.replaceWith(div);
+  };
+  for (const code of blocks) {
+    const source = code.textContent ?? "";
+    const pre = code.parentElement!;
+    try {
+      place(pre, source, await draw(source));
+    } catch (error) {
+      console.error("mermaid", error);
+      const note = document.createElement("p");
+      note.className = "preview-note";
+      note.textContent = t("preview.mermaidError");
+      pre.after(note);
+    }
+  }
+  for (const div of drawn) {
+    try { div.innerHTML = await draw(div.dataset.source ?? ""); } catch { /* keep the previous drawing */ }
+  }
 }

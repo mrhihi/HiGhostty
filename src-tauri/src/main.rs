@@ -16,6 +16,7 @@ mod git;
 mod locales;
 mod preview;
 mod snippets;
+mod todos;
 mod tools;
 mod usage;
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
@@ -190,6 +191,11 @@ fn center_window(window: &tauri::WebviewWindow, target_inner: Option<(f64, f64)>
 /// 啟動時只套用一次記住的大小與位置；之後視窗大小完全由使用者決定，終端機跟隨視窗。
 fn apply_startup_layout(window: &tauri::WebviewWindow) {
     let app = window.app_handle();
+    let saved_pos = remembers_position(app).then(|| load_window_position(app, window)).flatten();
+    // 先搬到記住的位置（目標螢幕）再改大小：視窗還在較小的螢幕時 set_size 會被 AppKit 夾到該螢幕可視範圍，大小就丟了。
+    if let Some(pos) = saved_pos {
+        let _ = window.set_position(pos);
+    }
     let mut target = None;
     if let (Some((w, h)), Ok(size), Ok(scale)) = (load_window_size(app), window.inner_size(), window.scale_factor()) {
         let current = size.to_logical::<f64>(scale);
@@ -198,7 +204,8 @@ fn apply_startup_layout(window: &tauri::WebviewWindow) {
             target = Some((w, h));
         }
     }
-    match remembers_position(app).then(|| load_window_position(app, window)).flatten() {
+    match saved_pos {
+        // set_size 會讓左上角位移，改完大小再放回。
         Some(pos) => { let _ = window.set_position(pos); }
         None => center_window(window, target),
     }
@@ -780,6 +787,7 @@ fn main() {
         previous(info);
     }));
     tauri::Builder::default()
+        .register_uri_scheme_protocol("hgpage", |_ctx, request| preview::serve_page(request))
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_)) {
@@ -831,6 +839,8 @@ fn main() {
             usage::usage_codex,
             usage::usage_claude,
             snippets::save_snippets,
+            todos::todos,
+            todos::save_todos,
             native,
             take_pending_open_paths,
             take_startup_args,

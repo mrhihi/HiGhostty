@@ -3,7 +3,7 @@
 export type PreviewSide = "right" | "bottom";
 export type PreviewState = { path: string; side: PreviewSide; ratio: number };
 export type Box = { x: number; y: number; width: number; height: number };
-export type PreviewKind = "markdown" | "code" | "text" | "image" | "pdf" | "sheet" | "word" | "slides" | "diagram";
+export type PreviewKind = "markdown" | "code" | "text" | "image" | "pdf" | "sheet" | "word" | "slides" | "diagram" | "page";
 
 export const DEFAULT_RATIO = 0.45;
 export const DEFAULT_SIDE: PreviewSide = "bottom";
@@ -32,6 +32,7 @@ export function togglePreviewSide(state: PreviewState): PreviewState {
 }
 
 const DIAGRAM = new Set(["drawio", "dio"]);
+const PAGE = new Set(["html", "htm", "xhtml"]);
 const BINARY_KINDS: Record<string, PreviewKind> = { pdf: "pdf", xlsx: "sheet", xlsm: "sheet", docx: "word", pptx: "slides" };
 // File extension (lowercase) or undefined; a leading dot alone is not an extension.
 function extensionOf(path: string): string {
@@ -57,11 +58,15 @@ export function codeLanguage(path: string): string | undefined {
   return CODE_NAME[name] ?? CODE_EXT[extensionOf(path)];
 }
 
+export const isMermaidLang = (className: string): boolean => /(?:^|\s)language-mermaid(?:\s|$)/.test(className);
+export const mermaidTheme = (light: boolean): "default" | "dark" => (light ? "default" : "dark");
+
 export function previewKind(path: string): PreviewKind {
   const ext = extensionOf(path);
   if (MARKDOWN.has(ext)) return "markdown";
   if (IMAGE.has(ext)) return "image";
   if (DIAGRAM.has(ext)) return "diagram";
+  if (PAGE.has(ext)) return "page";
   if (BINARY_KINDS[ext]) return BINARY_KINDS[ext];
   return codeLanguage(path) ? "code" : "text";
 }
@@ -148,6 +153,11 @@ export function linkTarget(href: string, currentPath: string): LinkTarget {
   if (!href || href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href)) return { kind: "none" };
   const clean = decodeURIComponent(href.split("#")[0].split("?")[0]);
   if (!clean || previewKind(clean) !== "markdown") return { kind: "none" };
+  return { kind: "file", path: resolveRelative(clean, currentPath) };
+}
+
+// Joins a relative (or absolute) path against the folder of the file that references it.
+export function resolveRelative(clean: string, currentPath: string): string {
   const base = clean.startsWith("/") ? [] : currentPath.split("/").slice(0, -1);
   const parts = [...base];
   for (const part of clean.split("/")) {
@@ -155,7 +165,15 @@ export function linkTarget(href: string, currentPath: string): LinkTarget {
     if (part === "..") parts.pop();
     else parts.push(part);
   }
-  return { kind: "file", path: "/" + parts.filter(Boolean).join("/") };
+  return "/" + parts.filter(Boolean).join("/");
+}
+
+// Local image path for a Markdown <img src>; web, data: and other schemes are left alone.
+export function localImagePath(src: string, currentPath: string): string | undefined {
+  if (!src || src.startsWith("#") || src.startsWith("//") || /^[a-z][a-z0-9+.-]*:/i.test(src)) return undefined;
+  let clean: string;
+  try { clean = decodeURIComponent(src.split("#")[0].split("?")[0]); } catch { return undefined; }
+  return clean && previewKind(clean) === "image" ? resolveRelative(clean, currentPath) : undefined;
 }
 
 // A favorite's default preview is stored relative to the tab's working directory.

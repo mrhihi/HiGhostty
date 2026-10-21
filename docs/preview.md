@@ -31,13 +31,15 @@
 - Markdown 欄寬與字級各自獨立：標題列的百分比輸入框可直接輸入數字或用旁邊的下拉選單選（30–100% 預覽窗寬，預設 100%，存在 localStorage `preview-width`，同樣跨視窗同步）；預設即最寬，只剩 padding。
 - 欄寬與字級的 CSS 變數設在 `.preview-body`，不是 `#preview`：`preview-panel.ts` 每次 layout 都整個覆寫 `#preview` 的 `style.cssText`，設在那裡的變數會在視窗改變大小時被清掉而退回預設。
 - Markdown 預設 16px，標題列的 A−／A+ 可調（11–32px，存在 localStorage，頁籤旁與獨立視窗共用並即時同步），對 Markdown 與純文字／程式碼顯示（文字檔預設 12px，存在 localStorage `preview-text-font-size`，與 Markdown 的 `preview-font-size` 各自獨立；頁籤旁與獨立視窗共用）。標題列的 ☀／☾ 鈕切換背景白底／深色（Markdown、Word 與文字／程式碼各自記住，localStorage `preview-theme`／`preview-text-theme`，跨視窗同步）；預設 Markdown 白底、文字深色。PDF／投影片固定白底。Markdown 配色用 `--md-*` 變數，匯出 PDF 一律白底。
-- Markdown：`marked`（GFM）轉 HTML 後**一定**經 `DOMPurify.sanitize`。連結只處理三種：`http(s)` 交給 `preview_open_url`（只接受 http／https，走 `open`）、相對或絕對的 `.md` 連結在預覽窗內換檔、其餘（`file:`、`javascript:`、錨點、其他副檔名）一律忽略。Markdown 內的相對路徑圖片不會載入（目前不支援）。
+- Markdown：`marked`（GFM）轉 HTML 後**一定**經 `DOMPurify.sanitize`。連結只處理三種：`http(s)` 交給 `preview_open_url`（只接受 http／https，走 `open`）、相對或絕對的 `.md` 連結在預覽窗內換檔、其餘（`file:`、`javascript:`、錨點、其他副檔名）一律忽略。Markdown 內的本機圖片（相對路徑，依該 .md 所在資料夾解析，`localImagePath`）在 sanitize 後由 `loadLocalImages` 用 `preview_read`（kind `image`，15 MB 上限）換成 data URL；`http(s)`、`data:` 與其他協定的圖片不處理，讀不到則維持破圖並顯示 alt。
 - 文字：`<pre>` 等寬顯示；上限 2 MB，超過截斷在字元邊界並提示。含 NUL 或非 UTF-8 視為二進位，不預覽。
 - 匯出 PDF：Markdown／Word 標題列的「PDF」鈕。把渲染好的內容複製到 `#print-root`（螢幕上隱藏，列印時是唯一顯示的元素），再由 `preview_print`（`WebviewWindow::print`）開 macOS 列印面板，從 PDF 選單「儲存為 PDF」；檔名預設為檔案名。列印版強制白底、`@page` 邊界 16mm，`afterprint` 後清空。
 - 程式碼：副檔名／檔名（`Makefile`、`Dockerfile`）對到 `codeLanguage`（`src/preview.ts`），用 highlight.js `common` 高亮（動態載入）；超過 512 KB 退回純文字。Markdown 的 ```lang 區塊同樣高亮。
+- Mermaid：Markdown 的 ```` ```mermaid ```` 區塊由 `renderMermaid`（`preview-render.ts`）動態載入 `mermaid`，`securityLevel: "strict"` 渲染成 SVG 後再經 `DOMPurify.sanitize`（svg＋html profile），原始碼存在 `data-source`。渲染一律序列化（`mermaid.initialize` 是全域的）。語法錯誤時保留原程式碼區塊並加一行提示，不影響其餘內容。切換 ☀／☾ 時用 `data-source` 重畫；匯出 PDF 在列印副本內以 light 主題重畫。
 - PDF／Word／PPT：`preview_bytes`（上限 50 MB，二進位 IPC）取位元組，由 `src/preview-render.ts` 以 pdfjs-dist（逐頁 canvas，只畫可見頁）、mammoth（.docx→HTML 再 `DOMPurify.sanitize`）、pptx-preview 渲染；函式庫皆動態載入。只支援新格式，.doc／.xls／.ppt 仍顯示「二進位檔案，無法預覽」。CSP 為此加了 `worker-src 'self' blob:` 與 `img-src blob:`。
 - Excel（.xlsx／.xlsm）：`read-excel-file/universal` 讀所有工作表，頂端分頁鈕切換；格子一律用 `textContent`。只顯示值（公式顯示快取結果）、無儲存格樣式，上限 5000 列×200 欄。注意 `previewKind` 回 `sheet` 時 `render` 必須有對應分支，否則會被當成投影片交給 pptx-preview（畫面全黑）。
 - draw.io（.drawio／.dio）：`previewKind` 回 `diagram`，走 `preview_read` 文字路徑（不是 binary kind）。渲染用 jgraph 官方 `viewer-static.min.js`（v28.1.2，Apache-2.0，放在 `public/drawio/`，不經 Vite 打包），跑在同源 iframe `/drawio/frame.html` 內，避免 `mx*` 全域汙染主頁；`config.js` 把 viewer 預設的 `viewer.diagrams.net` 路徑改成本地（CSP 也會擋外連）。`renderDiagram`（`preview-render.ts`）以 `postMessage` 傳 XML、只接受該 iframe 的回覆。自動更新時走 `Rendered.update`，不重建 iframe，frame 內重畫並維持目前頁籤；失敗時 dispose 並顯示錯誤，輪詢繼續。固定白底，沒有 A±／欄寬／主題／PDF 鈕。`.drawio.svg`／`.drawio.png` 仍是圖片。更新 viewer：換掉 `viewer-static.min.js` 與 LICENSE，並改這裡的版本號。
+- HTML（.html／.htm／.xhtml）：`previewKind` 回 `page`，**JavaScript 會執行**。`renderPage`（`preview-render.ts`）把 `hgpage://localhost/<絕對路徑>` 放進 `sandbox="allow-scripts allow-forms allow-modals"` 的 iframe；`preview::serve_page`（`preview.rs`，`main.rs` 以 `register_uri_scheme_protocol` 註冊）從磁碟提供該檔與它引用的相對 css／js／圖片。安全靠三件事，缺一不可：**sandbox 絕不加 `allow-same-origin`**（否則頁面 script 與 App 同源，可呼叫 Tauri IPC）；protocol 不送 CORS 標頭（script 不能 fetch 讀回檔案）；`frame-src` 只放行 `hgpage:`。頁面載入後不受 App CSP 限制，可連外網。頁內連結由頁面自己處理（外層攔不到，點到外站會在 iframe 內開）。自動更新是重載 iframe，捲動位置不保留。固定白底，沒有 A±／欄寬／主題／PDF 鈕。
 - 圖片：png／jpg／gif／webp／svg／bmp／ico，上限 15 MB，以 data URL 傳到前端。
 
 ## 狀態與權限
@@ -55,7 +57,7 @@
 4. `ctl preview open some.md`（唯讀模式）。另開一個終端機分別用 `echo >> some.md`、vim 存檔（rename）、`rm` 後重建，1 秒內都更新；捲到底時貼底，捲到中間時位置不跳。
 5. 開 tmux 頁籤，在裡面跑 `ctl preview open`，預覽出現在該頁籤。
 6. 開 .txt、.png、二進位檔、超過 2 MB 的文字檔：分別顯示文字、圖片、「二進位檔案，無法預覽」、截斷提示。
-7. Markdown 含 `<script>`、`<img onerror=…>`、`[x](javascript:alert(1))`、`[x](file:///etc/hosts)` 不會執行或開啟；`https://` 連結用瀏覽器開；`[x](other.md)` 在預覽窗內換檔。
+7. Markdown 含 `<script>`、`<img onerror=…>`、`[x](javascript:alert(1))`、`[x](file:///etc/hosts)` 不會執行或開啟；`https://` 連結用瀏覽器開；`[x](other.md)` 在預覽窗內換檔；含 `![](../images/a.png)` 相對圖片的 .md（含從連結換檔進入、與直接開啟）都顯示圖片。
 8. 預覽窗開著時按 ⌘⇧P（snippet palette）與待處理 drop：兩者正常顯示，預覽窗不受影響。
 9. 按預覽窗右上角的關閉，焦點回到終端機，可直接輸入。
 10. 按「彈出成獨立視窗」：新視窗顯示同一份內容，頁籤旁的預覽消失；改檔案兩邊（再彈出一次同一檔）都只有一個視窗、內容會更新。
@@ -72,3 +74,5 @@
 
 19. 開 .drawio（壓縮與未壓縮各一、含多頁）：圖形正確、下方可切頁與縮放；用 draw.io 存檔 1 秒內更新、不閃白、停在原本那一頁；把檔案截斷顯示錯誤、修回自動恢復；`.drawio.svg` 仍是圖片；斷網仍可顯示；Web Inspector 無 CSP 違規；彈出獨立視窗也正常。
 20. 收藏編輯頁設定「預設預覽」為工作目錄內的一個 .md（欄位顯示相對路徑；選取器預設開在工作目錄；選工作目錄外的檔案會報錯）→ 儲存；從收藏「開啟」或「在新頁籤開啟」，終端機下方自動出現該檔預覽；群組展開也會對每個新頁籤開預覽；切到已開啟的頁籤不會重開。改成「清除」後存檔，再開新頁籤就不會開預覽。把收藏指向的檔案改名或刪除後開頁籤，不出現預覽也不報錯。編輯中途切到「新增群組」再回來，選取的預覽路徑保留。
+21. Markdown 含 flowchart、sequence、gantt 的 mermaid 區塊：顯示成圖；改檔案自動重畫；☀／☾ 切換圖跟著換色；語法錯誤的區塊顯示原碼加提示、其他內容正常；label 含 `<script>`／`<img onerror>` 不執行；匯出 PDF 的圖是白底；斷網可用且 Web Inspector 無 CSP 違規。
+22. 開含 `<script>`、外部 css／相對路徑圖片的 .html：以頁面呈現且 JS 有執行（例如按鈕改 DOM）；頁面內 `window.parent.__TAURI__`、`fetch("hgpage://...")` 取不到東西；改檔案 1 秒內重載；彈出獨立視窗也正常。

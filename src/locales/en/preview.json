@@ -24,5 +24,6 @@
   "preview.noFile": "No file specified",
   "preview.title": "Preview",
   "preview.emptyWorkbook": "The workbook is empty",
-  "preview.rowsLimited": "Showing only the first {max} rows ({total} in total)."
+  "preview.rowsLimited": "Showing only the first {max} rows ({total} in total).",
+  "preview.mermaidError": "Could not render this Mermaid diagram."
 }

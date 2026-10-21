@@ -10,6 +10,7 @@ import {
   stepFontSize,
   clampRatio,
   linkTarget,
+  localImagePath,
   relativeToDir,
   resolveInDir,
   openPreview,
@@ -167,4 +168,28 @@ test("favorite default preview resolves inside the new tab folder only", () => {
   assert.equal(resolveInDir("/work/app", "/etc/hosts"), undefined);
   assert.equal(resolveInDir("/work/app", "../secret.md"), undefined);
   assert.equal(resolveInDir("/work/app", "a/../../secret.md"), undefined);
+});
+
+test("isMermaidLang / mermaidTheme", async () => {
+  const { isMermaidLang, mermaidTheme } = await import("../src/preview.ts");
+  assert.equal(isMermaidLang("language-mermaid"), true);
+  assert.equal(isMermaidLang("hljs language-mermaid"), true);
+  assert.equal(isMermaidLang("language-mermaidx"), false);
+  assert.equal(isMermaidLang("language-ts"), false);
+  assert.equal(mermaidTheme(true), "default");
+  assert.equal(mermaidTheme(false), "dark");
+});
+
+test("previewKind renders .html/.htm as a page, not source code", () => {
+  assert.equal(previewKind("/a/index.html"), "page");
+  assert.equal(previewKind("/a/INDEX.HTM"), "page");
+  assert.equal(isBinaryKind("page"), false);
+});
+
+test("localImagePath resolves relative images and skips other schemes", () => {
+  assert.equal(localImagePath("../images/a.png", "/p/guides/x.md"), "/p/images/a.png");
+  assert.equal(localImagePath("pic%20one.png?raw=1", "/p/x.md"), "/p/pic one.png");
+  assert.equal(localImagePath("https://x.dev/a.png", "/p/x.md"), undefined);
+  assert.equal(localImagePath("data:image/png;base64,AA", "/p/x.md"), undefined);
+  assert.equal(localImagePath("note.md", "/p/x.md"), undefined);
 });

@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; worker-src 'self' blob:; img-src 'self' data: blob:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; worker-src 'self' blob:; img-src 'self' data: blob:; frame-src 'self' hgpage: http://hgpage.localhost"
     },
     "macOSPrivateApi": true
   },

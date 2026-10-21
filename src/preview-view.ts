@@ -7,8 +7,8 @@ import DOMPurify from "dompurify";
 import { t } from "./i18n";
 import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import { marked } from "marked";
-import { highlightCode, renderCode, renderDiagram, renderPdf, renderSheet, renderSlides, renderWord, type Rendered } from "./preview-render";
-import { clampFontSize, codeLanguage, DEFAULT_FONT_SIZE, isBinaryKind, linkTarget, previewKind, clampWidth, MAX_WIDTH_PCT, measureFor, parseWidthInput, WIDTH_PRESETS, sameStamp, scrollAfterUpdate, stepFontSize, type PreviewKind, type Stamp } from "./preview";
+import { highlightCode, renderCode, renderDiagram, renderMermaid, renderPage, renderPdf, renderSheet, renderSlides, renderWord, type Rendered } from "./preview-render";
+import { clampFontSize, codeLanguage, DEFAULT_FONT_SIZE, isBinaryKind, linkTarget, localImagePath, previewKind, clampWidth, MAX_WIDTH_PCT, measureFor, parseWidthInput, WIDTH_PRESETS, sameStamp, scrollAfterUpdate, stepFontSize, type PreviewKind, type Stamp } from "./preview";
 
 type Content = { mtimeMs: number; size: number; text?: string; dataUrl?: string; truncated: boolean; unsupported?: string };
 export type PreviewViewHost = {
@@ -73,6 +73,7 @@ export function createPreviewView(host: PreviewViewHost) {
     themeBtn.textContent = themes[group] === "light" ? "☀" : "☾";
     const label = t(themes[group] === "light" ? "preview.themeLight" : "preview.themeDark");
     themeBtn.title = label; themeBtn.setAttribute("aria-label", label);
+    if (root.classList.contains("is-markdown")) void renderMermaid(body, themes.markdown === "light");
   };
   themeBtn.addEventListener("click", () => {
     const group = currentGroup();
@@ -118,7 +119,7 @@ export function createPreviewView(host: PreviewViewHost) {
 
   // Export: a print-only copy of the rendered document goes into #print-root (hidden on
   // screen, the only thing shown when printing), then the native print sheet opens.
-  root.querySelector(".preview-export")!.addEventListener("click", () => {
+  root.querySelector(".preview-export")!.addEventListener("click", async () => {
     const doc = body.querySelector<HTMLElement>(".preview-markdown");
     if (!doc || !shownPath) return;
     let target = document.getElementById("print-root");
@@ -132,6 +133,7 @@ export function createPreviewView(host: PreviewViewHost) {
     target.replaceChildren(clone);
     const title = document.title;
     document.title = baseName(shownPath).replace(/\.[^.]+$/, "");
+    await renderMermaid(clone, true).catch(() => {}); // print is always on white
     window.addEventListener("afterprint", () => { document.title = title; target!.replaceChildren(); }, { once: true });
     invoke("preview_print").catch((error) => { document.title = title; host.notify(error); });
   });
@@ -174,7 +176,7 @@ export function createPreviewView(host: PreviewViewHost) {
   async function paint(path: string, kind: PreviewKind, content: Content | ArrayBuffer, mine: number, reset = false) {
     const before = { top: body.scrollTop, height: body.scrollHeight, client: body.clientHeight };
     // Same diagram file refreshed: hand the new XML to the live viewer instead of rebuilding it.
-    if (kind === "diagram" && !reset && rendered?.update && !(content instanceof ArrayBuffer) && content.text !== undefined) {
+    if ((kind === "diagram" || kind === "page") && !reset && rendered?.update && !(content instanceof ArrayBuffer) && content.text !== undefined) {
       try {
         await rendered.update(content.text);
       } catch (error) {
@@ -203,9 +205,13 @@ export function createPreviewView(host: PreviewViewHost) {
         view.className = "preview-markdown";
         view.innerHTML = DOMPurify.sanitize(marked.parse(text, { async: false, gfm: true }) as string);
         body.replaceChildren(view);
+        await loadLocalImages(view, path, mine);
+        await renderMermaid(view, themes.markdown === "light");
         await highlightFences(view);
       } else if (kind === "diagram") {
         next = await renderDiagram(body, text);
+      } else if (kind === "page") {
+        next = await renderPage(body, path);
       } else if (kind === "code") {
         next = await renderCode(body, text, codeLanguage(path));
       } else {
@@ -224,13 +230,24 @@ export function createPreviewView(host: PreviewViewHost) {
     if (mine !== generation) { next?.dispose(); return; }
     rendered = next;
     const failed = !bytes && !!data!.unsupported;
-    const light = !failed && (kind === "slides" || kind === "pdf" || kind === "diagram");
+    const light = !failed && (kind === "slides" || kind === "pdf" || kind === "diagram" || kind === "page");
     body.classList.toggle("light", light && !(data && data.dataUrl));
     root.classList.toggle("is-markdown", (kind === "markdown" || kind === "word") && !failed);
     root.classList.toggle("is-text", (kind === "text" || kind === "code") && !failed);
     applyTheme();
     // A newly opened file starts at the top; only later refreshes follow the bottom.
     body.scrollTop = reset ? 0 : scrollAfterUpdate(before, body.scrollHeight, body.clientHeight);
+  }
+  // Relative image paths resolve against the Markdown file's folder; the app origin cannot serve them.
+  async function loadLocalImages(view: HTMLElement, path: string, mine: number) {
+    await Promise.all([...view.querySelectorAll<HTMLImageElement>("img")].map(async (img) => {
+      const file = localImagePath(img.getAttribute("src") ?? "", path);
+      if (!file) return;
+      try {
+        const got = await invoke<Content>("preview_read", { path: file, kind: "image" });
+        if (mine === generation && got.dataUrl) img.src = got.dataUrl;
+      } catch { /* leave the broken image; alt text shows */ }
+    }));
   }
   // Fenced blocks (```ts) get highlighted after sanitizing; the highlighted HTML is sanitized again.
   async function highlightFences(view: HTMLElement) {
@@ -305,13 +322,17 @@ export function createPreviewView(host: PreviewViewHost) {
     timer = window.setInterval(() => poll().catch(host.notify), POLL_MS);
   }
 
-  body.addEventListener("click", (event) => {
-    const link = (event.target as HTMLElement).closest("a");
-    if (!link || !shownPath) return;
-    event.preventDefault();
-    const next = linkTarget(link.getAttribute("href") || "", shownPath);
+  function followLink(href: string) {
+    if (!shownPath) return;
+    const next = linkTarget(href, shownPath);
     if (next.kind === "web") invoke("preview_open_url", { url: next.url }).catch(host.notify);
     else if (next.kind === "file") host.openFile(next.path);
+  }
+  body.addEventListener("click", (event) => {
+    const link = (event.target as HTMLElement).closest("a");
+    if (!link) return;
+    event.preventDefault();
+    followLink(link.getAttribute("href") || "");
   });
 
   return { root, actions, shown: () => shownPath, show, stop };

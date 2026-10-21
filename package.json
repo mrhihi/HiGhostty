@@ -16,6 +16,7 @@
     "highlight.js": "^11.12.0",
     "mammoth": "^1.13.0",
     "marked": "^12.0.2",
+    "mermaid": "^12.2.0",
     "pdfjs-dist": "^6.4.299",
     "pptx-preview": "^1.0.7",
     "read-excel-file": "^9.3.12"

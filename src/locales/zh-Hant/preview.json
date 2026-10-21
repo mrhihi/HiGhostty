@@ -24,5 +24,6 @@
   "preview.noFile": "沒有指定檔案",
   "preview.title": "預覽",
   "preview.emptyWorkbook": "活頁簿是空的",
-  "preview.rowsLimited": "只顯示前 {max} 列（共 {total} 列）。"
+  "preview.rowsLimited": "只顯示前 {max} 列（共 {total} 列）。",
+  "preview.mermaidError": "無法繪製此 Mermaid 圖。"
 }

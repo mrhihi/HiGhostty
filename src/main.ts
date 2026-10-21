@@ -40,6 +40,7 @@ import { openPreview, previewKind, relativeToDir, resolveInDir, splitBox, toggle
 import { restoreFiles, sameSaved, saveFiles, setDetached, toggleOpen, type FilesState, type SavedFiles } from "./files";
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
+import { initTodoDrop } from "./todo-drop";
 import { initUsageBar } from "./usage-bar";
 import { enableRowDrag } from "./row-drag";
 import { aiToolIcons, icons } from "./icons";
@@ -120,6 +121,7 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 <button id="rail-favorites" class="rail-btn" title="Favorites" data-i18n-title="app.favorites" aria-label="Favorites" data-i18n-aria-label="app.favorites">${icons.star}</button>
 <button id="rail-snippets" class="rail-btn" title="Snippets (⌘⇧P)" data-i18n-title="app.snippetsShortcut" aria-label="Snippets (⌘⇧P)" data-i18n-aria-label="app.snippetsShortcut">${icons.snippet}</button>
 <button id="rail-attention" class="rail-btn" title="Needs attention" data-i18n-title="app.attention" aria-label="Needs attention" data-i18n-aria-label="app.attention">${icons.bell}<span id="rail-alert" hidden></span></button>
+<button id="rail-todo" class="rail-btn" title="Open todo list (⌘⇧L)" data-i18n-title="todo.commandTitle" aria-label="Open todo list (⌘⇧L)" data-i18n-aria-label="todo.commandTitle">${icons.todo}</button>
 <span class="rail-spacer"></span><button id="rail-settings" class="rail-btn" title="Settings" data-i18n-title="app.settings" aria-label="Settings" data-i18n-aria-label="app.settings">${icons.settings}</button></nav>
 <section id="drawer-primary" aria-label="Sidebar panel" data-i18n-aria-label="app.sidebarPanel"><div class="drawer-inner">
 <section id="panel-workspace" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.workspace">Workspace</strong><button id="tab-git-toggle" class="icon-btn" title="Show git status on tabs" data-i18n-title="app.tabGitToggle" aria-label="Show git status on tabs" data-i18n-aria-label="app.tabGitToggle" aria-pressed="true">${icons.branch}</button><button id="new" class="icon-btn" title="New tab" data-i18n-title="app.newTab" aria-label="New tab" data-i18n-aria-label="app.newTab">${icons.plus}</button></div><div id="tabs" role="tree" aria-label="Workspace" data-i18n-aria-label="app.workspace"></div></section>
@@ -241,6 +243,8 @@ const snippets = initSnippets({
   },
   notify,
   canInsert: () => !!active,
+  // ⌘⇧P 裡輸入 :todo 開啟待辦浮層。
+  commands: [{ name: "todo", title: () => t("todo.commandTitle"), run: () => toggleTodo() }],
 });
 // 與 snippets 共用單一 overlay-cutout，兩個浮層不可同時開著。
 const attentionDrop = initAttentionDrop({
@@ -251,18 +255,40 @@ const attentionDrop = initAttentionDrop({
   clearAll: () => setAttention(emptyAttention),
   closeIcon: icons.close,
 });
+// TODO 浮層（⌘⇧L）同樣共用 overlay-cutout，與其他浮層互斥。
+const todoDrop = initTodoDrop({
+  native,
+  focusTerminal: () => { if (active) native({ op: "focus", id: active.focused }).catch(notify); },
+  insertIntoTerminal: async (text) => {
+    if (!active) return;
+    await native({ op: "insert-text", id: active.focused, text });
+    await native({ op: "focus", id: active.focused });
+  },
+  canInsert: () => !!active,
+  defaultCategory: () => (active ? tabName(active) : ""),
+  notify,
+  closeIcon: icons.close,
+});
 const usageBar = initUsageBar({
   native,
   focusTerminal: () => { if (active) native({ op: "focus", id: active.focused }).catch(notify); },
   notify,
-  closeOthers: () => { snippets.close(false); attentionDrop.close(false); },
+  closeOthers: () => { snippets.close(false); attentionDrop.close(false); todoDrop.close(false); },
 });
 function toggleAttention() {
   if (attentionDrop.isOpen()) { attentionDrop.close(); return; }
   snippets.close(false);
+  todoDrop.close(false);
   usageBar.close(false);
   lastAttentionSig = undefined;
   attentionDrop.open().catch(notify);
+}
+function toggleTodo() {
+  if (todoDrop.isOpen()) { todoDrop.close(); return; }
+  snippets.close(false);
+  attentionDrop.close(false);
+  usageBar.close(false);
+  todoDrop.open().catch(notify);
 }
 let tabs: Tab[] = [],
   active: Tab | undefined,
@@ -2370,9 +2396,13 @@ async function handleEvent(event: NativeEvent) {
       filesPanel.handleEvent(event);
       break;
     case "toggle-palette":
-      // 待處理浮層開著時，⌘⇧P 只負責關掉它。
+      // 待處理或 TODO 浮層開著時，⌘⇧P 只負責關掉它。
       if (attentionDrop.isOpen()) attentionDrop.close();
+      else if (todoDrop.isOpen()) todoDrop.close();
       else { usageBar.close(false); snippets.toggle(); }
+      break;
+    case "toggle-todo":
+      toggleTodo();
       break;
     case "toggle-sidebar":
       toggleDrawerPanel(drawerState.panel || drawerState.lastPanel);
@@ -2637,9 +2667,9 @@ $("search-input").onkeydown = (e) => {
   if (e.key === "Escape") $("search-close").click();
 };
 window.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || event.isComposing || dialogsOpen() || attentionDrop.isOpen()) return;
+  if (event.key !== "Escape" || event.isComposing || dialogsOpen() || attentionDrop.isOpen() || todoDrop.isOpen()) return;
   // Inputs with their own Escape behavior handle it; don't also close drawers.
-  if (event.target instanceof Element && event.target.closest(".inline-rename, #search, #files, #palette-drop, #attention-drop")) return;
+  if (event.target instanceof Element && event.target.closest(".inline-rename, #search, #files, #palette-drop, #attention-drop, #todo-drop")) return;
   // The files drop-down wins Esc unless focus is in the sidebar itself, so one Esc never collapses both.
   if (!(event.target instanceof Element && event.target.closest("#rail, #drawer-primary, #drawer-detail")) && filesPanel.collapse()) { event.preventDefault(); return; }
   if (!$("favorite-add-options").hidden) { event.preventDefault(); $("favorite-add-options").hidden = true; return; }
@@ -2694,12 +2724,14 @@ async function start() {
       toggleDrawerPanel(panel);
     };
   }
-  $("workspace").append(snippets.element, attentionDrop.element, usageBar.element);
+  $("workspace").append(snippets.element, attentionDrop.element, todoDrop.element, usageBar.element);
   document.querySelector("footer")!.append(usageBar.button);
   $("rail-attention").onclick = toggleAttention;
+  $("rail-todo").onclick = toggleTodo;
   $("snippet-add").onclick = () => snippets.newScoped(currentSurface()?.cwd || "global");
   snippets.store.onChange(() => { refreshSnippetList(); renderDetailIfSnippet(); });
   await snippets.store.load();
+  await todoDrop.load();
   await listen<FavoritesDocument>("group-favorites-changed", ({ payload }) => {
     applyFavoritesDocument(payload);
     renderTabs();
