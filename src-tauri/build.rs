@@ -12,6 +12,7 @@ fn main() {
     bridge
         .file("native/bridge.m")
         .file("native/files.m")
+        .file("native/window.m")
         .include("native")
         .flag("-fobjc-arc")
         .flag("-fblocks")

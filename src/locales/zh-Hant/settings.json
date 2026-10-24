@@ -2,7 +2,7 @@
   "settings.openConfig": "開啟設定檔",
   "settings.reload": "重新載入",
   "settings.window": "視窗",
-  "settings.windowHelp": "開啟 app 時主視窗的位置。大小一律沿用上次。",
+  "settings.windowHelp": "開啟 app 時主視窗的位置。大小與位置依螢幕各自記住：置中會在滑鼠所在的螢幕，記住上次位置則回到上次所在的螢幕。",
   "settings.placementCenter": "螢幕置中",
   "settings.placementRemember": "記住上次位置",
   "settings.rules": "提示辨識規則",

@@ -2,7 +2,7 @@
   "settings.openConfig": "Open config file",
   "settings.reload": "Reload",
   "settings.window": "Window",
-  "settings.windowHelp": "Where the main window appears when the app opens. The size is always restored from last time.",
+  "settings.windowHelp": "Where the main window appears when the app opens. Size and position are remembered per screen: centering uses the screen under the mouse, and remembering returns to the screen it was last on.",
   "settings.placementCenter": "Center on screen",
   "settings.placementRemember": "Remember last position",
   "settings.rules": "Prompt detection rules",

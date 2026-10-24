@@ -132,3 +132,11 @@
 - 分隔線是 gap 內的 HTML，以 index 重用元素（拖曳中不可重建）；幾何只放 `model.ts` 並補 `tests/model.test.mjs`。
 - 改完照 `docs/splits.md` 的驗收清單實機操作。
 
+## 主視窗位置與大小（`src-tauri/src/main.rs` 的 `apply_startup_layout`、`window_layout.rs`、`native/window.m`）
+
+修改「螢幕置中／記住上次位置」、`window-state.json` 或主視窗啟動可見性前，先讀 `docs/window-placement.md`。重點：
+
+- 位置與大小一律用 AppKit points，經 `hg_window` 一次 `setFrame`；不可改回 Tauri 的 physical `set_position`／`outer_position`／`monitor.size()`（混合 Retina／外接螢幕時單位不連續，大小與位置會亂）。
+- 主視窗以 `visible: false` 建立，排好版才 `show()`；`LAYOUT_READY` 之前的 Moved／Resized 不可存。
+- 大小與位置依螢幕各記一份（`screens[key]`，相對該螢幕可視範圍）；計算只放 `window_layout.rs` 並補單元測試。
+- 改完照 `docs/window-placement.md` 的驗收清單實機操作（`cargo test` 不涵蓋多螢幕）。

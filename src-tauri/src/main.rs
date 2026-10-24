@@ -19,6 +19,7 @@ mod snippets;
 mod todos;
 mod tools;
 mod usage;
+mod window_layout;
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 static FAVORITES_LOCK: Mutex<()> = Mutex::new(());
 static PENDING_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -33,6 +34,7 @@ extern "C" {
         emit: extern "C" fn(*const libc::c_char, *const libc::c_char),
     ) -> *mut libc::c_char;
     fn hg_shutdown();
+    fn hg_window(window: *mut std::ffi::c_void, request: *const libc::c_char) -> *mut libc::c_char;
 }
 extern "C" fn native_event(label: *const libc::c_char, event: *const libc::c_char) {
     // Never unwind through the C ABI.
@@ -116,99 +118,72 @@ fn update_window_state(app: &tauri::AppHandle, patch: Value) {
         let _ = std::fs::write(path, state.to_string());
     }
 }
-fn load_window_size(app: &tauri::AppHandle) -> Option<(f64, f64)> {
-    let value = read_window_state(app);
-    let (w, h) = (value.get("width")?.as_f64()?, value.get("height")?.as_f64()?);
-    (w.is_finite() && h.is_finite() && w >= 720.0 && h >= 480.0 && w <= 10000.0 && h <= 10000.0).then_some((w, h))
-}
 fn remembers_position(app: &tauri::AppHandle) -> bool {
     read_window_state(app).get("placement").and_then(Value::as_str) == Some("remember")
 }
-fn window_is_normal(window: &tauri::Window) -> bool {
-    // 全螢幕／最大化的尺寸與位置不代表使用者要的。
-    !(window.is_fullscreen().unwrap_or(false) || window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false))
+/// 主視窗的位置與大小一律用 AppKit points、整個視窗一次 setFrame，細節見 docs/window-placement.md。
+fn window_native(window: &tauri::Window, request: Value) -> Option<Value> {
+    let ptr = window.ns_window().ok()?;
+    let request = CString::new(request.to_string()).ok()?;
+    unsafe {
+        let raw = hg_window(ptr, request.as_ptr());
+        if raw.is_null() {
+            return None;
+        }
+        let value = serde_json::from_slice::<Value>(CStr::from_ptr(raw).to_bytes()).ok();
+        libc::free(raw.cast());
+        value.filter(|v| v.get("error").is_none())
+    }
 }
-fn save_window_size(window: &tauri::Window) {
-    if !window_is_normal(window) {
+/// 記下視窗目前所在螢幕與外框（必須在主執行緒）；全螢幕／最小化不存；縮放（雙擊標題列、拉滿螢幕）算使用者要的大小。
+fn save_window_frame(window: &tauri::Window) {
+    let Some(info) = window_native(window, json!({"op": "frame"})) else { return };
+    if info.get("normal").and_then(Value::as_bool) != Some(true) {
         return;
     }
-    let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) else { return };
-    let logical = size.to_logical::<f64>(scale);
-    update_window_state(window.app_handle(), json!({"width": logical.width, "height": logical.height}));
-}
-fn save_window_position(window: &tauri::Window) {
-    if !window_is_normal(window) {
+    let (Some(frame), Some(visible), Some(key)) = (
+        info.get("frame").and_then(window_layout::Rect::from_json),
+        info.get("visible").and_then(window_layout::Rect::from_json),
+        info.get("screen").and_then(Value::as_str),
+    ) else {
         return;
-    }
-    if let Ok(pos) = window.outer_position() {
-        update_window_state(window.app_handle(), json!({"x": pos.x, "y": pos.y}));
+    };
+    let mut state = read_window_state(window.app_handle());
+    window_layout::record(&mut state, frame, key, visible);
+    if let Some(path) = window_size_file(window.app_handle()) {
+        let _ = std::fs::write(path, state.to_string());
     }
 }
+/// 啟動排版完成前的 Moved／Resized 都是中間狀態，不可存。
+static LAYOUT_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// 縮放／移動事件連續觸發，且最大化、全螢幕的過渡中旗標尚未翻轉；等穩定後才判斷並寫入。
 fn schedule_window_save(window: &tauri::Window) {
     static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     use std::sync::atomic::Ordering;
+    if !LAYOUT_READY.load(Ordering::SeqCst) {
+        return;
+    }
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let window = window.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(500));
         if GENERATION.load(Ordering::SeqCst) == generation {
-            save_window_size(&window);
-            save_window_position(&window);
+            let target = window.clone();
+            let _ = window.run_on_main_thread(move || save_window_frame(&target));
         }
     });
 }
-/// 上次位置仍有一部分落在某個螢幕內才採用（螢幕拔掉後退回置中）。
-fn load_window_position(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Option<tauri::PhysicalPosition<i32>> {
-    let state = read_window_state(app);
-    let (x, y) = (state.get("x")?.as_i64()? as i32, state.get("y")?.as_i64()? as i32);
-    let visible = window.available_monitors().ok()?.iter().any(|m| {
-        let (p, s) = (m.position(), m.size());
-        x + 100 > p.x && x < p.x + s.width as i32 - 100 && y >= p.y - 10 && y < p.y + s.height as i32 - 50
-    });
-    visible.then_some(tauri::PhysicalPosition::new(x, y))
-}
-/// 在視窗所在（或主）螢幕置中；用實際外框大小計算，避免 set_size 尚未生效造成偏移。
-fn center_window(window: &tauri::WebviewWindow, target_inner: Option<(f64, f64)>) {
-    let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
-    // set_size 之後 outer_size 可能還是舊值：用「目標內容大小＋外框差額」自己算。
-    let outer = match (target_inner, window.outer_size(), window.inner_size(), window.scale_factor()) {
-        (Some((w, h)), Ok(o), Ok(i), Ok(scale)) => Ok(tauri::PhysicalSize::new(
-            (w * scale).round() as u32 + o.width.saturating_sub(i.width),
-            (h * scale).round() as u32 + o.height.saturating_sub(i.height),
-        )),
-        _ => window.outer_size(),
-    };
-    let (Some(monitor), Ok(size)) = (monitor, outer) else {
-        let _ = window.center();
-        return;
-    };
-    let (p, s) = (monitor.position(), monitor.size());
-    let x = p.x + (s.width as i32 - size.width as i32) / 2;
-    let y = p.y + (s.height as i32 - size.height as i32) / 2;
-    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-}
-/// 啟動時只套用一次記住的大小與位置；之後視窗大小完全由使用者決定，終端機跟隨視窗。
+/// 啟動時只套用一次：視窗以隱藏狀態建立，算好目標螢幕上的外框後一次設定再顯示，之後視窗大小完全由使用者決定。
 fn apply_startup_layout(window: &tauri::WebviewWindow) {
     let app = window.app_handle();
-    let saved_pos = remembers_position(app).then(|| load_window_position(app, window)).flatten();
-    // 先搬到記住的位置（目標螢幕）再改大小：視窗還在較小的螢幕時 set_size 會被 AppKit 夾到該螢幕可視範圍，大小就丟了。
-    if let Some(pos) = saved_pos {
-        let _ = window.set_position(pos);
+    let inner = window.as_ref().window();
+    let screens = window_native(&inner, json!({"op": "screens"})).map(|v| window_layout::parse_screens(&v)).unwrap_or_default();
+    let state = read_window_state(app);
+    if let Some(frame) = window_layout::startup_frame(&state, &screens, remembers_position(app)) {
+        window_native(&inner, json!({"op": "set-frame", "x": frame.x, "y": frame.y, "w": frame.w, "h": frame.h}));
     }
-    let mut target = None;
-    if let (Some((w, h)), Ok(size), Ok(scale)) = (load_window_size(app), window.inner_size(), window.scale_factor()) {
-        let current = size.to_logical::<f64>(scale);
-        if (current.width - w).abs() > 1.0 || (current.height - h).abs() > 1.0 {
-            let _ = window.set_size(tauri::LogicalSize::new(w, h));
-            target = Some((w, h));
-        }
-    }
-    match saved_pos {
-        // set_size 會讓左上角位移，改完大小再放回。
-        Some(pos) => { let _ = window.set_position(pos); }
-        None => center_window(window, target),
-    }
+    let _ = window.show();
+    LAYOUT_READY.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 #[tauri::command]
 fn window_placement(app: tauri::AppHandle) -> String {
@@ -221,7 +196,7 @@ fn set_window_placement(app: tauri::AppHandle, mode: String) -> Result<(), Strin
     }
     update_window_state(&app, json!({"placement": mode}));
     if let Some(window) = app.get_webview_window("main") {
-        save_window_position(&window.as_ref().window());
+        save_window_frame(&window.as_ref().window());
     }
     Ok(())
 }
