@@ -531,7 +531,7 @@ static NSView *findWebView(NSView *view); // defined below
 - (void)mouseDragged:(NSEvent *)event { [self mouseMoved:event]; }
 - (void)rightMouseDragged:(NSEvent *)event { [self mouseMoved:event]; }
 - (void)otherMouseDragged:(NSEvent *)event { [self mouseMoved:event]; }
-- (void)mouseEntered:(NSEvent *)event { emit(_owner,@{@"type":@"pointer-terminal",@"on":@YES});[self mouseMoved:event]; }
+- (void)mouseEntered:(NSEvent *)event { emit(_owner,@{@"type":@"pointer-terminal",@"on":@YES});[NSCursor.arrowCursor set];[self mouseMoved:event]; }
 - (void)mouseExited:(NSEvent *)event { emit(_owner,@{@"type":@"pointer-terminal",@"on":@NO});[NSCursor.arrowCursor set]; }
 - (void)mouseButton:(NSEvent *)event pressed:(BOOL)pressed {
     if(!_surface)return;

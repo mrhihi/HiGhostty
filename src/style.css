@@ -184,7 +184,7 @@ body:not(.term-pointer) .row:hover { background: var(--hover); }
 .split-divider { position: absolute; z-index: 1; }
 .split-divider[data-axis="row"] { cursor: col-resize; }
 .split-divider[data-axis="column"] { cursor: row-resize; }
-.split-divider:hover, .split-divider.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
+body:not(.term-pointer) .split-divider:hover, .split-divider.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
 .surface-outline.focused { border-color: var(--accent); }
 .surface-outline.tmux { border-color: rgb(138 168 255 / .4); }
 .surface-outline.tmux.focused { border-color: var(--tmux); }
