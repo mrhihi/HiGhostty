@@ -117,6 +117,10 @@ static NSString *L(NSString *key,NSString *fallback){NSString *v=uiStrings[key];
 @property NSMutableAttributedString *marked;
 @property BOOL closing;
 @property BOOL suspended;
+// 最近一次 layout 的位置（網頁座標、左上為原點）與當時網頁大小；視窗縮放途中據此按比例先行跟隨。
+@property NSRect layoutRect;
+@property NSRect layoutArea; // 同一視窗所有終端機的聯集
+@property NSSize layoutWebSize;
 @property NSTrackingArea *tracking;
 @property uint64_t rootStart;
 @property int32_t rootPid;
@@ -973,6 +977,47 @@ static void applyCutout(HGSurface *s,NSView *web) {
     CGPathRelease(path);
     s.layer.mask=mask;
 }
+// 網頁座標（左上為原點）的矩形 → 原生 view 的 frame，並同步 Ghostty 大小與遮罩。
+static void placeSurface(HGSurface *s,NSView *web,NSRect rect) {
+    if(!web.isFlipped)rect.origin.y=web.bounds.size.height-rect.origin.y-rect.size.height;
+    if(web)rect=[web convertRect:rect toView:s.superview];
+    // libghostty 會丟棄大小與「layer 邊界×scale（取整）」不符的畫面；帶小數的 frame 會讓每一幀都被丟掉，
+    // 畫面停在舊內容（殘影）。對齊到裝置像素，兩邊算出的像素數才會一致。
+    rect=[s.superview backingAlignedRect:rect options:NSAlignAllEdgesNearest];
+    s.frame=rect;s.hidden=s.suspended||rect.size.width<1||rect.size.height<1;
+    if(s.surface){ghostty_surface_set_occlusion(s.surface,!s.hidden);if(!s.hidden)[s syncSize];}
+    applyCutout(s,web);
+}
+// 視窗縮放（含雙擊標題列的動畫）途中，網頁要等動畫結束才會送來新的 layout；
+// 這裡先依網頁大小的變化比例調整終端機，之後 layout 再校正成精確值。
+static void followWindowResize(NSWindow *window,NSString *label) {
+    NSView *web=findWebView(window.contentView);
+    if(!web)return;
+    for(HGSurface *s in surfaces.allValues){
+        if(![s.owner isEqualToString:label]||s.hidden||s.layoutWebSize.width<1||s.layoutWebSize.height<1)continue;
+        // 側邊欄、標題列這些固定尺寸不隨視窗縮放：終端機區域的左／上邊界固定、右／下邊距固定，
+        // 多出來的寬高全給區域；區域內的分割窗格才按比例分配。
+        NSRect a=s.layoutArea,r=s.layoutRect;
+        if(a.size.width<1||a.size.height<1)continue;
+        // 只跟隨縮小：縮放動畫期間網頁內容不會更新，放大時終端機若先長大就會超出畫面上看得到的介面。
+        double sx=MAX(1,a.size.width+MIN(0,web.bounds.size.width-s.layoutWebSize.width))/a.size.width;
+        double sy=MAX(1,a.size.height+MIN(0,web.bounds.size.height-s.layoutWebSize.height))/a.size.height;
+        placeSurface(s,web,NSMakeRect(a.origin.x+(r.origin.x-a.origin.x)*sx,a.origin.y+(r.origin.y-a.origin.y)*sy,r.size.width*sx,r.size.height*sy));
+    }
+}
+static NSMutableDictionary<NSString *,NSNumber *> *lastResizeAt; // label → 最近一次視窗縮放的時間
+static void observeWindowResize(NSWindow *window,NSString *label) {
+    static NSMutableSet<NSString *> *observed;
+    if(!observed)observed=[NSMutableSet set];
+    if(!lastResizeAt)lastResizeAt=[NSMutableDictionary dictionary];
+    if([observed containsObject:label])return;
+    [observed addObject:label];
+    __weak NSWindow *weak=window;
+    [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidResizeNotification object:window queue:nil usingBlock:^(NSNotification *note){
+        // AppKit 回呼不可讓 exception 漏出。
+        @try{NSWindow *w=weak;if(w){lastResizeAt[label]=@(CACurrentMediaTime());followWindowResize(w,label);}}@catch(NSException *e){}
+    }];
+}
 char *hg_command(void *windowPointer,const char *labelString,const char *resources,const char *request,hg_event_cb callback) {
     NSCAssert(NSThread.isMainThread,@"Native Ghostty must run on the AppKit thread");
     @autoreleasepool {
@@ -1036,19 +1081,25 @@ char *hg_command(void *windowPointer,const char *labelString,const char *resourc
             }
         }else if([op isEqualToString:@"layout"]){
             NSView *web=findWebView(window.contentView);NSArray *rects=req[@"rects"];
+            double ratio=web.bounds.size.width/[req[@"viewportWidth"] doubleValue];if(!isfinite(ratio)||ratio<=0)ratio=1;
+            observeWindowResize(window,label);
+            // 視窗縮放才剛結束時，網頁還在用舊寬度排版送來的 layout 是過時的（比例換算不成立）；
+            // 略過它，隨後網頁收到 resize 會送來正確的。期間終端機由 followWindowResize 跟隨。
+            BOOL stale=fabs(ratio-1)>0.002&&CACurrentMediaTime()-lastResizeAt[label].doubleValue<0.25;
+            if(!stale){
             // 先全部隱藏再逐一顯示：隱藏 first responder 會讓視窗失去焦點（AppKit 不會在重新顯示時還原），
             // 所以不是由 focus op 接著呼叫的 layout（尺寸變動、cwd 事件…）會把鍵盤焦點弄丟。記住它，布局後還原。
             HGSurface *keepFocus=[window.firstResponder isKindOfClass:[HGSurface class]]?(HGSurface *)window.firstResponder:nil;
             for(HGSurface *s in surfaces.allValues)if([s.owner isEqualToString:label]){s.hidden=YES;if(s.surface)ghostty_surface_set_occlusion(s.surface,false);}
-            double ratio=web.bounds.size.width/[req[@"viewportWidth"] doubleValue];if(!isfinite(ratio)||ratio<=0)ratio=1;
+            NSMutableArray<HGSurface *> *placed=[NSMutableArray array];NSRect area=NSZeroRect;
             for(NSDictionary *r in rects){HGSurface *s=surfaces[r[@"id"]];if(!s||![s.owner isEqualToString:label])continue;s.suspended=[req[@"suspended"] boolValue];
-                NSRect rect=NSMakeRect([r[@"x"] doubleValue]*ratio,[r[@"y"] doubleValue]*ratio,[r[@"width"] doubleValue]*ratio,[r[@"height"] doubleValue]*ratio);
-                if(!web.isFlipped)rect.origin.y=web.bounds.size.height-rect.origin.y-rect.size.height;
-                if(web)rect=[web convertRect:rect toView:s.superview];s.frame=rect;s.hidden=s.suspended||rect.size.width<1||rect.size.height<1;
-                if(s.surface){ghostty_surface_set_occlusion(s.surface,!s.hidden);if(!s.hidden)[s syncSize];}
-                applyCutout(s,web);
+                s.layoutRect=NSMakeRect([r[@"x"] doubleValue]*ratio,[r[@"y"] doubleValue]*ratio,[r[@"width"] doubleValue]*ratio,[r[@"height"] doubleValue]*ratio);
+                s.layoutWebSize=web.bounds.size;
+                area=placed.count?NSUnionRect(area,s.layoutRect):s.layoutRect;[placed addObject:s];
             }
+            for(HGSurface *s in placed){s.layoutArea=area;placeSurface(s,web,s.layoutRect);}
             if(keepFocus&&!keepFocus.hidden&&window.firstResponder!=keepFocus)[window makeFirstResponder:keepFocus];
+            }
         }else if([op isEqualToString:@"overlay-cutout"]){
             NSView *web=findWebView(window.contentView);
             if(!cutoutRequests)cutoutRequests=[NSMutableDictionary dictionary];
