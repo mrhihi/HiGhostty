@@ -1,22 +1,35 @@
 # 檔案預覽窗
 
-每個頁籤可以在終端機旁（右側或下方）開一個預覽窗，顯示指定檔案，檔案被改動時自動更新。用途：看 agent 正在寫的計畫、文件、圖片。使用者從檔案面板右鍵「在預覽窗開啟」、指令選單，或 agent 用 `highostty ctl preview open` 開啟。預覽窗開著時，在檔案面板點選／方向鍵移到其他檔案（含三欄的子欄）會直接換成該檔；資料夾、多選不影響，預覽窗沒開時不會自動打開，改名、新增、重整等程式化選取也不會換檔（只在 `files-panel.ts` 的使用者操作處呼叫 `followPreview`）。
+每個頁籤可以在終端機旁（右側或下方）開一個預覽窗，顯示指定檔案（預覽窗內有頁籤列：明確開啟的每個檔案各一個頁籤，可合併，見下節），檔案被改動時自動更新。用途：看 agent 正在寫的計畫、文件、圖片。使用者從檔案面板右鍵「在預覽窗開啟」、指令選單，或 agent 用 `highostty ctl preview open` 開啟。預覽窗開著時，在檔案面板點選／方向鍵移到其他檔案（含三欄的子欄）會直接換掉**目前頁籤第一格**的檔案（`followPreviewFile`，不新增頁籤）；資料夾、多選不影響，預覽窗沒開時不會自動打開，改名、新增、重整等程式化選取也不會換檔（只在 `files-panel.ts` 的使用者操作處呼叫 `followPreview`）。
 
 ## 架構
 
 - 純狀態與幾何：`src/preview.ts`（`splitBox`、`ratioFromPointer`、`previewKind`、`scrollAfterUpdate`、`linkTarget`），測試在 `tests/preview.test.mjs`。DOM 與輪詢：`src/preview-panel.ts`。讀檔：`src-tauri/src/preview.rs`。
 - **不用 `overlay-cutout`，也不放進分割樹。** 終端機 NSView 只會蓋在 `layout` op 送出的矩形上。`updateLayout()` 先用 `splitBox` 把 `#terminals` 切成兩塊，終端機的 `rectangles()`（含 zoom）只用終端機那塊，預覽窗是 `#terminals` 內剩下那塊的 HTML。所以不會被原生 view 蓋住，也不與 snippet／attention 的 cutout 衝突。
-- 分割樹（`model.ts`）的 leaf 在 `main.ts` 到處被當成終端機 id，預覽窗不是終端機，所以刻意不放進去；代價是每個頁籤只能開一個預覽。
+- 分割樹（`model.ts`）的 leaf 在 `main.ts` 到處被當成終端機 id，預覽窗不是終端機，所以刻意不放進去；每個終端機頁籤一個預覽窗，窗內用 `PreviewState.tabs`（`TabsState`，`src/preview-tabs.ts`）管理自己的頁籤。
 - 視窗太小（寬 < 200px 或高 < 120px）時預覽自動隱藏，終端機取回整塊。
 - `#terminals` 內的 `.surface-outline` 每次 layout 重建，只能移除 `.surface-outline`，不可對 `#terminals` 呼叫 `replaceChildren`，否則會連預覽窗一起清掉。
 
+## 預覽窗內的頁籤與合併（頁籤旁與獨立視窗共用）
+
+- 頁籤列、分格、拖曳合併、右鍵選單的 DOM 只在 `src/preview-tabs-view.ts`（`createTabsView`），兩個宿主（`preview-panel.ts`、`preview-window.ts`）各自擁有 `TabsState`，只提供自己的按鈕與 `paneAction`／`barAction`。`state()` 回 `undefined` 代表目前不顯示（頁籤旁預覽被隱藏或切到別的終端機頁籤）：所有 view 會 `dispose`，不是關閉。
+- 規則與幾何只放 `src/preview-tabs.ts`（測試 `tests/preview-tabs.test.mjs`）：一個頁籤（group）有 1–3 個分格（pane），`MAX_PANES = 3`；id 含每個 `TabsState` 的 `uid`，多個終端機頁籤的狀態共用同一份 DOM 快取也不會撞 id。同一個檔案再開只切到該頁籤。
+- 合併顯示（類似 Chrome 分割檢視）：把頁籤拖到另一個頁籤中段即合併（pointer events，不用 HTML5 DnD）、拖到頁籤左右各 30% 是重新排序（出現藍色插入線），中間 40% 才是合併（出現外框）；頁籤右鍵也有「頁籤往左移／往右移」（`moveGroup`）；頁籤右鍵（原生 `popupMenu`）可「與…合併顯示」（超過 3 格的項目停用）、拆分、切換排列。合併頁籤各自選**三欄式（左右並排）或三列式（上下堆疊）**；分隔線可拖曳（`sizesFromDrag`，每格至少 12%）。
+- 合併後可**交換順序**：每個分格標題列的 ←／→（三列式是 ↑／↓）把該格與鄰格交換（`movePane`，大小跟著格子走），第一格／最後一格的對應按鈕停用。分格標題列在多格時還有「移出成獨立頁籤」「關閉此格」。
+- 頁籤旁預覽的「明確開啟」（檔案面板右鍵、指令選單、`ctl preview open`、收藏預設預覽、獨立視窗放回）都是新增頁籤（`addPreviewFile`），檔案面板的跟隨（`followPreviewFile`）才是換掉現有檔案。`ctl preview status` 回第一格的檔案。
+- 重新整理：頁籤列的重新整理鈕（或頁籤右鍵「重新整理目前頁籤」）對該頁籤的每一格呼叫 `view.refresh()`：清掉 stamp 後立刻 `load`，不管 mtime／size 有沒有變（HTML 頁會重載 iframe、圖表重畫）；保留捲動位置，檔案不存在時照常顯示等待訊息。（停止 500ms 輪詢、保留內容與捲動位置），切回時 `resume()` 立即 poll 一次；分格關閉時 `dispose()` 移除該 view 的 `storage`／語系監聽。`createPreviewView` 會被多次呼叫，不可再用固定 id（`#preview` 只由頁籤旁的 `preview-panel.ts` 加在 `.pv-root` 上）。
+- 頁籤旁預覽的最後一個頁籤關閉＝關閉預覽（`onEmpty` → `closePreview`）。
+
 ## 獨立視窗（彈出）
 
-- 預覽窗標題列的「彈出成獨立視窗」鈕，或 `ctl preview window <path>`（完整模式），會把檔案開在獨立視窗並關掉頁籤旁的預覽。視窗內容與頁籤旁完全相同（共用 `src/preview-view.ts`），一樣自動更新、點 `.md` 連結換檔。
-- 入口是獨立頁面 `preview.html`＋`src/preview-window.ts`（`vite.config.ts` 為兩頁建置），不載入 `main.ts`：沒有終端機、沒有原生層。路徑由 `open_preview_window` 注入的 `window.__HIGHOSTTY_PREVIEW_PATH__` 傳入。
-- 視窗 label 是 `preview-<路徑 hash>`，同一個檔案只會有一個視窗，再要求一次就是把它帶到前景。
+- 頁籤旁預覽的頁籤列有「彈出」鈕：**整個預覽（所有頁籤，合併群組與排列方向原樣）**搬到唯一一個獨立預覽視窗（`open_preview_window` 的 `groups`，視窗端 `importGroups`，已開的檔案不重複），頁籤旁預覽關閉。`ctl preview window <path>`（完整模式）則只把一個檔案加成視窗的新頁籤。視窗內容與頁籤旁完全相同（共用 `src/preview-view.ts`），一樣自動更新、點 `.md` 連結換檔。
+- 入口是獨立頁面 `preview.html`＋`src/preview-window.ts`（`vite.config.ts` 為多頁建置），不載入 `main.ts`：沒有終端機、沒有原生層。
+- 視窗 label 固定為 `preview-viewer`。要開的檔案由 `open_preview_window` 推進 Rust 的 `PENDING` 佇列，視窗已存在就送 `preview-open` 事件；頁面啟動時先 `listen` 再呼叫 `preview_take_pending` 取出，之後每收到事件再取一次（不用 initialization_script，也不只靠事件，頁面尚未載好時才不會漏檔）。
+- **彈出與不彈出是同一套**：獨立視窗存在期間（`preview_window_open`），任何「開啟預覽」（檔案面板右鍵／⌘+click、指令選單、`ctl preview open`、收藏預設預覽）都直接開成視窗的新頁籤（`main.ts` 的 `showPreview`），不再開在頁籤旁；視窗關閉或全部放回後才又開在頁籤旁。放回（`preview-dock` 事件）一律開在頁籤旁（`showPreviewInline`），不走視窗。檔案面板的跟隨（follow）只作用於頁籤旁預覽，不影響視窗。
+- 視窗頁籤列的「全部放回原頁籤」把每個頁籤（群組）送回它來源的終端機頁籤並清空頁籤，最後視窗自動關閉。合併群組與排列方向一併放回（`preview_dock` 的 `groups`，來源頁籤的預覽窗以 `importPreviewGroups` 匯入，群組跟著它第一格的來源頁籤）。單格「放回頁籤」則只放該檔案。
+- 「放回頁籤」只放回該分格的檔案（`preview_dock` 不再關視窗），該分格從頁籤移除；沒有任何頁籤時前端自行 `destroy()` 視窗。
 - **預覽視窗不是終端機視窗**，Rust 列舉視窗時一律要排除（`preview::is_preview_window`）：`control.rs` 的 `expected` 視窗數（否則每個 ctl 指令都等不到「全部回覆」而拖到逾時）、`list_windows`（⌘ 切換視窗）、`ExitRequested`／`Opened` 挑選接收事件的視窗（否則 quit 事件送給不會處理的預覽視窗，App 關不掉）。最後一個終端機視窗關閉時，預覽視窗跟著關閉。
-- `ctl preview window` 標 `write: true`：它會多開一個視窗，超出「唯讀」的定義；`--focus` 不提供，視窗不搶焦點。
+- `ctl preview window` 標 `write: true`：它會多開頁籤（必要時多開一個視窗），超出「唯讀」的定義；`--focus` 不提供，視窗不搶焦點。
 
 ## 自動更新
 
@@ -60,7 +73,7 @@
 7. Markdown 含 `<script>`、`<img onerror=…>`、`[x](javascript:alert(1))`、`[x](file:///etc/hosts)` 不會執行或開啟；`https://` 連結用瀏覽器開；`[x](other.md)` 在預覽窗內換檔；含 `![](../images/a.png)` 相對圖片的 .md（含從連結換檔進入、與直接開啟）都顯示圖片。
 8. 預覽窗開著時按 ⌘⇧P（snippet palette）與待處理 drop：兩者正常顯示，預覽窗不受影響。
 9. 按預覽窗右上角的關閉，焦點回到終端機，可直接輸入。
-10. 按「彈出成獨立視窗」：新視窗顯示同一份內容，頁籤旁的預覽消失；改檔案兩邊（再彈出一次同一檔）都只有一個視窗、內容會更新。
+10. 按「彈出成獨立視窗」：新視窗顯示同一份內容，頁籤旁的預覽消失；再彈出一次同一檔只切到既有頁籤，內容會更新。
 11. 預覽視窗開著時：`ctl whoami`、`ctl tab list` 立刻回應（不拖到逾時）；⌘Q 能正常結束；⌘` 切換視窗不會停在預覽視窗上。
 12. 關掉所有終端機視窗，預覽視窗跟著關閉。唯讀模式下 `ctl preview window x.md` 回 `forbidden`，完整模式下開出視窗且不搶焦點。
 13. 開 .md：背景是白底；A+／A− 改變文字大小，重開 App 後仍保留；彈出的獨立視窗同步變化；開 .txt／.ts 時 A+／A− 也能調整文字大小（欄寬輸入框與 PDF 鈕仍只在 Markdown 顯示），圖片／PDF 沒有。預設位置在終端機下方；獨立視窗按「放回頁籤」回到原頁籤的下方預覽，視窗關閉（原視窗已關時改回主視窗）。
@@ -76,3 +89,14 @@
 20. 收藏編輯頁設定「預設預覽」為工作目錄內的一個 .md（欄位顯示相對路徑；選取器預設開在工作目錄；選工作目錄外的檔案會報錯）→ 儲存；從收藏「開啟」或「在新頁籤開啟」，終端機下方自動出現該檔預覽；群組展開也會對每個新頁籤開預覽；切到已開啟的頁籤不會重開。改成「清除」後存檔，再開新頁籤就不會開預覽。把收藏指向的檔案改名或刪除後開頁籤，不出現預覽也不報錯。編輯中途切到「新增群組」再回來，選取的預覽路徑保留。
 21. Markdown 含 flowchart、sequence、gantt 的 mermaid 區塊：顯示成圖；改檔案自動重畫；☀／☾ 切換圖跟著換色；語法錯誤的區塊顯示原碼加提示、其他內容正常；label 含 `<script>`／`<img onerror>` 不執行；匯出 PDF 的圖是白底；斷網可用且 Web Inspector 無 CSP 違規。
 22. 開含 `<script>`、外部 css／相對路徑圖片的 .html：以頁面呈現且 JS 有執行（例如按鈕改 DOM）；頁面內 `window.parent.__TAURI__`、`fetch("hgpage://...")` 取不到東西；改檔案 1 秒內重載；彈出獨立視窗也正常。
+23. 獨立視窗多頁籤：從兩個不同頁籤各彈出一個檔案，再用 `ctl preview window c.md`：只有一個預覽視窗、三個頁籤（ctl 開的不搶焦點）；再彈出已開的檔案只切換頁籤。
+24. 拖 b 的頁籤到 a 的中段：合併成兩欄；右鍵 a 合併 c：三欄；第四個頁籤的合併項目停用，拖上去顯示「最多 3 個」提示。拖到頁籤邊緣可重新排序。
+25. 合併頁籤按列尾的切換鈕或右鍵選單：三欄（左右）與三列（上下）互換、大小重設平均；拖分隔線調整比例（有最小值）；視窗縮放時各格跟著縮放。
+26. 每格各自自動更新（改檔 1 秒內）；切到別的頁籤再回來捲動位置保留（背景頁籤不輪詢）；A±／主題／PDF 匯出／drawio／html 在分格中正常。
+27. 分格的「移出成獨立頁籤」、「關閉此格」、右鍵「拆分成獨立頁籤」、關閉頁籤；最後一個頁籤關閉時視窗關閉。分格的「放回頁籤」只放回那一個檔案到原頁籤下方，其他格保留；全部放回後視窗關閉。
+28. 預覽視窗開著時：`ctl whoami`、`ctl tab list` 立刻回應；⌘Q 能結束；⌘` 不停在預覽視窗；關掉所有終端機視窗，預覽視窗跟著關閉。
+29. 頁籤旁預覽也有頁籤：檔案面板右鍵兩個檔案「在預覽窗開啟」→ 預覽窗內兩個頁籤；在檔案面板點方向鍵只換掉目前頁籤第一格的檔案、不新增頁籤；`ctl preview open` 新增頁籤；關閉最後一個頁籤等於關閉預覽；切到別的終端機頁籤再回來，頁籤都在；拖曳頁籤合併、三欄／三列切換在頁籤旁預覽同樣可用。
+30. 合併 2–3 個頁籤後，按分格標題列的 ←／→（三列式 ↑／↓）交換順序：該格連同大小一起移動，第一格的往前、最後一格的往後按鈕停用；頁籤旁預覽與獨立視窗各測一次，切換三欄／三列後箭頭方向跟著變。
+31. 頁籤旁預覽有兩個以上頁籤（含一組合併）時按頁籤列「彈出」：全部頁籤、合併群組與排列方向都搬到獨立視窗，頁籤旁預覽消失。視窗開著時，再從檔案面板／指令選單／`ctl preview open`（回覆 `window: true`）開檔案：一律成為視窗的新頁籤，頁籤旁不出現預覽；按「全部放回原頁籤」後視窗關閉（合併的群組放回後仍是合併狀態），檔案回到各自頁籤旁的預覽，之後新開的檔案又開在頁籤旁。
+32. 調整頁籤順序：拖頁籤到另一個頁籤的左／右側，出現插入線，放開後順序改變且不合併；拖到中間才合併；頁籤右鍵「往左移／往右移」，第一個的往左、最後一個的往右停用。頁籤旁預覽與獨立視窗各測一次。
+33. 重新整理：改檔後按頁籤列的重新整理鈕，目前頁籤（合併時每一格）立刻更新；用 `touch -r` 還原 mtime 的檔案、.html 頁面（iframe 重載）、.drawio 也都會重畫；頁籤右鍵「重新整理目前頁籤」同效果；背景頁籤不受影響。頁籤旁預覽與獨立視窗各測一次。

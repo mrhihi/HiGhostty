@@ -45,6 +45,23 @@ main { display: flex; height: calc(100dvh - 68px); min-width: 0; }
 .rail-btn:hover, .icon-btn:hover { background: var(--hover); color: var(--text); }
 .rail-btn.active { background: var(--selected); color: var(--accent); }
 .rail-spacer { flex: 1; }
+#tab-strip { flex: 0 0 40px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; overflow-y: auto; scrollbar-width: none; background: var(--surface-0); border-left: 1px solid var(--border, rgba(127, 127, 127, 0.2)); }
+#tab-strip::-webkit-scrollbar { display: none; }
+#tab-strip[hidden] { display: none; }
+.strip-btn { position: relative; flex: 0 0 auto; width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--radius-row); color: var(--text-muted); font-size: 14px; font-weight: 600; }
+.strip-btn:hover { background: var(--hover); color: var(--text); }
+.strip-btn.active { background: var(--selected); color: var(--accent); }
+.strip-btn.exited { opacity: .45; }
+.strip-btn[style*="--group-color"] { box-shadow: inset 2px 0 0 var(--group-color); }
+.strip-btn .strip-key { position: absolute; right: 2px; bottom: 0; font-size: 10px; line-height: 12px; }
+.strip-btn .strip-alert { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--attention); }
+.strip-btn.has-alert { background: rgb(255 198 107 / .16); box-shadow: inset 2px 0 0 var(--attention); color: var(--attention); }
+.strip-btn.has-alert.active { background: var(--selected); }
+.strip-btn.has-alert svg, .strip-btn.has-alert { animation: alert-pulse 1.4s ease-in-out infinite; }
+.strip-btn.has-alert[data-alert="maybe"] { background: rgb(255 198 107 / .07); box-shadow: inset 2px 0 0 rgb(255 198 107 / .45); animation: none; }
+.strip-btn.has-alert[data-alert="maybe"] svg { animation: none; }
+.strip-btn.has-alert[data-alert="maybe"] .strip-alert { background: transparent; border: 1px solid var(--attention); width: 6px; height: 6px; }
+@media (prefers-reduced-motion: reduce) { .strip-btn.has-alert, .strip-btn.has-alert svg { animation: none; } }
 #drawer-primary, #drawer-detail { flex: 0 0 auto; height: 100%; overflow: hidden; transition: width 160ms cubic-bezier(.2,.8,.2,1); }
 #drawer-primary { background: var(--surface-1); }
 #drawer-detail { background: var(--surface-2); }
@@ -164,6 +181,10 @@ body:not(.term-pointer) .row:hover { background: var(--hover); }
 #workspace { flex: 1; position: relative; min-width: 0; display: flex; overflow: hidden; }
 #terminals { flex: 1; min-width: 0; min-height: 0; position: relative; background: var(--terminal-background); color: var(--terminal-foreground); }
 .surface-outline { position: absolute; border: 1px solid rgb(255 255 255 / .09); pointer-events: none; }
+.split-divider { position: absolute; z-index: 1; }
+.split-divider[data-axis="row"] { cursor: col-resize; }
+.split-divider[data-axis="column"] { cursor: row-resize; }
+.split-divider:hover, .split-divider.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
 .surface-outline.focused { border-color: var(--accent); }
 .surface-outline.tmux { border-color: rgb(138 168 255 / .4); }
 .surface-outline.tmux.focused { border-color: var(--tmux); }
@@ -462,15 +483,15 @@ pre { white-space: pre-wrap; max-height: 240px; overflow: auto; }
 .preview-markdown hr { border: 0; border-top: 1px solid var(--md-line); }
 .preview-markdown input[type="checkbox"] { min-height: auto; accent-color: var(--md-link); }
 body.standalone { overflow: hidden; background: var(--surface-1); }
-body.standalone #app, body.standalone #preview { position: fixed; inset: 0; }
+body.standalone #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
 .preview-actions { display: inline-flex; flex: 0 0 auto; }
 .preview-font { display: none; flex: 0 0 auto; }
-#preview.is-markdown .preview-font:not(.preview-measure), #preview.is-text .preview-font:not(.preview-measure) { display: inline-flex; }
-#preview.is-markdown .preview-measure { display: inline-flex; }
+.preview-view.is-markdown .preview-font:not(.preview-measure), .preview-view.is-text .preview-font:not(.preview-measure) { display: inline-flex; }
+.preview-view.is-markdown .preview-measure { display: inline-flex; }
 .preview-theme { display: none; flex: 0 0 auto; }
-#preview.is-markdown .preview-theme, #preview.is-text .preview-theme { display: inline-flex; }
+.preview-view.is-markdown .preview-theme, .preview-view.is-text .preview-theme { display: inline-flex; }
 .preview-export { display: none; width: auto; min-width: 28px; padding: 0 6px; font-size: 13px; }
-#preview.is-markdown .preview-export { display: inline-flex; }
+.preview-view.is-markdown .preview-export { display: inline-flex; }
 .preview-font .icon-btn { width: auto; min-width: 28px; padding: 0 4px; font-size: 14px; }
 .preview-measure { align-items: center; gap: 2px; }
 .preview-width { width: 3em; height: 22px; padding: 0 4px; border: 1px solid var(--surface-0); border-radius: var(--radius-row); background: var(--surface-1); color: var(--text); font-size: 14px; text-align: right; }
@@ -605,3 +626,34 @@ body.files-window #files { position: static; transform: none; width: auto; heigh
 .preview-markdown .mermaid-diagram { margin: 1em 0; text-align: center; overflow: auto; }
 /* The global icon rule (svg { 16px; fill: none; stroke }) must not reach the diagram. */
 .preview-markdown .mermaid-diagram svg { width: 100%; height: auto; max-width: 100%; fill: revert; stroke: revert; stroke-width: revert; stroke-linecap: revert; stroke-linejoin: revert; flex-shrink: revert; }
+
+/* Standalone preview window: tab strip on top, one tab's panes (1–3, columns or rows) below. */
+.preview-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface-1); color: var(--text); }
+.preview-view[hidden] { display: none; }
+.pv-tabbar { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; height: 36px; padding: 0 6px; background: var(--surface-0); -webkit-user-select: none; user-select: none; }
+.pv-tabs { flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+.pv-tab { flex: 0 1 200px; min-width: 90px; display: flex; align-items: center; gap: 4px; height: 28px; padding: 0 4px 0 10px; border-radius: var(--radius-row); color: var(--text-muted); background: var(--surface-2); box-shadow: inset 0 0 0 1px rgb(255 255 255 / .06); font-size: 13px; cursor: default; position: relative; }
+.pv-tab:hover { background: var(--pressed); color: var(--text); }
+.pv-tab.active { background: #34405a; color: #fff; font-weight: 600; box-shadow: inset 0 0 0 1px rgb(119 223 192 / .35), inset 0 -2px var(--accent); }
+.pv-tab.drop-merge { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pv-tab.drop-before::before, .pv-tab.drop-after::after { content: ""; position: absolute; top: 3px; bottom: 3px; width: 2px; background: var(--accent); }
+.pv-tab.drop-before::before { left: -2px; }
+.pv-tab.drop-after::after { right: -2px; }
+.pv-tab.dragging { opacity: .5; }
+.pv-tab-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-tab-close { flex: 0 0 auto; width: 20px; height: 20px; min-width: 0; padding: 0; }
+.pv-layout { flex: 0 0 auto; }
+.pv-layout[hidden] { display: none; }
+.preview-panes { position: relative; flex: 1; min-height: 0; }
+.pv-group { position: absolute; inset: 0; }
+.pv-group[hidden] { display: none; }
+.pv-group .preview-view { position: absolute; }
+.pv-divider { position: absolute; z-index: 1; background: var(--surface-0); }
+.pv-divider[data-layout="columns"] { cursor: col-resize; }
+.pv-divider[data-layout="rows"] { cursor: row-resize; }
+.pv-divider:hover, .pv-divider.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
+.preview-view .pv-multi { display: none; }
+.pv-group.multi .preview-view .pv-multi { display: inline-flex; }
+.pv-root { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface-1); color: var(--text); }
+body.standalone .pv-root { position: fixed; inset: 0; }
+.pv-tabbar .icon-btn:disabled, .preview-actions .icon-btn:disabled { opacity: .3; pointer-events: none; }

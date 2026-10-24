@@ -476,7 +476,7 @@ let detailStack: Detail[] = [];           // 第二層堆疊，空 = 第二層�
 - `hideDrawer()` → `closeAll()` + `scheduleLayout()`。
 - `toggle-sidebar` 事件與 rail 再點 → `panel ? closeAll() : openPanel(lastPanel)`。
 - `snapshot().collapsedSidebar` 保持欄位名，意義 = `panel === null`；還原時 `collapsedSidebar` false → 打開 `lastPanel`（`localStorage("drawer-panel")`，預設 workspace）。
-- Esc 監聽（`main.ts:1424`）：只在 WebView 有焦點且無 dialog 時：有第二層 → `popDetail`；否則有第一層 → `closeAll` 並交還終端機焦點。
+- Esc 監聽（`main.ts:1424`）：只在 WebView 有焦點且無 dialog 時：有第二層 → `popDetail`；第一層不再由 Esc 收合（只用 ⌘⇧B／rail 鈕）。
 - `prompt-title` 事件 → `pushDetail({kind:"edit-tab", tabId: active.id, focus:"name"})`（並確保 panel 為 workspace）。
 - `showActionMenu`、`showTabMenu`、`showFavoriteMenu`、`editGroup`、`createGroup`、`editFavorite`、`edit`、`renameTab`、`editTabCommand` 改為推入對應編輯頁。
 - `newSurface` 結尾的 `hideDrawer()`：只在 `panel === "directories"` 時關閉 drawer；從工作區面板按 ＋ 新增時 drawer 保持開啟。

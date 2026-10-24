@@ -77,6 +77,7 @@
 - 幾何與狀態邏輯只放 `src/preview.ts` 並補 `tests/preview.test.mjs`。自動更新是對路徑輪詢 `preview_stat`，不要改成對檔案 watch（rename 存檔會失效）。
 - Markdown 一定要經 `DOMPurify.sanitize`；連結只處理 http(s) 與 `.md`，其餘忽略。
 - `tab.preview` 只存在記憶體，不寫進 session／收藏；`ctl preview *` 維持 `write: false`，並保持不搶焦點。
+- 預覽窗（頁籤旁與獨立視窗）都有頁籤列，可合併最多 3 格（三欄／三列）並交換順序；獨立視窗是單一視窗（label `preview-viewer`）。頁籤與分格規則只放 `src/preview-tabs.ts` 並補 `tests/preview-tabs.test.mjs`，DOM 只放 `src/preview-tabs-view.ts`（兩個宿主共用）。`PreviewState` 是 `{ side, ratio, tabs }`，檔案路徑用 `previewPath()` 取。彈出是整個預覽搬進視窗，視窗存在時所有「開啟預覽」都走 `showPreview` 進視窗頁籤；放回用 `showPreviewInline`，不可再繞回視窗。`createPreviewView` 會有多個實例，不可依賴固定 id；關閉分格要呼叫 `dispose()`。
 - 改完照 `docs/preview.md` 的驗收清單實機操作。
 
 ## 多國語系（`src/i18n.ts`、`src/i18n-runtime.ts`、`src/locales/`、`src-tauri/src/locales.rs`）
@@ -123,3 +124,11 @@
 - 置中浮層靠 `overlay-cutout` 顯示，與其他浮層共用單一遮罩（互斥規則同上）；面板或工作區尺寸變化時要重送矩形。
 - 儲存格式與樂觀鎖照 `src-tauri/src/snippets.rs`；`todos.json` 只存在 `data_dir`。
 - 改完照 `docs/todo-drop.md` 的驗收清單實機操作。
+
+## 分割窗格調整大小（`src/model.ts` 的 `dividers`／`ratioFromDrag`、`src/main.ts` 的 `syncDividers`）
+
+修改分割分隔線或 `updateLayout()` 的分隔線處理前，先讀 `docs/splits.md`。重點：
+
+- 分隔線是 gap 內的 HTML，以 index 重用元素（拖曳中不可重建）；幾何只放 `model.ts` 並補 `tests/model.test.mjs`。
+- 改完照 `docs/splits.md` 的驗收清單實機操作。
+

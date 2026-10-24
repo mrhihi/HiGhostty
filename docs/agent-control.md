@@ -34,7 +34,7 @@
 | 指令 | 範圍 | 說明 |
 |---|---|---|
 | `alert raise --title T [--body B] [--option O…]` | caller | 對使用者發出待處理提示：出現在待處理面板（問題＝body，選項＝各個 `--option`）與頁籤列的標籤，頁籤變色、鈴鐺加一。來源 `agent` 的優先度高於偵測到的提示與響鈴（`signal` < `prompt` < `agent`），所以不會被畫面偵測覆蓋，也不會因畫面改變而消失；使用者切到該頁籤、聚焦視窗或按「忽略」才清除。使用者正在看這個終端機時回 `raised:false`。標題單行 80 字、說明 2000 字、選項最多 12 個 |
-| `preview open <path> [--side right\|bottom]`、`preview close`、`preview status` | caller | 在呼叫者所在頁籤開／關／查詢預覽窗（見 `docs/preview.md`）。只改畫面配置、狀態只存在記憶體，不搶焦點，所以屬唯讀；相對路徑以呼叫者的目錄為準，目錄與二進位以外的檔案都可開 |
+| `preview open <path> [--side right\|bottom]`、`preview close`、`preview status` | caller | 在呼叫者所在頁籤開／關／查詢預覽窗（見 `docs/preview.md`）。只改畫面配置、狀態只存在記憶體，不搶焦點，所以屬唯讀；相對路徑以呼叫者的目錄為準，目錄與二進位以外的檔案都可開；獨立預覽視窗開著時改開成視窗的新頁籤（回覆 `window: true`） |
 | `alert clear` | caller | 清除自己發出的提示（問題解決後用） |
 | `tab status <text>` \| `--clear` | caller | 在頁籤列顯示一行短狀態（最多 40 字），只存在記憶體，不進工作階段；用於「跑測試 3/5」這類進度 |
 
@@ -48,7 +48,7 @@
 
 | `files reveal <path…>` | caller | 在 Finder 顯示（Finder 會被帶到前景）。路徑可用 `~`、相對路徑（以呼叫者的目錄為準），每個都必須存在，一次最多 50 個；走現有的 `files-reveal` op |
 | `files quicklook <path…>` | caller | 用 Quick Look 預覽給使用者看，走現有的 `files-quicklook` op；會取得呼叫者所在視窗的鍵盤焦點，使用者按空白鍵或 Esc 關閉。終端機顯示不了圖片、PDF 時特別有用 |
-| `preview window <path>` | caller | 把檔案開在獨立的預覽視窗（自動更新、同一個檔案只開一個、不搶焦點）；會多出一個視窗，所以需要完整模式。詳見 `docs/preview.md` |
+| `preview window <path>` | caller | 把檔案加到獨立預覽視窗的新頁籤（所有彈出的檔案共用一個視窗，可合併最多 3 格；自動更新、同一個檔案只開一個頁籤、不搶焦點）；可能多出視窗，所以需要完整模式。詳見 `docs/preview.md` |
 | `snippet add --name N --text T [--scope global\|cwd\|絕對目錄] [--keyword K…]` | caller | 新增指令片段到 ⌘⇧P 面板。預設 scope 是呼叫者目前的目錄；同名、同 scope、同內容已存在時不重複新增（`created:false`）。**不提供 `--run`**：agent 新增的片段不會自動執行，由使用者在面板選取、確認後才送進終端機 |
 
 | `agent start <kind> [--cwd 路徑] [--focus] [--timeout ms] [-- 參數…]` | caller | 在新頁籤（預設背景）啟動 agent（claude、codex、gemini、opencode、copilot、aider，名稱即執行檔），參數各自加引號。等到偵測到 agent、畫面兩次輪詢不變且為 idle 或 blocked 才回傳 `{surface, tab, window, agent, state, ready}`（`ready` 為 state 是否 idle；卡在「信任此資料夾？」這類詢問時 `state:"blocked"`、`ready:false`）。逾時（預設 30 秒）回 `timeout`，但頁籤已開啟，訊息含 surface id |

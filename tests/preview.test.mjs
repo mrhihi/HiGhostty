@@ -14,6 +14,10 @@ import {
   relativeToDir,
   resolveInDir,
   openPreview,
+  addPreviewFile,
+  importPreviewGroups,
+  followPreviewFile,
+  previewPath,
   previewKind,
   ratioFromPointer,
   sameStamp,
@@ -89,12 +93,17 @@ test("splitBox drops the preview when the window is too small", () => {
 });
 
 test("a new preview opens below the terminals by default", () => {
-  assert.deepEqual(openPreview("/a.md"), { path: "/a.md", side: "bottom", ratio: 0.45 });
+  const opened = openPreview("/a.md");
+  assert.equal(previewPath(opened), "/a.md");
+  assert.equal(opened.side, "bottom");
+  assert.equal(opened.ratio, 0.45);
 });
 
 test("togglePreviewSide flips and keeps the rest", () => {
   const next = togglePreviewSide(openPreview("/a.md", "right", 0.3));
-  assert.deepEqual(next, { path: "/a.md", side: "bottom", ratio: 0.3 });
+  assert.equal(next.side, "bottom");
+  assert.equal(next.ratio, 0.3);
+  assert.equal(previewPath(next), "/a.md");
   assert.equal(togglePreviewSide(next).side, "right");
 });
 
@@ -192,4 +201,30 @@ test("localImagePath resolves relative images and skips other schemes", () => {
   assert.equal(localImagePath("https://x.dev/a.png", "/p/x.md"), undefined);
   assert.equal(localImagePath("data:image/png;base64,AA", "/p/x.md"), undefined);
   assert.equal(localImagePath("note.md", "/p/x.md"), undefined);
+});
+
+test("addPreviewFile adds a tab, followPreviewFile replaces the active file", () => {
+  const base = openPreview("/a.md", "right");
+  const two = addPreviewFile(base, "/b.md");
+  assert.equal(two.tabs.groups.length, 2);
+  assert.equal(previewPath(two), "/b.md");
+  assert.equal(addPreviewFile(two, "/a.md").tabs.groups.length, 2); // same file: just activates
+  assert.equal(previewPath(addPreviewFile(two, "/a.md")), "/a.md");
+  assert.equal(addPreviewFile(base, "/b.md", "bottom").side, "bottom");
+  const followed = followPreviewFile(two, "/c.md");
+  assert.equal(followed.tabs.groups.length, 2);
+  assert.equal(previewPath(followed), "/c.md");
+  assert.equal(followPreviewFile(two, "/b.md"), two);
+});
+
+test("importPreviewGroups creates the pane or joins it, keeping merged groups", () => {
+  const seeds = [{ paths: ["/a.md", "/b.md"], layout: "rows" }, { paths: ["/c.md"] }];
+  const fresh = importPreviewGroups(undefined, seeds, 1);
+  assert.equal(fresh.side, "bottom");
+  assert.equal(fresh.tabs.groups.length, 2);
+  assert.equal(fresh.tabs.groups[0].layout, "rows");
+  assert.equal(previewPath(fresh), "/c.md");
+  const joined = importPreviewGroups(openPreview("/z.md", "right"), seeds);
+  assert.equal(joined.side, "right");
+  assert.equal(joined.tabs.groups.length, 3);
 });

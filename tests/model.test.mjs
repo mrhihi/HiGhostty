@@ -6,6 +6,8 @@ import {
   leaves,
   remove,
   rectangles,
+  dividers,
+  ratioFromDrag,
   neighbor,
   resizeSplit,
   equalize,
@@ -69,4 +71,21 @@ test("sub-tabs follow their root and promotion keeps a single level", () => {
   assert.equal(head.parentId, undefined);
   assert.equal(tabs.find((t) => t.id === "a2").parentId, "a1");
   assert.equal(promoteChildren(tabs, "b"), undefined);
+});
+
+test("dividers sit in the gaps between panes and dragging maps pointer to ratio", () => {
+  const tree = split(split({ kind: "leaf", id: "a" }, "a", "b", 0), "b", "c", 1);
+  const rects = rectangles(tree, 10, 20, 1000, 700);
+  const ds = dividers(tree, 10, 20, 1000, 700);
+  assert.equal(ds.length, 2);
+  const a = rects.find((r) => r.id === "a");
+  assert.equal(ds[0].axis, "row");
+  assert.equal(ds[0].x, a.x + a.width);
+  const b = rects.find((r) => r.id === "b");
+  assert.equal(ds[1].axis, "column");
+  assert.equal(ds[1].y, b.y + b.height);
+  assert.equal(ds[1].x, b.x);
+  assert.equal(ratioFromDrag(ds[0], ds[0].start + 3 + ds[0].span * 0.25), 0.25);
+  assert.equal(ratioFromDrag(ds[0], -500), 0.1);
+  assert.equal(ratioFromDrag(ds[0], 5000), 0.9);
 });

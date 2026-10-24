@@ -43,7 +43,7 @@ export const baseName = (path: string) => path.split("/").filter(Boolean).at(-1)
 
 export function createPreviewView(host: PreviewViewHost) {
   const root = document.createElement("section");
-  root.id = "preview";
+  root.className = "preview-view";
   root.setAttribute("data-i18n-aria-label", "preview.label");
   root.innerHTML = `<header class="preview-head"><strong class="preview-name"></strong><span class="preview-time"></span><span class="preview-font"><button type="button" class="icon-btn" data-font="-1" data-i18n-title="preview.fontSmaller" data-i18n-aria-label="preview.fontSmaller">A−</button><button type="button" class="icon-btn" data-font="1" data-i18n-title="preview.fontLarger" data-i18n-aria-label="preview.fontLarger">A+</button></span><button type="button" class="icon-btn preview-theme" data-i18n-aria-label="preview.toggleBackground"></button><span class="preview-font preview-measure"><input type="text" inputmode="numeric" class="preview-width" value="100" size="3" data-i18n-title="preview.widthTitle" data-i18n-aria-label="preview.widthLabel"><span class="preview-pct">%</span><select class="preview-width-menu" data-i18n-title="preview.widthMenu" data-i18n-aria-label="preview.widthMenu">${WIDTH_PRESETS.map((n) => `<option value="${n}">${n}%</option>`).join("")}</select></span><button type="button" class="icon-btn preview-export" data-i18n-title="preview.exportPdfTitle" data-i18n-aria-label="preview.exportPdf">PDF</button><span class="preview-actions"></span></header><div class="preview-body" tabindex="0"></div>`;
   const name = root.querySelector<HTMLElement>(".preview-name")!;
@@ -82,7 +82,7 @@ export function createPreviewView(host: PreviewViewHost) {
     applyTheme();
   });
   // 切換語系：重套靜態標籤、主題按鈕說明與「更新」時間。
-  onLocaleChange(() => {
+  const offLocale = onLocaleChange(() => {
     applyI18n(root);
     applyTheme();
     if (updatedAt) time.textContent = t("preview.updated", { time: clock(updatedAt) });
@@ -109,13 +109,14 @@ export function createPreviewView(host: PreviewViewHost) {
   widthInput.addEventListener("change", () => commitWidth(parseWidthInput(widthInput.value, width)));
   widthInput.addEventListener("keydown", (event) => { if (event.key === "Enter") widthInput.blur(); });
   widthMenu.addEventListener("change", () => commitWidth(Number(widthMenu.value)));
-  window.addEventListener("storage", (event) => {
+  const onStorage = (event: StorageEvent) => {
     const themeGroup = (Object.keys(THEME_KEYS) as FontGroup[]).find((key) => THEME_KEYS[key] === event.key);
     if (themeGroup) { themes[themeGroup] = storedTheme(themeGroup); applyTheme(); return; }
     const group = (Object.keys(FONT_KEYS) as FontGroup[]).find((key) => FONT_KEYS[key] === event.key);
     if (group) { fontSizes[group] = storedFontSize(group); setFont(group, fontSizes[group]); }
     else if (event.key === WIDTH_KEY) { width = storedWidth(); setWidth(width); }
-  });
+  };
+  window.addEventListener("storage", onStorage);
 
   // Export: a print-only copy of the rendered document goes into #print-root (hidden on
   // screen, the only thing shown when printing), then the native print sheet opens.
@@ -322,6 +323,30 @@ export function createPreviewView(host: PreviewViewHost) {
     timer = window.setInterval(() => poll().catch(host.notify), POLL_MS);
   }
 
+  // Re-read and redraw now, even if the file looks unchanged (the poll only reacts to mtime/size).
+  function refresh() {
+    if (!shownPath) return;
+    stamp = undefined;
+    load(shownPath, false).catch(host.notify);
+  }
+  // A tab in the background keeps its content and scroll position but stops polling.
+  function pause() {
+    if (timer !== undefined) clearInterval(timer);
+    timer = undefined;
+  }
+  function resume() {
+    if (!shownPath || timer !== undefined) return;
+    timer = window.setInterval(() => poll().catch(host.notify), POLL_MS);
+    poll().catch(host.notify);
+  }
+  // The view is gone for good (its pane was closed): release the global listeners.
+  function dispose() {
+    stop();
+    offLocale();
+    window.removeEventListener("storage", onStorage);
+    root.remove();
+  }
+
   function followLink(href: string) {
     if (!shownPath) return;
     const next = linkTarget(href, shownPath);
@@ -335,5 +360,5 @@ export function createPreviewView(host: PreviewViewHost) {
     followLink(link.getAttribute("href") || "");
   });
 
-  return { root, actions, shown: () => shownPath, show, stop };
+  return { root, actions, shown: () => shownPath, show, stop, pause, resume, refresh, dispose };
 }

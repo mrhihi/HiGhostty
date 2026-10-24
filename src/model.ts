@@ -175,6 +175,49 @@ export function rectangles(
     ...rectangles(node.second, x, y + first + gap, width, span - first, gap),
   ];
 }
+export type Divider = {
+  branch: Branch;
+  axis: "row" | "column";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  start: number;
+  span: number;
+};
+// The gap between the two halves of every branch, in the same order and geometry as rectangles().
+export function dividers(
+  node: Node,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  gap = 6,
+): Divider[] {
+  if (node.kind === "leaf") return [];
+  if (node.axis === "row") {
+    const span = Math.max(0, width - gap),
+      first = span * node.ratio;
+    return [
+      { branch: node, axis: "row", x: x + first, y, width: gap, height, start: x, span },
+      ...dividers(node.first, x, y, first, height, gap),
+      ...dividers(node.second, x + first + gap, y, span - first, height, gap),
+    ];
+  }
+  const span = Math.max(0, height - gap),
+    first = span * node.ratio;
+  return [
+    { branch: node, axis: "column", x, y: y + first, width, height: gap, start: y, span },
+    ...dividers(node.first, x, y, width, first, gap),
+    ...dividers(node.second, x, y + first + gap, width, span - first, gap),
+  ];
+}
+const MIN_RATIO = 0.1;
+const clampRatio = (ratio: number) => Math.max(MIN_RATIO, Math.min(1 - MIN_RATIO, ratio));
+export function ratioFromDrag(divider: Divider, pointer: number, gap = 6): number {
+  if (divider.span <= 0) return divider.branch.ratio;
+  return clampRatio((pointer - divider.start - gap / 2) / divider.span);
+}
 export function resizeSplit(
   node: Node,
   id: string,
@@ -190,7 +233,7 @@ export function resizeSplit(
   const axis = direction === 0 || direction === 1 ? "column" : "row";
   if (node.axis !== axis) return false;
   const sign = direction === 0 || direction === 2 ? -1 : 1;
-  node.ratio = Math.max(0.1, Math.min(0.9, node.ratio + sign * amount));
+  node.ratio = clampRatio(node.ratio + sign * amount);
   return true;
 }
 export function neighbor(

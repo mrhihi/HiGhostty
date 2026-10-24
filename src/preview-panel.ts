@@ -2,7 +2,8 @@
 // that updateLayout leaves free of native terminal views. State and geometry
 // are in preview.ts; rendering and polling are in preview-view.ts.
 import { ratioFromPointer, type Box, type PreviewState } from "./preview";
-import { createPreviewView } from "./preview-view";
+import { createTabsView } from "./preview-tabs-view";
+import type { GroupSeed, TabsState } from "./preview-tabs";
 import { applyI18n } from "./i18n-runtime";
 
 export type PreviewTab = { preview?: PreviewState };
@@ -14,8 +15,8 @@ export type PreviewHost = {
   toggleSide(): void;
   close(): void;
   reveal(path: string): void;
-  // Move the file into its own window and close the pane.
-  popOut(path: string): void;
+  // Move every tab (merged groups and their layout included) into the standalone preview window.
+  popOut(groups: GroupSeed[], active: number): Promise<unknown>;
   notify(error: unknown): void;
 };
 
@@ -28,20 +29,34 @@ const icons = {
 
 export function initPreviewPanel(host: PreviewHost) {
   const terminals = document.getElementById("terminals")!;
-  const view = createPreviewView({
+  // Shown only while updateLayout gives the pane a box; otherwise the views are released.
+  let visible = false;
+  let lastTabs: TabsState | undefined;
+  const tabsOf = () => (visible ? host.activeTab()?.preview?.tabs : undefined);
+  const view = createTabsView({
+    state: tabsOf,
+    set: (next) => { const state = host.activeTab()?.preview; if (state) state.tabs = next; lastTabs = next; },
     notify: host.notify,
-    openFile: (path) => {
-      const state = host.activeTab()?.preview;
-      if (state) { state.path = path; host.layoutChanged(); }
+    paneButtons: `<button type="button" class="icon-btn" data-act="reveal" data-i18n-title="preview.reveal" data-i18n-aria-label="preview.reveal">${icons.reveal}</button>`,
+    barButtons: `<button type="button" class="icon-btn" data-bar="popout" data-i18n-title="preview.popout" data-i18n-aria-label="preview.popout">${icons.popout}</button><button type="button" class="icon-btn" data-bar="side" data-i18n-title="preview.swapSide" data-i18n-aria-label="preview.swapSide">${icons.swap}</button><button type="button" class="icon-btn" data-bar="close" data-i18n-title="preview.close" data-i18n-aria-label="preview.close">${icons.close}</button>`,
+    paneAction: (act, pane) => {
+      if (act === "reveal") host.reveal(pane.path);
     },
+    barAction: (act) => {
+      if (act === "side") host.toggleSide();
+      else if (act === "close") host.close();
+      else if (act === "popout") {
+        const tabs = tabsOf();
+        if (!tabs) return;
+        const seeds = tabs.groups.map((g) => ({ paths: g.panes.map((p) => p.path), layout: g.layout, sizes: g.sizes }));
+        host.popOut(seeds, Math.max(0, tabs.groups.findIndex((g) => g.id === tabs.active))).catch(host.notify);
+      }
+    },
+    onEmpty: () => host.close(),
   });
   const root = view.root;
+  root.id = "preview";
   root.hidden = true;
-  view.actions.innerHTML = `<button type="button" class="icon-btn" data-act="popout" data-i18n-title="preview.popout" data-i18n-aria-label="preview.popout">${icons.popout}</button>
-<button type="button" class="icon-btn" data-act="side" data-i18n-title="preview.swapSide" data-i18n-aria-label="preview.swapSide">${icons.swap}</button>
-<button type="button" class="icon-btn" data-act="reveal" data-i18n-title="preview.reveal" data-i18n-aria-label="preview.reveal">${icons.reveal}</button>
-<button type="button" class="icon-btn" data-act="close" data-i18n-title="preview.close" data-i18n-aria-label="preview.close">${icons.close}</button>`;
-  applyI18n(view.actions);
   const resizer = document.createElement("div");
   resizer.id = "preview-resizer";
   resizer.setAttribute("role", "separator");
@@ -53,8 +68,7 @@ export function initPreviewPanel(host: PreviewHost) {
   function sync(box: Box | undefined, area: Box) {
     const state = host.activeTab()?.preview;
     if (!state || !box) {
-      if (!root.hidden) { root.hidden = true; resizer.hidden = true; }
-      if (view.shown()) view.stop();
+      if (visible || !root.hidden) { visible = false; root.hidden = true; resizer.hidden = true; lastTabs = undefined; view.render(); }
       return;
     }
     const right = state.side === "right";
@@ -66,17 +80,10 @@ export function initPreviewPanel(host: PreviewHost) {
     resizer.style.cssText = right
       ? `left:${box.x - area.x - 6}px;top:${box.y - area.y}px;width:6px;height:${box.height}px`
       : `left:${box.x - area.x}px;top:${box.y - area.y - 6}px;width:${box.width}px;height:6px`;
-    if (view.shown() !== state.path) view.show(state.path);
+    // Re-render only when this is another terminal tab's pane or its tabs changed.
+    if (!visible || lastTabs !== state.tabs) { visible = true; lastTabs = state.tabs; view.render(); }
   }
 
-  view.actions.addEventListener("click", (event) => {
-    const act = (event.target as HTMLElement).closest<HTMLElement>("[data-act]")?.dataset.act;
-    const state = host.activeTab()?.preview;
-    if (act === "side") host.toggleSide();
-    else if (act === "close") host.close();
-    else if (act === "reveal" && state) host.reveal(state.path);
-    else if (act === "popout" && state) host.popOut(state.path);
-  });
   resizer.addEventListener("pointerdown", (event) => {
     const state = host.activeTab()?.preview;
     if (!state) return;

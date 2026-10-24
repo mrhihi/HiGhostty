@@ -1,7 +1,10 @@
+import { activePane, emptyTabs, importGroups, openPath, replacePanePath, type GroupSeed, type TabsState } from "./preview-tabs.ts";
+
 // Pure state for the per-tab preview pane that sits beside (or below) the
 // terminals. DOM lives in preview-panel.ts; nothing here touches the window.
 export type PreviewSide = "right" | "bottom";
-export type PreviewState = { path: string; side: PreviewSide; ratio: number };
+// The pane beside the terminals holds a tab strip (preview-tabs.ts); `tabs` is that state.
+export type PreviewState = { side: PreviewSide; ratio: number; tabs: TabsState };
 export type Box = { x: number; y: number; width: number; height: number };
 export type PreviewKind = "markdown" | "code" | "text" | "image" | "pdf" | "sheet" | "word" | "slides" | "diagram" | "page";
 
@@ -24,7 +27,28 @@ export function isPreviewSide(value: unknown): value is PreviewSide {
 }
 
 export function openPreview(path: string, side: PreviewSide = DEFAULT_SIDE, ratio = DEFAULT_RATIO): PreviewState {
-  return { path, side, ratio: clampRatio(ratio) };
+  return { side, ratio: clampRatio(ratio), tabs: openPath(emptyTabs(), path) };
+}
+
+/** Path of the file shown first (the active tab's first pane). */
+export const previewPath = (state: PreviewState): string | undefined => activePane(state.tabs)?.path;
+
+/** An explicitly opened file gets its own tab; the same file only activates its tab. */
+export function addPreviewFile(state: PreviewState, path: string, side?: PreviewSide): PreviewState {
+  return { ...state, side: side ?? state.side, tabs: openPath(state.tabs, path) };
+}
+
+/** Tabs sent back from the preview window join the pane as they were (merged groups included). */
+export function importPreviewGroups(state: PreviewState | undefined, seeds: GroupSeed[], activeIndex = 0, side: PreviewSide = DEFAULT_SIDE): PreviewState {
+  const base: PreviewState = state ?? { side, ratio: DEFAULT_RATIO, tabs: emptyTabs() };
+  return { ...base, tabs: importGroups(base.tabs, seeds, activeIndex) };
+}
+
+/** Files-panel navigation: the active pane shows the other file instead of piling up tabs. */
+export function followPreviewFile(state: PreviewState, path: string): PreviewState {
+  const pane = activePane(state.tabs);
+  if (!pane || pane.path === path) return state;
+  return { ...state, tabs: replacePanePath(state.tabs, pane.id, path) };
 }
 
 export function togglePreviewSide(state: PreviewState): PreviewState {

@@ -14,6 +14,9 @@ import {
   remove as removeLeaf,
   equalize,
   rectangles,
+  dividers,
+  ratioFromDrag,
+  type Divider,
   resizeSplit,
   neighbor,
   orderTabsByFavorites,
@@ -36,7 +39,8 @@ import {
 import { initFilesPanel } from "./files-panel";
 import { initPreviewPanel } from "./preview-panel";
 import { gitSummary, isDirty, sameGit, stripHeight, tabGitText, type GitInfo } from "./git";
-import { openPreview, previewKind, relativeToDir, resolveInDir, splitBox, togglePreviewSide, type PreviewSide, type PreviewState } from "./preview";
+import type { GroupSeed } from "./preview-tabs";
+import { addPreviewFile, followPreviewFile, importPreviewGroups, openPreview, previewKind, previewPath, relativeToDir, resolveInDir, splitBox, togglePreviewSide, type PreviewSide, type PreviewState } from "./preview";
 import { restoreFiles, sameSaved, saveFiles, setDetached, toggleOpen, type FilesState, type SavedFiles } from "./files";
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
@@ -122,7 +126,8 @@ root.innerHTML = `<header data-tauri-drag-region="deep"><b>◈ HiGhostty</b><spa
 <button id="rail-snippets" class="rail-btn" title="Snippets (⌘⇧P)" data-i18n-title="app.snippetsShortcut" aria-label="Snippets (⌘⇧P)" data-i18n-aria-label="app.snippetsShortcut">${icons.snippet}</button>
 <button id="rail-attention" class="rail-btn" title="Needs attention" data-i18n-title="app.attention" aria-label="Needs attention" data-i18n-aria-label="app.attention">${icons.bell}<span id="rail-alert" hidden></span></button>
 <button id="rail-todo" class="rail-btn" title="Open todo list (⌘⇧L)" data-i18n-title="todo.commandTitle" aria-label="Open todo list (⌘⇧L)" data-i18n-aria-label="todo.commandTitle">${icons.todo}</button>
-<span class="rail-spacer"></span><button id="rail-settings" class="rail-btn" title="Settings" data-i18n-title="app.settings" aria-label="Settings" data-i18n-aria-label="app.settings">${icons.settings}</button></nav>
+<span class="rail-spacer"></span><button id="rail-tabstrip" class="rail-btn" title="Show tab strip when sidebar is closed" data-i18n-title="app.tabStripToggle" aria-label="Show tab strip when sidebar is closed" data-i18n-aria-label="app.tabStripToggle" aria-pressed="true">${icons.tabstrip}</button><button id="rail-settings" class="rail-btn" title="Settings" data-i18n-title="app.settings" aria-label="Settings" data-i18n-aria-label="app.settings">${icons.settings}</button></nav>
+<nav id="tab-strip" aria-label="Tabs" data-i18n-aria-label="app.tabStrip" hidden></nav>
 <section id="drawer-primary" aria-label="Sidebar panel" data-i18n-aria-label="app.sidebarPanel"><div class="drawer-inner">
 <section id="panel-workspace" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.workspace">Workspace</strong><button id="tab-git-toggle" class="icon-btn" title="Show git status on tabs" data-i18n-title="app.tabGitToggle" aria-label="Show git status on tabs" data-i18n-aria-label="app.tabGitToggle" aria-pressed="true">${icons.branch}</button><button id="new" class="icon-btn" title="New tab" data-i18n-title="app.newTab" aria-label="New tab" data-i18n-aria-label="app.newTab">${icons.plus}</button></div><div id="tabs" role="tree" aria-label="Workspace" data-i18n-aria-label="app.workspace"></div></section>
 <section id="panel-favorites" class="panel-content"><div class="drawer-heading"><strong data-i18n="app.favorites">Favorites</strong><button id="favorite-add" class="icon-btn" title="New favorite" data-i18n-title="app.addFavorite" aria-label="New favorite" data-i18n-aria-label="app.addFavorite">${icons.plus}</button><button id="favorite-group-add" class="icon-btn" title="New group" data-i18n-title="app.addGroup" aria-label="New group" data-i18n-aria-label="app.addGroup">${icons.folderPlus}</button></div><div id="favorite-add-options" class="inline-actions" hidden><button id="favorite-current-tab" class="ghost-btn wide-button"></button><button id="favorite-from-dir" class="ghost-btn wide-button" data-i18n="app.favoriteFromDir">Create favorite from folder…</button></div><div id="favorites"></div></section>
@@ -147,8 +152,8 @@ const filesPanel = initFilesPanel({
   home: () => homePath,
   displayPath,
   openTerminal: async (path) => { await newSurface(path); },
-  previewFile: (path) => { if (active) showPreview(active, path); },
-  followPreview: (path) => { if (active?.preview && active.preview.path !== path) showPreview(active, path); },
+  previewFile: (path) => { if (active) showPreview(active, path).catch(notify); },
+  followPreview: (path) => { if (active) followPreview(active, path); },
   editInTerminal: async (directory, command) => {
     if (active) await newSurface(directory, active.focused, 0, { command, commandInShell: true });
   },
@@ -204,19 +209,34 @@ const previewPanel = initPreviewPanel({
   toggleSide: () => togglePreview(),
   close: () => closePreview(),
   reveal: (path) => { native({ op: "files-reveal", paths: [path] }).catch(notify); },
-  popOut: (path) => {
+  // The whole pane moves: its tabs (merged groups too) become tabs of the standalone window.
+  popOut: async (items, activeIndex) => {
     const tab = active;
-    invoke("open_preview_window", { path, focus: true, origin: { window: win.label, tab: tab?.id } })
-      .then(() => { if (tab?.preview) { delete tab.preview; scheduleLayout(); } })
-      .catch(notify);
+    await invoke("open_preview_window", { groups: { items, active: activeIndex }, focus: true, origin: { window: win.label, tab: tab?.id } });
+    if (tab?.preview) { delete tab.preview; scheduleLayout(); }
   },
   notify,
 });
-function showPreview(tab: Tab, path: string, side?: PreviewSide) {
-  tab.preview = tab.preview
-    ? { ...tab.preview, path, side: side ?? tab.preview.side }
-    : openPreview(path, side);
+// While the standalone preview window exists every opened file becomes one of its tabs;
+// otherwise it goes beside the terminals. Docking or closing the window switches back.
+async function showPreview(tab: Tab, path: string, side?: PreviewSide, focus = true): Promise<"window" | "inline"> {
+  if (await invoke<boolean>("preview_window_open")) {
+    await invoke("open_preview_window", { path, focus, origin: { window: win.label, tab: tab.id } });
+    return "window";
+  }
+  showPreviewInline(tab, path, side);
+  return "inline";
+}
+function showPreviewInline(tab: Tab, path: string, side?: PreviewSide) {
+  // An explicitly opened file gets its own tab in the pane.
+  tab.preview = tab.preview ? addPreviewFile(tab.preview, path, side) : openPreview(path, side);
   scheduleLayout();
+}
+// Files-panel navigation swaps the file of the active pane instead of adding tabs.
+function followPreview(tab: Tab, path: string) {
+  if (!tab.preview) return;
+  const next = followPreviewFile(tab.preview, path);
+  if (next !== tab.preview) { tab.preview = next; scheduleLayout(); }
 }
 function togglePreview() {
   if (active?.preview) { active.preview = togglePreviewSide(active.preview); scheduleLayout(); }
@@ -307,6 +327,7 @@ let collapsedWorkspaceGroups = new Set<string>(),
 let config: NativeConfig | undefined,
   closeAction: (() => Promise<void>) | undefined,
   lastRects: Rect[] = [],
+  lastDividers: Divider[] = [],
   // Per-pane git status for the strip; null = not in a repo. Keyed by surface id.
   gitInfo = new Map<string, GitInfo | null>(),
   gitFetchedAt = new Map<string, number>(),
@@ -461,6 +482,7 @@ function renderDrawer() {
   if (renderedDetail !== detail()) renderDetail();
   refreshSnippetList();
   renderAttention();
+  renderTabStrip();
   syncSelection();
   scheduleLayout();
 }
@@ -660,7 +682,7 @@ function renderDetail() {
       const error = document.createElement("p"); error.id = "favorite-path-error"; error.className = "field-error"; error.hidden = true; host.append(error);
     }
     host.append(formCaption(t("app.cap.preview")));
-    const previewInput = document.createElement("input"); previewInput.id = "favorite-preview"; previewInput.className = "mono"; previewInput.readOnly = true; previewInput.value = draft.preview ?? item?.tab.preview ?? (sourceTab?.preview && relativeToDir(sourcePath, sourceTab.preview.path)) ?? ""; previewInput.placeholder = t("app.previewNone"); previewInput.setAttribute("aria-label", t("app.previewFile"));
+    const previewInput = document.createElement("input"); previewInput.id = "favorite-preview"; previewInput.className = "mono"; previewInput.readOnly = true; previewInput.value = draft.preview ?? item?.tab.preview ?? (sourceTab?.preview && previewPath(sourceTab.preview) && relativeToDir(sourcePath, previewPath(sourceTab.preview)!)) ?? ""; previewInput.placeholder = t("app.previewNone"); previewInput.setAttribute("aria-label", t("app.previewFile"));
     const previewRow = document.createElement("div"); previewRow.className = "field-row";
     const previewChoose = button(t("app.choose"), () => pickPreviewFile(previewInput, path?.value || defaultPath)); previewChoose.className = "ghost-btn";
     const previewClear = button(t("app.clear"), () => { previewInput.value = ""; previewInput.dispatchEvent(new Event("input")); }); previewClear.className = "ghost-btn";
@@ -1037,6 +1059,44 @@ async function answerPrompt(surfaceId: string, shown: Prompt, index: number) {
   }
   renderAttention();
 }
+// 側欄沒開「工作區」時，在 rail 旁留一排窄欄：頁籤編號（同 ⌘1～⌘9）與待處理狀態，點了直接切換。
+let showTabStrip = true;
+function renderTabStrip() {
+  const strip = $("tab-strip"), toggle = $("rail-tabstrip");
+  toggle.classList.toggle("active", showTabStrip);
+  toggle.setAttribute("aria-pressed", String(showTabStrip));
+  const arranged = orderedTabs();
+  const visible = showTabStrip && drawerState.panel !== "workspace" && arranged.length > 0;
+  strip.hidden = !visible;
+  if (!visible) { strip.replaceChildren(); return; }
+  strip.replaceChildren(...arranged.map((tab, index) => {
+    const ids = leaves(tab.tree), surface = surfaces.get(tab.focused);
+    const key = index < 9 ? String(index + 1) : "·";
+    const btn = button("", () => activate(tab).catch(notify), "");
+    btn.className = "strip-btn" + (tab === active ? " active" : "");
+    btn.dataset.tabId = tab.id;
+    btn.classList.toggle("exited", ids.every((id) => surfaces.get(id)?.exited));
+    const folder = tabFolder(tab);
+    if (folder) btn.style.setProperty("--group-color", folder.color);
+    const aiTool = parseLaunch(tab.command)?.tool, aiIcon = aiTool && resolveIcon(aiTool.id, launchTools().icons);
+    if (aiIcon?.mark && aiToolIcons[aiIcon.mark]) {
+      btn.innerHTML = aiToolIcons[aiIcon.mark];
+      const num = document.createElement("span"); num.className = "strip-key"; num.textContent = key; btn.append(num);
+    } else btn.textContent = key;
+    const alert = ids.map((id) => attention.get(id)).find(Boolean);
+    const lines = [`${index < 9 ? `⌘${index + 1} · ` : ""}${tabName(tab)}`];
+    if (surface?.cwd) lines.push(surface.cwd);
+    if (tab.status) lines.push(tab.status);
+    if (alert) {
+      btn.classList.add("has-alert"); btn.dataset.alert = alert.prompt?.low ? "maybe" : "yes";
+      const dot = document.createElement("span"); dot.className = "strip-alert"; btn.append(dot);
+      lines.push(...(alert.prompt ? [alert.prompt.question, ...alert.prompt.options].filter(Boolean) as string[] : [alert.title]));
+    }
+    btn.title = lines.join("\n");
+    btn.setAttribute("aria-label", lines[0]);
+    return btn;
+  }));
+}
 // 各卡片「畫面內容」方塊是否展開（預設收合）；重繪會重建 DOM，所以記在這裡。
 const expandedBodies = new Set<string>();
 function renderAttention() {
@@ -1255,6 +1315,7 @@ function renderTabs() {
   $("current").textContent = currentSurface()?.cwd || t("app.chooseWorkingFolder");
   $("rail-exited").hidden = !tabs.some((tab) => leaves(tab.tree).every((id) => surfaces.get(id)?.exited));
   $("empty").hidden = tabs.length > 0;
+  renderTabStrip();
   const top = detail();
   if (top?.kind === "edit-tab" && !tabs.some((tab) => tab.id === top.tabId)) renderDetail();
   renderFavorites();
@@ -1541,6 +1602,59 @@ async function pollTabGit() {
   }
 }
 
+// Dividers sit in the gap between panes, which no native view covers. Elements are reused by
+// index so one that holds a pointer capture survives the per-frame layout while dragging.
+function syncDividers(host: HTMLElement, area: DOMRect) {
+  const els = [...host.querySelectorAll<HTMLElement>(":scope > .split-divider")];
+  els.slice(lastDividers.length).forEach((el) => el.remove());
+  lastDividers.forEach((d, index) => {
+    let el = els[index];
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "split-divider";
+      el.setAttribute("role", "separator");
+      el.setAttribute("aria-label", t("app.resizeSplit"));
+      el.dataset.index = String(index);
+      wireDivider(el);
+      host.append(el);
+    }
+    el.dataset.axis = d.axis;
+    el.setAttribute("aria-orientation", d.axis === "row" ? "vertical" : "horizontal");
+    el.style.cssText = `left:${d.x - area.x}px;top:${d.y - area.y}px;width:${d.width}px;height:${d.height}px`;
+  });
+}
+function wireDivider(el: HTMLElement) {
+  const divider = () => lastDividers[Number(el.dataset.index)];
+  el.addEventListener("pointerdown", (event) => {
+    if (!divider()) return;
+    event.preventDefault();
+    el.setPointerCapture(event.pointerId);
+    el.classList.add("dragging");
+    const move = (e: PointerEvent) => {
+      const d = divider();
+      if (!d) return;
+      d.branch.ratio = ratioFromDrag(d, d.axis === "row" ? e.clientX : e.clientY);
+      scheduleLayout();
+    };
+    const end = () => {
+      el.classList.remove("dragging");
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", end);
+      el.removeEventListener("pointercancel", end);
+      scheduleSessionSave();
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
+  });
+  el.addEventListener("dblclick", () => {
+    const d = divider();
+    if (!d) return;
+    d.branch.ratio = 0.5;
+    updateLayout().catch(notify);
+    scheduleSessionSave();
+  });
+}
 async function updateLayout() {
   filesPanel.sync();
   const area = $("terminals").getBoundingClientRect();
@@ -1565,6 +1679,8 @@ async function updateLayout() {
     : [];
   lastRects = visible;
   const host = $("terminals");
+  lastDividers = active && !active.zoom ? dividers(active.tree, box.x, box.y, box.width, box.height) : [];
+  syncDividers(host, area);
   host.querySelectorAll(".surface-outline").forEach((node) => node.remove());
   for (const r of visible) {
     const outline = document.createElement("div");
@@ -2051,7 +2167,7 @@ async function showFavoritePreview(tab: Tab | undefined, rel: string | undefined
   const path = dir && rel ? resolveInDir(dir, rel) : undefined;
   if (!tab || !path) return;
   try { await invoke("preview_stat", { path }); } catch { return; }
-  showPreview(tab, path, "bottom");
+  await showPreview(tab, path, "bottom", false);
 }
 function favoriteIsOpen(item: WorkspaceFavorite) {
   return !!recentFavoriteInstance(tabs, item.id, recentFavoriteInstances.get(item.id));
@@ -2508,12 +2624,14 @@ async function handleEvent(event: NativeEvent) {
           Math.max(0.01, (event.amount || 10) / 100),
         );
         await updateLayout();
+        scheduleSessionSave();
       }
       break;
     case "equalize":
       if (active) {
         equalize(active.tree);
         await updateLayout();
+        scheduleSessionSave();
       }
       break;
     case "zoom":
@@ -2674,7 +2792,6 @@ window.addEventListener("keydown", (event) => {
   if (!(event.target instanceof Element && event.target.closest("#rail, #drawer-primary, #drawer-detail")) && filesPanel.collapse()) { event.preventDefault(); return; }
   if (!$("favorite-add-options").hidden) { event.preventDefault(); $("favorite-add-options").hidden = true; return; }
   if (detail()) { event.preventDefault(); backDetail(); }
-  else if (drawerState.panel) { event.preventDefault(); closeDrawers(); }
 }, true);
 for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("close", scheduleLayout);
@@ -2713,6 +2830,12 @@ async function start() {
     if (drawerState.panel === "settings") refreshSkillStatus().catch(() => {});
   });
   try { collapsedWorkspaceGroups = new Set(JSON.parse(localStorage.getItem("workspace-collapsed-groups") || "[]")); } catch {}
+  try { showTabStrip = localStorage.getItem("tab-strip") !== "false"; } catch {}
+  $("rail-tabstrip").onclick = () => {
+    showTabStrip = !showTabStrip;
+    try { localStorage.setItem("tab-strip", String(showTabStrip)); } catch {}
+    renderTabStrip(); scheduleLayout();
+  };
   const savedPanel = localStorage.getItem("drawer-panel") as Panel | null;
   // The old directories panel moved to the per-tab files panel.
   drawerState.lastPanel = savedPanel && savedPanel !== ("directories" as string) ? savedPanel : "workspace";
@@ -2819,10 +2942,12 @@ async function start() {
     }
   };
   // A standalone preview window sent its file back ("放回頁籤"): show it in the tab it came from.
-  await listen<{ path: string; tab?: string | null }>("preview-dock", (event) => {
+  await listen<{ path?: string | null; groups?: { items: GroupSeed[]; active?: number } | null; tab?: string | null }>("preview-dock", (event) => {
     const tab = tabs.find((item) => item.id === event.payload.tab) ?? active;
     if (!tab) return notify(t("app.noTabForPreview"));
-    showPreview(tab, event.payload.path);
+    const { groups, path } = event.payload;
+    if (groups) { tab.preview = importPreviewGroups(tab.preview, groups.items, groups.active ?? 0); scheduleLayout(); }
+    else if (path) showPreviewInline(tab, path);
     if (tab !== active) activate(tab).catch(notify);
   });
   // Messages from a popped-out files panel (files-window.ts).
@@ -2846,8 +2971,8 @@ async function start() {
       if (payload.op === "open-terminal" && payload.path) await newSurface(payload.path);
       else if (payload.op === "edit" && payload.directory) { await activate(tab); await newSurface(payload.directory, tab.focused, 0, { command: payload.command, commandInShell: true }); }
       else if (payload.op === "insert" && payload.text) await native({ op: "insert-text", id: tab.focused, text: payload.text });
-      else if (payload.op === "preview" && payload.path) { showPreview(tab, payload.path); if (tab !== active) await activate(tab); }
-      else if (payload.op === "follow-preview" && payload.path && tab.preview && tab.preview.path !== payload.path) showPreview(tab, payload.path);
+      else if (payload.op === "preview" && payload.path) { await showPreview(tab, payload.path); if (tab !== active && tab.preview) await activate(tab); }
+      else if (payload.op === "follow-preview" && payload.path) followPreview(tab, payload.path);
     }).catch(notify);
   });
   await listen("open-paths", () => { eventQueue = eventQueue.then(openPending).catch(notify); });
@@ -3088,8 +3213,8 @@ async function runControl(ctx: { caller?: string; mode: ControlMode; input?: unk
       const base = (ctx.caller && surfaces.get(ctx.caller)?.cwd) || homePath || undefined;
       const [path] = await invoke<string[]>("control_resolve_files", { paths: [args.path], base });
       try { await invoke("preview_stat", { path }); } catch (error) { return errReply("bad_args", `${args.path}：${String(error)}`); }
-      showPreview(tab, path, picked.side);
-      return okReply({ path, side: tab.preview!.side, kind: previewKind(path) });
+      const where = await showPreview(tab, path, picked.side, false);
+      return okReply({ path, side: tab.preview?.side ?? picked.side, kind: previewKind(path), window: where === "window" });
     }
     case "preview window": {
       const base = (ctx.caller && surfaces.get(ctx.caller)?.cwd) || homePath || undefined;
@@ -3109,7 +3234,7 @@ async function runControl(ctx: { caller?: string; mode: ControlMode; input?: unk
     case "preview status": {
       const tab = ctx.caller ? tabFor(ctx.caller) : undefined;
       if (!tab) return errReply("not_found", "找不到呼叫者的頁籤");
-      return okReply({ preview: tab.preview ? { path: tab.preview.path, side: tab.preview.side, kind: previewKind(tab.preview.path) } : null });
+      return okReply({ preview: tab.preview && previewPath(tab.preview) ? { path: previewPath(tab.preview), side: tab.preview.side, kind: previewKind(previewPath(tab.preview)!) } : null });
     }
     case "files reveal":
     case "files quicklook": {

@@ -259,13 +259,11 @@ pub const WINDOW_PREFIX: &str = "preview-";
 pub fn is_preview_window(label: &str) -> bool {
     label.starts_with(WINDOW_PREFIX)
 }
-// One window per file: asking again for the same path brings it to the front.
-fn window_label(path: &std::path::Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{WINDOW_PREFIX}{:016x}", hasher.finish())
-}
+/// All popped-out previews share this one window; each file is a tab inside it.
+pub const VIEWER_LABEL: &str = "preview-viewer";
+// Files waiting for the viewer page to pick them up. A queue (not an event alone) so a file
+// requested while the page is still loading is not lost.
+static PENDING: std::sync::Mutex<Vec<serde_json::Value>> = std::sync::Mutex::new(Vec::new());
 
 /// Where a popped-out preview came from, so "放回頁籤" can return it there.
 #[derive(Serialize, serde::Deserialize, Clone)]
@@ -287,13 +285,13 @@ fn dock_window(app: &tauri::AppHandle, origin: Option<&DockTarget>) -> Option<ta
         .cloned()
 }
 
-/// Sends the file back to a tab (the front end of the target window shows it) and closes
-/// the preview window that called.
+/// Sends the file back to a tab (the front end of the target window shows it). The viewer
+/// window removes that tab itself and closes once it has none left.
 #[tauri::command]
 pub fn preview_dock(
     app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-    path: String,
+    path: Option<String>,
+    groups: Option<serde_json::Value>,
     origin: Option<DockTarget>,
 ) -> Result<(), String> {
     use tauri::Emitter;
@@ -302,50 +300,70 @@ pub fn preview_dock(
     app.emit_to(
         target.label(),
         "preview-dock",
-        serde_json::json!({ "path": path, "tab": tab }),
+        serde_json::json!({ "path": path, "groups": groups, "tab": tab }),
     )
     .map_err(err)?;
     let _ = target.unminimize();
     let _ = target.show();
     let _ = target.set_focus();
-    window.destroy().map_err(err)
+    Ok(())
 }
 
+/// Whether the standalone preview window exists; while it does, files opened for preview go
+/// into it instead of beside the terminals.
+#[tauri::command]
+pub fn preview_window_open(app: tauri::AppHandle) -> bool {
+    use tauri::Manager;
+    app.get_webview_window(VIEWER_LABEL).is_some()
+}
+
+/// Opens `path` as a tab of the viewer window, or (`groups`) a whole set of tabs popped out of
+/// a pane: `[{ paths, layout, sizes }]`, shown as they were.
 #[tauri::command]
 pub fn open_preview_window(
     app: tauri::AppHandle,
-    path: String,
+    path: Option<String>,
+    groups: Option<serde_json::Value>,
     focus: bool,
     origin: Option<DockTarget>,
 ) -> Result<String, String> {
     use tauri::Manager;
-    let resolved = expand_path(&path, None)?;
-    if !std::fs::metadata(&resolved).map_err(|_| "找不到檔案".to_string())?.is_file() {
-        return Err("不是檔案".into());
-    }
-    let resolved = resolved.to_string_lossy().into_owned();
-    let label = window_label(std::path::Path::new(&resolved));
-    if let Some(window) = app.get_webview_window(&label) {
+    let item = match (path, groups) {
+        (_, Some(groups)) => serde_json::json!({ "groups": groups, "origin": origin }),
+        (Some(path), None) => {
+            let resolved = expand_path(&path, None)?;
+            if !std::fs::metadata(&resolved).map_err(|_| "找不到檔案".to_string())?.is_file() {
+                return Err("不是檔案".into());
+            }
+            serde_json::json!({ "path": resolved.to_string_lossy(), "origin": origin })
+        }
+        _ => return Err("沒有指定檔案".into()),
+    };
+    PENDING.lock().map_err(|_| "預覽佇列錯誤".to_string())?.push(item);
+    if let Some(window) = app.get_webview_window(VIEWER_LABEL) {
+        use tauri::Emitter;
+        app.emit_to(VIEWER_LABEL, "preview-open", ()).map_err(err)?;
         let _ = window.unminimize();
         let _ = window.show();
         if focus {
             let _ = window.set_focus();
         }
-        return Ok(label);
+        return Ok(VIEWER_LABEL.to_string());
     }
-    let title = resolved.rsplit('/').next().unwrap_or("預覽").to_string();
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("preview.html".into()))
-        .title(title)
-        .inner_size(900.0, 720.0)
+    tauri::WebviewWindowBuilder::new(&app, VIEWER_LABEL, tauri::WebviewUrl::App("preview.html".into()))
+        .title("Preview")
+        .inner_size(1100.0, 760.0)
         .min_inner_size(360.0, 240.0)
         .focused(focus)
-        .initialization_script(format!(
-            "window.__HIGHOSTTY_PREVIEW__={};",
-            serde_json::json!({ "path": resolved, "origin": origin })
-        ))
         .build()
         .map_err(err)?;
-    Ok(label)
+    Ok(VIEWER_LABEL.to_string())
+}
+
+/// The viewer page calls this at start and on every `preview-open` event.
+#[tauri::command]
+pub fn preview_take_pending() -> Vec<serde_json::Value> {
+    PENDING.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
 }
 
 fn files_label(tab: &str) -> Result<String, String> {
@@ -480,12 +498,11 @@ mod tests {
     }
 
     #[test]
-    fn window_labels_are_stable_per_path_and_recognised() {
-        let a = window_label(std::path::Path::new("/tmp/a.md"));
-        assert_eq!(a, window_label(std::path::Path::new("/tmp/a.md")));
-        assert_ne!(a, window_label(std::path::Path::new("/tmp/b.md")));
-        assert!(is_preview_window(&a));
-        assert!(!is_preview_window("main") && !is_preview_window("window-1") && !is_preview_window("quick-1"));
+    fn the_viewer_window_is_a_satellite_and_the_queue_drains() {
+        assert!(is_preview_window(VIEWER_LABEL));
+        PENDING.lock().unwrap().push(serde_json::json!({ "path": "/tmp/a.md" }));
+        assert_eq!(preview_take_pending().len(), 1);
+        assert!(preview_take_pending().is_empty());
     }
 
     #[test]
