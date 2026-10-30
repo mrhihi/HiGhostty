@@ -212,6 +212,15 @@ export function hashText(text: string): string {
   for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
   return String(h) + ":" + text.length;
 }
+// A surface whose screen text changed within BUSY_MS is "busy" (tab dot breathes). The first sighting only records
+// the hash, so a screen that merely exists is not busy.
+export type BusyTrack = { hash: string; changedAt?: number };
+export const BUSY_MS = 3000;
+export function busyStep(previous: BusyTrack | undefined, text: string, now: number): { track: BusyTrack; busy: boolean } {
+  const hash = hashText(text);
+  const track: BusyTrack = !previous ? { hash } : previous.hash !== hash ? { hash, changedAt: now } : previous;
+  return { track, busy: track.changedAt !== undefined && now - track.changedAt < BUSY_MS };
+}
 // One poll of a surface running an agent. The track follows the recognised
 // prompt (not the whole screen), so a spinner or clock elsewhere does not
 // restart the timer. `waiting` becomes true once the screen was alive, then the

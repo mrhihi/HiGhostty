@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { sorted, attachScreen, raise, clear, clearSource, prune, unreadCount, tabsWithAlerts, badgeText, emptyAttention, titleSpinnerStopped, titleWorking, agentState, recognizePrompt, promptKey, snapshot, idleStep, QUIET_MS } from "../src/attention.ts";
+import { sorted, attachScreen, raise, clear, clearSource, prune, unreadCount, tabsWithAlerts, badgeText, emptyAttention, titleSpinnerStopped, titleWorking, agentState, recognizePrompt, promptKey, snapshot, idleStep, QUIET_MS, busyStep, BUSY_MS } from "../src/attention.ts";
 import { buildRules } from "../src/prompt-rules.ts";
 
 const { rules, errors } = buildRules(readFileSync(new URL("../src/prompt-rules.json", import.meta.url), "utf8"));
@@ -276,4 +276,19 @@ test("checkbox lists with numbers, radio dots on every row and type-it-yourself 
 test("a confirm-style list with description lines is never answerable", () => {
   const p = read(screen("Choose a model?", "❯ Alpha", "  first desc", "  Beta", "  second desc", "Enter to confirm"));
   assert.equal(menuAnswerable(p), false);
+});
+
+test("busy follows screen changes and decays after BUSY_MS", () => {
+  let r = busyStep(undefined, "a", 0);
+  assert.ok(!r.busy);
+  r = busyStep(r.track, "a", 1000);
+  assert.ok(!r.busy);
+  r = busyStep(r.track, "b", 2000);
+  assert.ok(r.busy);
+  r = busyStep(r.track, "b", 2000 + BUSY_MS - 1);
+  assert.ok(r.busy);
+  r = busyStep(r.track, "b", 2000 + BUSY_MS);
+  assert.ok(!r.busy);
+  r = busyStep(r.track, "c", 9000);
+  assert.ok(r.busy);
 });

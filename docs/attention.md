@@ -75,6 +75,13 @@
 - 在使用者規則檔新增一條規則並「重新載入」立即生效；寫壞規則檔時設定頁顯示原因、偵測仍用內建規則。
 - debug 與 release 都要試。
 
+## 畫面變動（忙碌）指示
+背景頁籤的終端機畫面文字在 `BUSY_MS`（3 秒，約兩次掃描）內變動過，該列頁籤（含分割窗格任一格）加 `.busy`，小點與 AI 圖示呼吸（`busy-breathe`）；工作區收合時的窄欄（`renderTabStrip`，`.strip-btn.busy`）整顆按鈕同樣呼吸。
+- 判定只放 `src/attention.ts` 的 `busyStep`（首次掃描只記錄，不算忙）；`scanAttention` 對所有被掃描的 surface 都做，與是否偵測到 agent 無關。
+- 正在看的頁籤不掃描、不顯示；有待處理（`.has-alert`）時改由琥珀 `alert-pulse` 優先。忙碌集合有變才 `renderTabs()`。
+- 畫面有時鐘的頁籤（如 tmux status）會每分鐘忙一下，屬已知限制。
+- 驗收：背景頁籤跑 `while true; do date; sleep 0.5; done` 呼吸、Ctrl-C 後約 3 秒停止；`sleep 100` 不動；切到該頁籤後消失；減少動態效果時不動。
+
 ## 待處理浮層（`src/attention-drop.ts`）
 
 「待處理」不在側欄 drawer，而是仿 ⌘⇧P 的頂部浮層（`#attention-drop`，鈴鐺與 rail 鈴鐺都是 toggle）。

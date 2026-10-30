@@ -50,7 +50,7 @@ import { enableRowDrag } from "./row-drag";
 import { aiToolIcons, icons } from "./icons";
 import { AI_TOOLS, composeLaunch, joinCommand, parseLaunch, presetCommand, resolveIcon, presetLabel, splitCommand, supportsCopyOnSelect, type Launch } from "./launch";
 import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDetail, togglePanel, type Detail, type DrawerState, type Panel } from "./drawer";
-import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, menuAnswerable, menuKeys, promptIdentity, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
+import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, busyStep, emptyAttention, idleStep, menuAnswerable, menuKeys, promptIdentity, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type BusyTrack, type IdleTrack } from "./attention";
 import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./prompt-rules";
 import builtinRules from "./prompt-rules.json?raw";
 import { formatEnv, normalizeEnv, parseEnv, sameEnv, type Env } from "./tab-env";
@@ -970,6 +970,8 @@ function savedTab(tab: Tab, sessions = false): SavedTab {
 // ── Attention: bell / notification / agent waiting ──────────────────────────
 let attention: AttentionState = emptyAttention;
 const idleTracks = new Map<string, IdleTrack>();
+const busyTracks = new Map<string, BusyTrack>();
+let busy = new Set<string>();
 const dismissed = new Map<string, string>();
 const screens = new Map<string, { text: string; agent: string }>();
 const viewing = (id: string) => !!active && document.hasFocus() && tabFor(id) === active;
@@ -1089,6 +1091,7 @@ function renderTabStrip() {
     btn.className = "strip-btn" + (tab === active ? " active" : "");
     btn.dataset.tabId = tab.id;
     btn.classList.toggle("exited", ids.every((id) => surfaces.get(id)?.exited));
+    btn.classList.toggle("busy", ids.some((id) => busy.has(id)));
     const folder = tabFolder(tab);
     if (folder) btn.style.setProperty("--group-color", folder.color);
     const aiTool = parseLaunch(tab.command)?.tool, aiIcon = aiTool && resolveIcon(aiTool.id, launchTools().icons);
@@ -1209,15 +1212,26 @@ async function scanScreens(ids: string[]): Promise<Record<string, Screen>> {
   }
   return found;
 }
+// Re-render the tab list only when the set of busy surfaces actually changed.
+function updateBusy(next: Set<string>) {
+  if (next.size === busy.size && [...next].every((id) => busy.has(id))) return;
+  busy = next;
+  renderTabs();
+}
 async function scanAttention() {
   clearViewed();
   const ids = [...surfaces.values()].filter((surface) => !surface.exited && !viewing(surface.id)).map((surface) => surface.id);
   setAttention(prune(attention, (id) => surfaces.has(id)));
-  if (!ids.length) return;
+  for (const id of [...busyTracks.keys()]) if (!ids.includes(id)) busyTracks.delete(id);
+  if (!ids.length) { updateBusy(new Set()); return; }
   const found = await scanScreens(ids);
   const now = Date.now();
+  const nextBusy = new Set<string>();
   for (const [id, screen] of Object.entries(found)) {
     screens.set(id, screen);
+    const activity = busyStep(busyTracks.get(id), screen.text, now);
+    busyTracks.set(id, activity.track);
+    if (activity.busy) nextBusy.add(id);
     const lock = answering.get(id);
     if (lock && (Date.now() - lock.at > ANSWER_LOCK_MS || promptIdentity((screen.agent ? recognizePrompt(screen.text.split("\n"), promptRules) : null) ?? undefined) !== lock.key)) answering.delete(id);
     if (!screen.agent) { idleTracks.delete(id); dismissed.delete(id); setAttention(clearSource(attention, id, "prompt")); continue; }
@@ -1232,6 +1246,7 @@ async function scanAttention() {
     } else if (step.track.since === now) setAttention(clearSource(attention, id, "prompt"));
   }
   for (const id of [...screens.keys()]) if (!surfaces.has(id)) { answering.delete(id); screens.delete(id); idleTracks.delete(id); dismissed.delete(id); }
+  updateBusy(nextBusy);
   renderAttention();
 }
 // 頁籤列的點擊不留下鍵盤焦點：游標點到頁籤（或其按鈕）後，焦點一律回到終端機，
@@ -1375,6 +1390,7 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
   wireTabDrag(row, tab, nested);
   const alert = ids.map((id) => attention.get(id)).find(Boolean);
   if (alert) { row.classList.add("has-alert"); row.dataset.alert = alert.prompt?.low ? "maybe" : "yes"; }
+  if (ids.some((id) => busy.has(id))) row.classList.add("busy");
   const state = document.createElement("span"); state.className = "status-dot"; state.classList.toggle("exited", ids.every((id) => surfaces.get(id)?.exited));
   state.title = ids.every((id) => surfaces.get(id)?.exited) ? t("app.terminalExited") : t("app.terminalOpen");
   const label = button(tabName(tab), () => activate(tab), surface?.cwd); label.className = "row-label"; label.ondblclick = () => inlineRename(tab, label);

@@ -371,6 +371,10 @@ pre { white-space: pre-wrap; max-height: 240px; overflow: auto; }
 .rail-btn #rail-alert { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--attention); }
 .tab-row.has-alert { background: rgb(255 198 107 / .1); box-shadow: inset 2px 0 0 var(--attention); }
 .tab-row.has-alert .status-dot { background: var(--attention); border: 0; opacity: 1; animation: alert-pulse 1.4s ease-in-out infinite; }
+@keyframes busy-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.tab-row.busy:not(.has-alert) .status-dot:not(.exited):not(.inactive), .tab-row.busy:not(.has-alert) .ai-mark:not(.exited) { animation: busy-breathe 1.2s ease-in-out infinite; }
+.strip-btn.busy:not(.has-alert):not(.exited) { animation: busy-breathe 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .tab-row.busy .status-dot, .tab-row.busy .ai-mark, .strip-btn.busy { animation: none; } }
 .tab-row.has-alert[data-alert="maybe"] { background: rgb(255 198 107 / .05); box-shadow: inset 2px 0 0 rgb(255 198 107 / .45); }
 .tab-row.has-alert .row-label { font-weight: 600; }
 .tab-status { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-muted); opacity: 0.85; }
