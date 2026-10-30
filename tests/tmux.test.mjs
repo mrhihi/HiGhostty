@@ -43,9 +43,10 @@ test("restorable keeps only tmux tabs and drops invalid sessions", () => {
 });
 
 test("tmuxCommand passes environment with -e, quoted, and drops unsafe keys", () => {
-  const command = tmuxCommand("hg-abcd1234", "/tmp", undefined, false, "tmux", { HIGHOSTTY_ENV: "1", HIGHOSTTY_CLI: "/Applications/Hi Ghostty/it's", "bad key": "x", lower: "x" });
+  const command = tmuxCommand("hg-abcd1234", "/tmp", undefined, false, "tmux", { HIGHOSTTY_ENV: "1", HIGHOSTTY_CLI: "/Applications/Hi Ghostty/it's", "bad key": "x", "1bad": "x" });
   assert.match(command, /new-session -A -s hg-abcd1234 -e 'HIGHOSTTY_ENV=1' -e 'HIGHOSTTY_CLI=\/Applications\/Hi Ghostty\/it'\\''s' -c '\/tmp'/);
-  assert.ok(!command.includes("bad key") && !command.includes("lower="));
+  assert.ok(!command.includes("bad key") && !command.includes("1bad="));
+  assert.match(tmuxCommand("hg-abcd1234", "/tmp", undefined, false, "tmux", { lower_case: "x" }), /-e 'lower_case=x'/);
 });
 
 test("withProgramPath replaces only a bare program name", () => {

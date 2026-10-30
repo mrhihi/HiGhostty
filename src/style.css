@@ -121,6 +121,8 @@ body:not(.term-pointer) .row:hover { background: var(--hover); }
 .editor-subtitle { margin: 2px 0 0; color: var(--text-muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .field-error { margin: 4px 0 8px; color: var(--danger); font-size: 13px; }
 .field-error[hidden] { display: none; }
+.field-error { white-space: pre-line; }
+.field textarea.env-input { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; border: 0; border-radius: var(--radius-row); background: var(--surface-input); color: var(--text); padding: 6px 8px; font-size: 13px; }
 .mono { font-family: ui-monospace, monospace; }
 .summary-item { display: grid; gap: 1px; padding: 4px 0; min-width: 0; }
 .summary-title { color: var(--text); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

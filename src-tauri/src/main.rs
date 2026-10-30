@@ -304,7 +304,7 @@ async fn native(window: tauri::WebviewWindow, mut request: Value) -> Result<Valu
             .ok_or("缺少目錄")?;
         request["path"] = Value::String(resolve_path(path.into(), None)?);
         let id = uuid::Uuid::new_v4().to_string();
-        request["env"] = control::surface_env(window.app_handle(), &id)?;
+        request["env"] = control::surface_env(window.app_handle(), &id, request.get("env"))?;
         request["id"] = Value::String(id);
     }
     call_native(window, request).await

@@ -53,12 +53,13 @@ import { closeAll, onGroupRemoved, openPanel, popDetail, pushDetail, replaceDeta
 import { agentState, ANSWER_LOCK_MS, attachScreen, badgeText, clear, clearSource, emptyAttention, idleStep, menuAnswerable, menuKeys, promptIdentity, promptKey, prune, raise, recognizePrompt, sameMenu, snapshot, sorted, titleSpinnerStopped, unreadCount, type AgentState, type AlertSource, type AttentionState, type IdleTrack } from "./attention";
 import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./prompt-rules";
 import builtinRules from "./prompt-rules.json?raw";
+import { formatEnv, normalizeEnv, parseEnv, sameEnv, type Env } from "./tab-env";
 import { newSessionName, restorable, tmuxCommand, validSession, withProgramDir, withProgramPath } from "./tmux";
 import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, previewSide, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
 import "./style.css";
 
 type MenuEntry = { text: string; action: () => unknown } | { item: "Separator" };
-type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSessions?: (string | undefined)[]; favoriteId?: string; parent?: number; files?: SavedFiles; preview?: string };
+type SavedTab = { paths: string[]; tree: Node; focused: number; title?: string; groupId?: string; command?: string; commandInShell?: boolean; env?: Env; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSessions?: (string | undefined)[]; favoriteId?: string; parent?: number; files?: SavedFiles; preview?: string };
 // Groups organize favorites; an open tab shows the group of the favorite it came from.
 type WorkspaceFavorite = TabFavoriteItem<SavedTab>;
 type FavoritesDocument = { revision: number; items: StoredFavorite<SavedTab>[] };
@@ -77,6 +78,7 @@ type Tab = {
   zoom?: string;
   command?: string;
   commandInShell?: boolean;
+  env?: Env;
   tmux?: boolean;
   tmuxHideStatus?: boolean;
   favoriteId?: string;
@@ -580,6 +582,8 @@ function renderDetail() {
     const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = !!tab.commandInShell; commandInShell.disabled = !command.value.trim();
     const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode(t("app.loadShell")));
     host.append(commandInShellLabel, help(t("app.loadShellHelp")));
+    const envInput = envEditor(formatEnv(tab.env), () => updateDirty());
+    host.append(...envInput.nodes);
     host.append(formCaption(t("app.cap.background")));
     const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = !!tab.tmux;
     const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode(t("app.useTmux")));
@@ -589,16 +593,16 @@ function renderDetail() {
     host.append(tmuxStatusLabel, help(t("app.hideTmuxStatusHelpTab")));
     host.append(formCaption(t("app.cap.content")));
     for (const [index, id] of leaves(tab.tree).entries()) host.append(summaryItem(t(index === 0 ? "app.splitPrimary" : "app.splitLabel", { index: index + 1 }), surfaces.get(id)?.cwd || ""));
-    const apply = () => { tab.title = title.value.trim() || undefined; tab.command = command.value.trim() || undefined; tab.commandInShell = tab.command ? commandInShell.checked : undefined; tab.tmux = tmuxBox.checked || undefined; tab.tmuxHideStatus = tab.tmux && tmuxStatus.checked || undefined; for (const id of leaves(tab.tree)) { const session = surfaces.get(id)?.tmuxSession; if (session && original.tmuxHideStatus !== !!tab.tmuxHideStatus) invoke("tmux_set_status", { name: session, visible: !tab.tmuxHideStatus }).catch(() => {}); } original.tmuxHideStatus = !!tab.tmuxHideStatus; };
+    const apply = () => { tab.title = title.value.trim() || undefined; tab.command = command.value.trim() || undefined; tab.commandInShell = tab.command ? commandInShell.checked : undefined; tab.env = envInput.value(); original.env = tab.env; tab.tmux = tmuxBox.checked || undefined; tab.tmuxHideStatus = tab.tmux && tmuxStatus.checked || undefined; for (const id of leaves(tab.tree)) { const session = surfaces.get(id)?.tmuxSession; if (session && original.tmuxHideStatus !== !!tab.tmuxHideStatus) invoke("tmux_set_status", { name: session, visible: !tab.tmuxHideStatus }).catch(() => {}); } original.tmuxHideStatus = !!tab.tmuxHideStatus; };
     host.append(formCaption(t("app.favorites")));
     host.append(help(t("app.favoriteTabHelp")));
     const saveFav = button(t("app.favoriteThisTab"), () => { apply(); newFavorite({ tabId: tab.id }); }); saveFav.className = "primary-btn wide-button"; host.append(saveFav);
     host.append(formCaption(t("app.cap.danger")));
     const close = button(t("app.closeTab"), () => requestClose(leaves(tab.tree), (force) => closeTab(tab, force))); close.className = "danger-btn wide-button"; host.append(close);
-    const original = { title: tab.title || "", command: tab.command || "", commandInShell: !!tab.commandInShell, tmux: !!tab.tmux, tmuxHideStatus: !!tab.tmuxHideStatus };
+    const original = { title: tab.title || "", command: tab.command || "", commandInShell: !!tab.commandInShell, env: tab.env, tmux: !!tab.tmux, tmuxHideStatus: !!tab.tmuxHideStatus };
     const save = button(t("app.save"), () => { apply(); renderTabs(); backDetail(); });
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = title.value === original.title && command.value === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && tmuxStatus.checked === original.tmuxHideStatus; };
+    const updateDirty = () => { save.disabled = !envInput.valid() || title.value === original.title && command.value === original.command && commandInShell.checked === original.commandInShell && sameEnv(envInput.value(), original.env) && tmuxBox.checked === original.tmux && tmuxStatus.checked === original.tmuxHideStatus; };
     title.oninput = () => { objectName.textContent = title.value.trim() || name(cwd); updateDirty(); };
     command.oninput = () => { commandInShell.disabled = !command.value.trim(); if (commandInShell.disabled) commandInShell.checked = false; updateDirty(); };
     commandInShell.onchange = updateDirty;
@@ -663,6 +667,8 @@ function renderDetail() {
     const commandInShell = document.createElement("input"); commandInShell.type = "checkbox"; commandInShell.checked = draft.commandInShell ?? (item?.tab.commandInShell ?? sourceTab?.commandInShell ?? false); commandInShell.disabled = !command.value.trim();
     const commandInShellLabel = document.createElement("label"); commandInShellLabel.className = "toggle"; commandInShellLabel.append(commandInShell, document.createTextNode(t("app.loadShell")));
     host.append(commandInShellLabel, help(t("app.loadShellHelpNext")));
+    const envInput = envEditor(draft.env ?? formatEnv(item?.tab.env ?? sourceTab?.env), () => updateDirty());
+    host.append(...envInput.nodes);
     host.append(formCaption(t("app.cap.background")));
     const tmuxBox = document.createElement("input"); tmuxBox.type = "checkbox"; tmuxBox.checked = draft.tmux ?? !!(item?.tab.tmux ?? sourceTab?.tmux);
     const tmuxLabel = document.createElement("label"); tmuxLabel.className = "toggle"; tmuxLabel.append(tmuxBox, document.createTextNode(t("app.useTmux")));
@@ -720,10 +726,10 @@ function renderDetail() {
       host.append(formCaption(t("app.cap.danger")), help(t("app.removeFavoriteHelp")));
       const remove = button(t("app.removeFavorite"), () => { if (confirmTwice(remove)) return removeFavorite(item); }); remove.className = "danger-btn wide-button"; host.append(remove);
     }
-    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell, tmux: !!item?.tab.tmux, tmuxHideStatus: !!item?.tab.tmuxHideStatus, preview: item?.tab.preview || "" };
-    const save = button(item ? t("app.save") : t("app.favorites"), () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, { command: command.value.trim(), commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxBox.checked && tmuxStatus.checked }, previewInput.value));
+    const original = { name: item?.name || "", path: item ? defaultPath : "", groupId: item?.groupId || "", command: item?.tab.command || "", commandInShell: !!item?.tab.commandInShell, env: item?.tab.env, tmux: !!item?.tab.tmux, tmuxHideStatus: !!item?.tab.tmuxHideStatus, preview: item?.tab.preview || "" };
+    const save = button(item ? t("app.save") : t("app.favorites"), () => saveFavoriteEditor(current, item, sourceTab, alias.value.trim(), groupSelect.value === "__new__" ? "" : groupSelect.value, path, { command: command.value.trim(), commandInShell: commandInShell.checked, env: envInput.value(), tmux: tmuxBox.checked, tmuxHideStatus: tmuxBox.checked && tmuxStatus.checked }, previewInput.value));
     editorFooter(host, save);
-    const updateDirty = () => { save.disabled = !alias.value.trim() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell && tmuxBox.checked === original.tmux && (tmuxBox.checked && tmuxStatus.checked) === original.tmuxHideStatus && previewInput.value === original.preview ); };
+    const updateDirty = () => { save.disabled = !alias.value.trim() || !envInput.valid() || (!!item && alias.value === original.name && (path?.value ?? "") === original.path && groupSelect.value === original.groupId && command.value.trim() === original.command && commandInShell.checked === original.commandInShell && sameEnv(envInput.value(), original.env) && tmuxBox.checked === original.tmux && (tmuxBox.checked && tmuxStatus.checked) === original.tmuxHideStatus && previewInput.value === original.preview ); };
     alias.oninput = () => { objectName.textContent = alias.value.trim() || defaultName; updateDirty(); };
     path?.addEventListener("input", updateDirty);
     previewInput.addEventListener("input", updateDirty);
@@ -735,7 +741,7 @@ function renderDetail() {
       updateDirty();
       if (groupSelect.value !== "__new__") return;
       // Keep what was typed while the new-group editor is on top.
-      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked, tmux: tmuxBox.checked, tmuxHideStatus: tmuxStatus.checked, preview: previewInput.value });
+      editorDrafts.set(current, { name: alias.value, path: path?.value, groupId: item?.groupId || current.groupId || "", command: command.value, commandInShell: commandInShell.checked, env: envInput.area.value, tmux: tmuxBox.checked, tmuxHideStatus: tmuxStatus.checked, preview: previewInput.value });
       createFolder();
     };
     enterSaves(save, alias, path, command);
@@ -848,7 +854,7 @@ function launchPicker(command: HTMLInputElement, commandField: HTMLElement): HTM
   box.append(toolField, progField, modelField, modelOther, copyField, extraField, preview);
   return box;
 }
-const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; preview?: string }>();
+const editorDrafts = new WeakMap<Detail, { name?: string; path?: string; groupId?: string; command?: string; commandInShell?: boolean; env?: string; tmux?: boolean; tmuxHideStatus?: boolean; preview?: string }>();
 const swatchColors = ["#77dfc0", "#7cc4ff", "#b59cff", "#ff9ecf", "#ff8f7a", "#f5c46b", "#a6d86e", "#9aa6b8"];
 function editorIntro(host: HTMLElement, heading: HTMLElement, pageTitle: string, objectName: string, subtitle: string) {
   heading.append(Object.assign(document.createElement("strong"), { textContent: pageTitle, className: "page-title" }));
@@ -878,7 +884,7 @@ function summaryItem(title: string, detailText: string) {
   item.append(strong, sub); return item;
 }
 function savedTabSummary(tab: SavedTab, title?: string) {
-  const parts = [tab.paths[0] || "", tab.paths.length > 1 ? t("app.splitCount", { n: tab.paths.length }) : "", tab.command ? `⌘ ${tab.command}${tab.commandInShell ? t("app.shellSuffix") : ""}` : ""].filter(Boolean);
+  const parts = [tab.paths[0] || "", tab.paths.length > 1 ? t("app.splitCount", { n: tab.paths.length }) : "", tab.command ? `⌘ ${tab.command}${tab.commandInShell ? t("app.shellSuffix") : ""}` : "", tab.env ? t("app.envCount", { n: Object.keys(tab.env).length }) : ""].filter(Boolean);
   return summaryItem(title || tab.title || name(tab.paths[0] || "/"), parts.join(" · "));
 }
 async function closeAfterOpen() {
@@ -889,6 +895,15 @@ async function closeAfterOpen() {
 function formCaption(text: string) { const el = document.createElement("div"); el.className = "caption form-caption"; el.textContent = text; return el; }
 function help(text: string) { const el = document.createElement("p"); el.className = "help"; el.textContent = text; return el; }
 function labeled(title: string, input: HTMLElement, tag: "label" | "div" = "label") { const label = document.createElement(tag); label.className = "field"; label.append(document.createTextNode(title), input); return label; }
+// 啟動時額外的環境變數：一行一個 KEY=value，輸入時即時檢查；有錯就不能儲存（valid）。
+function envEditor(initial: string, onInput: () => void) {
+  const area = document.createElement("textarea"); area.id = "env-value"; area.className = "mono env-input"; area.rows = 3; area.spellcheck = false; area.value = initial; area.placeholder = "KEY=value"; area.setAttribute("aria-label", t("app.envVars"));
+  const error = document.createElement("p"); error.className = "field-error"; error.hidden = true;
+  const check = () => { const { errors } = parseEnv(area.value); error.hidden = !errors.length; error.textContent = errors.map((item) => t(`app.envError.${item.code}`, { line: item.line })).join("\n"); return !errors.length; };
+  area.addEventListener("input", () => { check(); onInput(); });
+  check();
+  return { nodes: [labeled(t("app.envVars"), area), error, help(t("app.envVarsHelp"))], area, valid: () => !parseEnv(area.value).errors.length, value: () => normalizeEnv(parseEnv(area.value).env) };
+}
 const confirmTimers = new WeakMap<HTMLButtonElement, ReturnType<typeof setTimeout>>();
 function confirmTwice(button: HTMLButtonElement) { if (confirmTimers.has(button)) { clearTimeout(confirmTimers.get(button)); confirmTimers.delete(button); button.textContent = button.dataset.original || t("app.confirm"); button.classList.remove("confirming"); return true; } button.dataset.original = button.textContent; button.textContent = t("app.confirmAgain"); button.classList.add("confirming"); const timer = setTimeout(() => { button.textContent = button.dataset.original || t("app.confirm"); button.classList.remove("confirming"); confirmTimers.delete(button); }, 3000); confirmTimers.set(button, timer); return false; }
 // Returns true when the stored list used the old format and was converted.
@@ -952,7 +967,7 @@ function flushFilesState() {
 }
 function savedTab(tab: Tab, sessions = false): SavedTab {
   const ids = leaves(tab.tree);
-  return { tmux: tab.tmux, tmuxHideStatus: tab.tmuxHideStatus, tmuxSessions: sessions && tab.tmux ? ids.map((id) => surfaces.get(id)?.tmuxSession) : undefined, paths: ids.map((id) => surfaces.get(id)?.cwd || ""), tree: savedTree(tab.tree, ids), focused: Math.max(0, ids.indexOf(tab.focused)), title: tab.favoriteId ? undefined : tab.title, command: tab.command, commandInShell: tab.commandInShell, favoriteId: tab.favoriteId, files: saveFiles(tab.files) };
+  return { tmux: tab.tmux, tmuxHideStatus: tab.tmuxHideStatus, tmuxSessions: sessions && tab.tmux ? ids.map((id) => surfaces.get(id)?.tmuxSession) : undefined, paths: ids.map((id) => surfaces.get(id)?.cwd || ""), tree: savedTree(tab.tree, ids), focused: Math.max(0, ids.indexOf(tab.focused)), title: tab.favoriteId ? undefined : tab.title, command: tab.command, commandInShell: tab.commandInShell, env: tab.env, favoriteId: tab.favoriteId, files: saveFiles(tab.files) };
 }
 // ── Attention: bell / notification / agent waiting ──────────────────────────
 let attention: AttentionState = emptyAttention;
@@ -1447,20 +1462,20 @@ function favoriteMenuItems(item: WorkspaceFavorite): MenuEntry[] {
 const existingFavoriteTab = (item: WorkspaceFavorite) => recentFavoriteInstance(tabs, item.id, recentFavoriteInstances.get(item.id));
 function tabLaunchOptions(tab: Tab) {
   const root = rootOf(tab), favorite = favoriteOf(root), config = favorite?.tab ?? root;
-  return { parentId: root.id, favoriteId: favorite?.id ?? root.favoriteId, commandInShell: config.commandInShell, tmux: !!config.tmux, tmuxHideStatus: !!config.tmuxHideStatus };
+  return { parentId: root.id, favoriteId: favorite?.id ?? root.favoriteId, commandInShell: config.commandInShell, env: config.env, tmux: !!config.tmux, tmuxHideStatus: !!config.tmuxHideStatus };
 }
 function favoriteLaunchOptions(item: WorkspaceFavorite) {
   const existing = existingFavoriteTab(item);
-  return { parentId: existing ? rootOf(existing).id : undefined, favoriteId: item.id, commandInShell: item.tab.commandInShell, tmux: !!item.tab.tmux, tmuxHideStatus: !!item.tab.tmuxHideStatus };
+  return { parentId: existing ? rootOf(existing).id : undefined, favoriteId: item.id, commandInShell: item.tab.commandInShell, env: item.tab.env, tmux: !!item.tab.tmux, tmuxHideStatus: !!item.tab.tmuxHideStatus };
 }
 // Presets launch like the source tab: its "load shell" and tmux settings carry over (a tab through
 // `parentId`, a favorite through the options); only the command differs.
-function launchMenuItems(path: string, options: { parentId?: string; favoriteId?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean } = {}): MenuEntry[] {
+function launchMenuItems(path: string, options: { parentId?: string; favoriteId?: string; commandInShell?: boolean; env?: Env; tmux?: boolean; tmuxHideStatus?: boolean } = {}): MenuEntry[] {
   const { presets, openers } = launchTools();
   const items: MenuEntry[] = [];
   for (const preset of presets) {
     const command = presetCommand(preset);
-    if (command) items.push({ text: t("launch.menu.newTabWith", { name: presetLabel(preset) }), action: () => newSurface(path, undefined, undefined, { command, commandInShell: options.commandInShell, parentId: options.parentId, favoriteId: options.favoriteId, tmux: options.tmux, tmuxHideStatus: options.tmuxHideStatus }) });
+    if (command) items.push({ text: t("launch.menu.newTabWith", { name: presetLabel(preset) }), action: () => newSurface(path, undefined, undefined, { command, commandInShell: options.commandInShell, env: options.env, parentId: options.parentId, favoriteId: options.favoriteId, tmux: options.tmux, tmuxHideStatus: options.tmuxHideStatus }) });
   }
   if (items.length) items.push({ item: "Separator" });
   items.push({ text: t("launch.menu.reveal"), action: () => native({ op: "files-reveal", paths: [path] }) });
@@ -1765,13 +1780,17 @@ function renderConfigText() {
   $("config-diagnostics").textContent =
     config.diagnostics.join("\n") || t("settings.configLoaded");
 }
-async function newSurface(path: string, source?: string, direction?: number, options: { command?: string; commandInShell?: boolean; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSession?: string; parentId?: string; favoriteId?: string; background?: boolean; shell?: boolean } = {}) {
+// 頁籤實際生效的額外環境變數：已連結收藏時以收藏目前的設定為準。
+const envOf = (tab: Tab) => favoriteOf(rootOf(tab))?.tab.env ?? tab.env;
+async function newSurface(path: string, source?: string, direction?: number, options: { command?: string; commandInShell?: boolean; env?: Env; tmux?: boolean; tmuxHideStatus?: boolean; tmuxSession?: string; parentId?: string; favoriteId?: string; background?: boolean; shell?: boolean } = {}) {
   const parent = source && direction !== undefined ? tabFor(source) : undefined;
   const sibling = options.parentId ? tabs.find((tab) => tab.id === options.parentId) : undefined;
   // ⌘⇧T 的子頁籤沿用來源頁籤的啟動命令、tmux 設定與收藏。
   // shell：純 shell，不繼承啟動命令與 tmux，但仍歸在來源頁籤（收藏／群組）底下。
   const command = options.shell ? undefined : options.command ?? sibling?.command;
   const commandInShell = options.shell ? undefined : options.commandInShell ?? sibling?.commandInShell;
+  // 額外環境變數：分割沿用所屬頁籤、子頁籤沿用來源；已連結收藏的以收藏目前的設定為準。
+  const env = options.shell ? undefined : normalizeEnv(options.env ?? (parent && envOf(parent)) ?? (sibling && envOf(sibling)));
   const useTmux = options.shell ? false : !!(options.tmux ?? parent?.tmux ?? sibling?.tmux);
   const hideStatus = options.shell ? false : !!(options.tmuxHideStatus ?? parent?.tmuxHideStatus ?? sibling?.tmuxHideStatus);
   const tmuxSession = useTmux ? (validSession(options.tmuxSession) ? options.tmuxSession : newSessionName()) : undefined;
@@ -1782,11 +1801,14 @@ async function newSurface(path: string, source?: string, direction?: number, opt
   const program = startProgram(command);
   const tmuxProgramPath = tmuxSession && program && !program.includes("/") ? await invoke<string | null>("program_path", { name: program }).catch(() => null) : null;
   let tmuxEnv = tmuxSession ? await invoke<Record<string, string>>("control_env", { session: tmuxSession }).catch(() => ({})) : undefined;
+  // control_env 為空表代表 tmux 不支援 -e，自訂變數也無法帶入；內建 HIGHOSTTY_* 一律勝出。
+  if (tmuxEnv && Object.keys(tmuxEnv).length && env) tmuxEnv = { ...env, ...tmuxEnv };
   // control_env 為空表代表 tmux 不支援 -e；支援時一併帶入登入 shell 的 PATH，pane 內的程式才找得到 Homebrew 等工具。
   let tmuxLoginPath: string | null = null;
   if (tmuxEnv && Object.keys(tmuxEnv).length) {
     tmuxLoginPath = await invoke<string | null>("login_path").catch(() => null);
-    if (tmuxLoginPath) tmuxEnv = { ...tmuxEnv, PATH: tmuxLoginPath };
+    // 使用者自己指定 PATH 時以它為準；否則帶入登入 shell 的 PATH。
+    if (tmuxLoginPath && !env?.PATH) tmuxEnv = { ...tmuxEnv, PATH: tmuxLoginPath };
   }
   const normalized = await invoke<string>("resolve_path", {
     path,
@@ -1800,9 +1822,10 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       path: normalized,
       source,
       split: direction !== undefined,
-      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramDir(withProgramPath(command, tmuxProgramPath), tmuxProgramPath, tmuxLoginPath), hideStatus, tmuxBin, tmuxEnv, tmuxCsiU) : command,
+      command: tmuxSession && tmuxBin ? tmuxCommand(tmuxSession, normalized, withProgramDir(withProgramPath(command, tmuxProgramPath), tmuxProgramPath, env?.PATH ?? tmuxLoginPath), hideStatus, tmuxBin, tmuxEnv, tmuxCsiU) : command,
       commandInShell: tmuxSession ? false : commandInShell,
       tmux: !!tmuxSession,
+      env,
     });
   } finally {
     opening--;
@@ -1830,6 +1853,7 @@ async function newSurface(path: string, source?: string, direction?: number, opt
       focused: result.id,
       command,
       commandInShell,
+      env,
       favoriteId: options.favoriteId ?? sibling?.favoriteId,
       tmux: useTmux || undefined,
       tmuxHideStatus: useTmux && hideStatus || undefined,
@@ -1857,6 +1881,7 @@ async function duplicateTab(tab: Tab, cwd: string) {
     parentId: root.id,
     command: config.command,
     commandInShell: config.commandInShell,
+    env: config.env,
     tmux: !!config.tmux,
     tmuxHideStatus: !!config.tmuxHideStatus,
     favoriteId: favorite?.id ?? root.favoriteId,
@@ -1895,7 +1920,7 @@ async function restoreSnapshot(value: { tabs?: SavedTab[] }) {
     for (const [position, saved] of (value.tabs || []).entries()) {
       const paths = saved.paths.filter(Boolean);
       if (!paths.length) continue;
-      await newSurface(paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, tmux: saved.tmux, tmuxHideStatus: saved.tmuxHideStatus, tmuxSession: saved.tmuxSessions?.[0] });
+      await newSurface(paths[0], undefined, undefined, { command: saved.command, commandInShell: saved.commandInShell, env: normalizeEnv(saved.env), tmux: saved.tmux, tmuxHideStatus: saved.tmuxHideStatus, tmuxSession: saved.tmuxSessions?.[0] });
       const tab = active!;
       const ids = [tab.focused];
       for (const path of paths.slice(1)) {
@@ -2315,10 +2340,10 @@ async function resolveFavoritePath() {
     return undefined;
   }
 }
-async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, launch: { command: string; commandInShell: boolean; tmux: boolean; tmuxHideStatus: boolean }, previewPath: string) {
+async function saveFavoriteEditor(current: Detail, item: WorkspaceFavorite | undefined, sourceTab: Tab | undefined, alias: string, groupId: string, pathInput: HTMLInputElement | undefined, launch: { command: string; commandInShell: boolean; env?: Env; tmux: boolean; tmuxHideStatus: boolean }, previewPath: string) {
   if (!alias) { $("alias").focus(); return; }
   const group = groupId || undefined;
-  const options: Partial<SavedTab> = { command: launch.command || undefined, commandInShell: launch.command ? launch.commandInShell || undefined : undefined, tmux: launch.tmux || undefined, tmuxHideStatus: launch.tmux && launch.tmuxHideStatus || undefined, preview: previewPath || undefined };
+  const options: Partial<SavedTab> = { command: launch.command || undefined, commandInShell: launch.command ? launch.commandInShell || undefined : undefined, env: launch.env, tmux: launch.tmux || undefined, tmuxHideStatus: launch.tmux && launch.tmuxHideStatus || undefined, preview: previewPath || undefined };
   let createdId: string | undefined;
   if (item) {
     let tab = item.tab;

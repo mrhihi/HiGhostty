@@ -28,7 +28,7 @@ export function tmuxCommand(session: string, cwd: string, command?: string, hide
   const parts = [bin === "tmux" ? bin : quote(bin), "start-server", "\\;", "set-option", "-s", "extended-keys", "always", "\\;",
     ...(supportsCsiU ? ["set-option", "-s", "extended-keys-format", "csi-u", "\\;"] : []),
     "set-option", "-s", quote("terminal-features[100]"), quote("xterm*:extkeys"), "\\;", "new-session", "-A", "-s", session];
-  for (const [key, value] of Object.entries(env ?? {})) if (/^[A-Z][A-Z0-9_]*$/.test(key)) parts.push("-e", quote(`${key}=${value}`));
+  for (const [key, value] of Object.entries(env ?? {})) if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) parts.push("-e", quote(`${key}=${value}`));
   if (cwd) parts.push("-c", quote(cwd));
   if (command?.trim()) parts.push(quote(command.trim()));
   // 狀態列是 session 層級設定；每次 attach 都明確套用，切換後重開才會一致。

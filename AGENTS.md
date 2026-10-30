@@ -66,6 +66,7 @@
 - 每個視窗都要回覆 `control-request`（claim 為 owner／part／none），Rust 靠數量判斷是否全部回覆；改 `handleControl` 時不可讓任何路徑漏回覆，否則其他視窗的請求會拖到逾時。
 - socket 只接受同一使用者（0600＋`getpeereid`），不放 token（會出現在 tmux 命令列）；不可放寬。
 - 環境變數經 `native` 的 `open` 注入（`bridge.m` 的 `env_vars`）；tmux 頁籤走 `tmuxCommand` 的 `-e`（tmux 3.2+）。改 `tmuxCommand` 時同步讀 `docs/tmux.md`。
+- 頁籤／收藏的自訂環境變數（`env`）解析與驗證只放 `src/tab-env.ts`；不可覆蓋 `HIGHOSTTY_*`（Rust `surface_env` 與 `newSurface` 的 `tmuxEnv` 都讓內建值勝出）。
 - 原生程式沿用 `@try/@catch`；新增 `key` 之類的輸入 op 前先讀 `docs/keyboard-input.md`。
 - 改完照 `docs/agent-control.md` 的驗收清單實機操作（`npm test` 與 `cargo test` 不涵蓋 socket 與原生環境變數）。
 

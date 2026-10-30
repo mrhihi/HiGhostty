@@ -79,7 +79,7 @@
 - 同一資料目錄已有另一個 HiGhostty 佔用 `ctl.sock` 時，本執行個體改用 `ctl-<pid>.sock`，並透過 `HIGHOSTTY_SOCKET` 交給自己的終端機，不搶也不共用；正常結束時移除，崩潰遺留且無人監聽的 `ctl-*.sock` 於下次啟動清掉。
 
 ## tmux 頁籤
-- tmux 的 pane 不會繼承 tmux client 的環境，所以 `tmuxCommand` 對新建的 session 加 `-e`（tmux 3.2 起；`control_env` 檢查版本，過舊就不注入）。pane 內有 `HIGHOSTTY_ENV`、`HIGHOSTTY_SOCKET`、`HIGHOSTTY_CLI`、`HIGHOSTTY_TMUX_SESSION`，沒有 `HIGHOSTTY_SURFACE_ID`（每次啟動都會變）。
+- tmux 的 pane 不會繼承 tmux client 的環境，所以 `tmuxCommand` 對新建的 session 加 `-e`（tmux 3.2 起；`control_env` 檢查版本，過舊就不注入）。pane 內有 `HIGHOSTTY_ENV`、`HIGHOSTTY_SOCKET`、`HIGHOSTTY_CLI`、`HIGHOSTTY_TMUX_SESSION`，沒有 `HIGHOSTTY_SURFACE_ID`（每次啟動都會變）。頁籤／收藏的自訂環境變數（`src/tab-env.ts`）在 tmux 3.2 以下無法帶入；`HIGHOSTTY_*` 不可自訂，Rust `surface_env` 與前端 `tmuxEnv` 都以內建值覆蓋。
 - CLI 把 `HIGHOSTTY_TMUX_SESSION` 當 `tmuxSession` 送出，`resolveCaller` 找出承載該 session 的 surface，所以 app 重啟、恢復 session 之後仍可用。
 - `-A` 接上既有 session 時 tmux 會忽略 `-e`；舊 session 保有建立當時的值（路徑改變時需重建 session）。
 

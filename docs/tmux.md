@@ -15,6 +15,10 @@
 - 找不到 tmux 時恢復會提示並略過。
 - 啟動命令附 `-e HIGHOSTTY_*=…`（tmux 3.2 起；`control_env` 檢查版本，過舊就不加），讓 pane 裡的程式能用 `highostty ctl`，見 `docs/agent-control.md`。`-A` 接上既有 session 時 tmux 忽略 `-e`。
 
+## 額外環境變數
+
+頁籤／收藏設定的環境變數（`env`，邏輯在 `src/tab-env.ts`）經 `tmuxCommand` 的 `-e` 帶入新 session；使用者指定 `PATH` 時優先於登入 shell 的 PATH，內建 `HIGHOSTTY_*` 一律勝出。tmux 3.2 以下不支援 `-e`，自訂變數不會生效。值以明文出現在行程命令列，不要放密碼。
+
 ## 驗收清單（debug 與 release 各一次）
 1. 頁籤啟用 tmux 並重新開啟，執行 `sleep 9999`；結束 app，`tmux ls` 仍有 `hg-*`。
 2. 重開 app：頁籤、標題、分割版面恢復，輸出仍在。

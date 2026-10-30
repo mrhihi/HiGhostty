@@ -125,10 +125,31 @@ fn socket_in(dir: &Path, file: &str) -> Result<PathBuf, String> {
 
 /// Environment for a new terminal surface. Always set, even when the mode is off, so
 /// switching the mode on later also works in terminals that are already open.
-pub fn surface_env(app: &tauri::AppHandle, surface_id: &str) -> Result<Value, String> {
+pub fn surface_env(app: &tauri::AppHandle, surface_id: &str, user: Option<&Value>) -> Result<Value, String> {
     let mut env = base_env(app)?;
     env["HIGHOSTTY_SURFACE_ID"] = Value::String(surface_id.to_owned());
-    Ok(env)
+    Ok(merge_user_env(user, env))
+}
+fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.to_ascii_uppercase().starts_with("HIGHOSTTY_")
+}
+/// Tab-defined variables go in first and the built-in ones overwrite them; names are checked again here.
+fn merge_user_env(user: Option<&Value>, builtin: Value) -> Value {
+    let mut merged = serde_json::Map::new();
+    if let Some(Value::Object(map)) = user {
+        for (key, value) in map {
+            if let (true, Value::String(_)) = (valid_env_name(key), value) {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    if let Value::Object(map) = builtin {
+        merged.extend(map);
+    }
+    Value::Object(merged)
 }
 fn base_env(app: &tauri::AppHandle) -> Result<Value, String> {
     let cli = std::env::current_exe().map_err(super::err)?;
@@ -684,6 +705,13 @@ mod tests {
             assert_eq!(Mode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(Mode::parse("admin"), None);
+    }
+    #[test]
+    fn user_env_is_filtered_and_builtin_wins() {
+        let user = json!({ "FOO": "bar", "lower": "x", "PATH": "/a", "HIGHOSTTY_ENV": "0", "highostty_x": "1", "1BAD": "x", "BAD KEY": "x", "NUM": 1 });
+        let merged = merge_user_env(Some(&user), json!({ "HIGHOSTTY_ENV": "1" }));
+        assert_eq!(merged, json!({ "FOO": "bar", "lower": "x", "PATH": "/a", "HIGHOSTTY_ENV": "1" }));
+        assert_eq!(merge_user_env(None, json!({ "HIGHOSTTY_ENV": "1" })), json!({ "HIGHOSTTY_ENV": "1" }));
     }
     #[test]
     fn tmux_env_support_needs_3_2() {
