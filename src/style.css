@@ -14,6 +14,7 @@
   --text-faint: #5d6878;
   --accent: #77dfc0;
   --tmux: #8aa8ff;
+  --worktree: #2f9e6b;
   --accent-ink: #0d1f1a;
   --attention: #ffc66b;
   --danger: #ff8f9a;
@@ -201,7 +202,7 @@ input:focus-visible, select:focus-visible { outline-offset: 0; }
 .toggle input { min-height: auto; accent-color: var(--accent); }
 /* Files panel: a drop-down overlay at the top of the workspace. Native terminals draw above the page,
    so it is shown through an overlay-cutout (slot "files"); see docs/files-panel.md. */
-#files { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); width: 80%; min-width: min(360px, calc(100% - 24px)); height: var(--files-height, 50%); z-index: 29; display: flex; flex-direction: column; background: var(--surface-1); container-type: inline-size; border-radius: var(--radius-panel); box-shadow: 0 8px 28px #000a, 0 0 0 1px var(--pressed); overflow: hidden; }
+#files { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); width: 94%; min-width: min(360px, calc(100% - 24px)); height: var(--files-height, 50%); z-index: 29; display: flex; flex-direction: column; background: var(--surface-1); container-type: inline-size; border-radius: var(--radius-panel); box-shadow: 0 8px 28px #000a, 0 0 0 1px var(--pressed); overflow: hidden; }
 #files[hidden] { display: none; }
 #files-resizer { flex: 0 0 6px; cursor: row-resize; background: var(--surface-0); }
 #files-resizer:hover, #files-resizer.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
@@ -219,12 +220,31 @@ input:focus-visible, select:focus-visible { outline-offset: 0; }
 .files-columns button.sorted { color: var(--text-muted); font-weight: 600; }
 .files-columns button[data-direction="asc"]::after { content: " ▲"; font-size: 8px; }
 .files-columns button[data-direction="desc"]::after { content: " ▼"; font-size: 8px; }
+/* Left: the file list; right: the preview (only once a file was picked). The list can fold into an icon rail. */
+#files-main { flex: 1 1 auto; min-height: 0; display: flex; }
+#files-left { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+#files-pv, #files-pv-resizer, .files-rail { display: none; }
+#files-main.has-preview #files-left { min-width: 240px; }
+#files-main.has-preview #files-pv-resizer { display: block; flex: 0 0 6px; cursor: col-resize; background: var(--surface-0); }
+#files-main.has-preview #files-pv-resizer:hover, #files-main.has-preview #files-pv-resizer.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
+#files-main.has-preview #files-pv { display: flex; flex: 0 0 calc(var(--pv-ratio, .5) * (100% - 6px)); min-width: 240px; max-width: calc(100% - 246px); min-height: 0; }
+#files-pv #preview { flex: 1 1 auto; }
+#files-main.list-collapsed #files-left { flex: 0 0 44px; min-width: 44px; }
+#files-main.list-collapsed #files-pv { flex: 1 1 0; max-width: none; }
+#files-main.list-collapsed .files-columns, #files-main.list-collapsed #files-split, #files-main.list-collapsed #files-status { display: none; }
+#files-main.list-collapsed .files-rail { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0; }
+.files-rail-icon { display: grid; place-items: center; width: 32px; height: 32px; color: var(--text-muted); }
+.files-rail-icon svg { width: 18px; height: 18px; }
+@container (max-width: 900px) {
+  #files-main.has-preview .files-columns, #files-main.has-preview .file-row { grid-template-columns: minmax(0, 1fr); }
+  #files-main.has-preview .file-size, #files-main.has-preview .file-date, #files-main.has-preview .files-columns button:not([data-sort="name"]) { display: none; }
+}
 #files-split { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #files-body { flex: 1 1 auto; min-height: 0; position: relative; display: grid; grid-template-columns: minmax(0, 1fr); }
-#files-list, .col-ancestor, .col-child, .col-preview { min-height: 0; overflow: auto; padding: 2px 4px 8px; user-select: none; -webkit-user-select: none; }
+#files-list, .col-ancestor, .col-child { min-height: 0; overflow: auto; padding: 2px 4px 8px; user-select: none; -webkit-user-select: none; }
 #files-list { outline: none; }
-.col-ancestor, .col-child, .col-preview, .col-resizer, #files-preview-resizer { display: none; }
-/* Columns view: one column per folder level, scrolling sideways, with a resizable preview below; separated by surface shades rather than lines. */
+.col-ancestor, .col-child, .col-resizer { display: none; }
+/* Columns view: one column per folder level, scrolling sideways; separated by surface shades rather than lines. */
 #files.view-columns #files-body { display: flex; overflow-x: auto; overflow-y: hidden; }
 #files.view-columns #files-list, #files.view-columns .col-ancestor, #files.view-columns .col-child { flex: 0 0 var(--col-width, 200px); min-width: 0; box-sizing: border-box; }
 #files.view-columns .col-child { flex-grow: 1; }
@@ -232,9 +252,6 @@ input:focus-visible, select:focus-visible { outline-offset: 0; }
 #files.view-columns .col-child { display: block; background: var(--surface-2); }
 #files.view-columns .col-resizer { display: block; flex: 0 0 4px; cursor: col-resize; background: var(--surface-0); }
 #files.view-columns .col-resizer:hover, #files.view-columns .col-resizer.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
-#files.view-columns .col-preview { display: block; flex: 0 0 var(--preview-height, 220px); background: var(--surface-2); }
-#files.view-columns #files-preview-resizer { display: block; flex: 0 0 4px; cursor: row-resize; background: var(--surface-0); }
-#files.view-columns #files-preview-resizer:hover, #files.view-columns #files-preview-resizer.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
 #files.view-columns .files-columns { display: none; }
 #files.view-columns .file-row { grid-template-columns: minmax(0, 1fr); padding-left: 8px; }
 #files.view-columns .file-size, #files.view-columns .file-date, #files.view-columns .file-disclosure { display: none; }
@@ -244,13 +261,6 @@ input:focus-visible, select:focus-visible { outline-offset: 0; }
 .file-row.mini { grid-template-columns: minmax(0, 1fr); cursor: pointer; }
 .file-row.mini.current { background: var(--selected); color: var(--text); }
 .preview-note { margin: 24px 8px; text-align: center; color: var(--text-faint); font-size: 14px; overflow-wrap: anywhere; }
-.preview-file { display: flex; flex-direction: column; align-items: center; gap: 8px; height: 100%; padding: 12px; box-sizing: border-box; }
-.preview-file img { flex: 1 1 0; min-height: 0; min-width: 0; max-width: 100%; object-fit: contain; border-radius: 4px; }
-.preview-info { flex: 0 0 auto; width: 100%; min-width: 0; display: grid; gap: 4px; justify-items: center; text-align: center; }
-.preview-file strong { max-width: 100%; color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
-.preview-file dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 8px; margin: 0 auto; width: 100%; max-width: 320px; font-size: 13px; text-align: left; }
-.preview-file dt { color: var(--text-faint); }
-.preview-file dd { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
 .files-view-switch { display: inline-flex; }
 .file-row { height: 30px; padding: 0 8px 0 calc(4px + var(--depth, 0) * 16px); border-radius: var(--radius-row); color: var(--text-muted); cursor: default; }
 .file-row:hover { background: var(--hover); }
@@ -452,13 +462,7 @@ pre { white-space: pre-wrap; max-height: 240px; overflow: auto; }
 .row.tab-parent { color: var(--text-muted); }
 .row.tab-parent .tab-parent-label { display: flex; align-items: center; gap: 6px; }
 
-/* Preview pane: lives in the strip of #terminals that no native terminal view covers. */
-#preview { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface-1); color: var(--text); }
-#preview[hidden], #preview-resizer[hidden] { display: none; }
-#preview-resizer { position: absolute; background: var(--surface-0); z-index: 1; }
-#preview-resizer[data-side="right"] { cursor: col-resize; }
-#preview-resizer[data-side="bottom"] { cursor: row-resize; }
-#preview-resizer:hover, #preview-resizer.dragging { background: color-mix(in srgb, var(--accent) 45%, var(--surface-0)); }
+/* Preview pane: the right half of the files overlay (#files-pv); see docs/preview.md. */
 .preview-head { height: 34px; flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 12px; background: var(--surface-2); }
 .preview-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .preview-time { flex: 1; min-width: 0; color: var(--text-faint); font-size: 13px; white-space: nowrap; }
@@ -506,7 +510,8 @@ body.standalone #app { position: fixed; inset: 0; display: flex; flex-direction:
 .preview-pdf-page { background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .25); max-width: 100%; }
 .preview-diagram { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
 .preview-page { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
-.preview-body:has(.preview-diagram, .preview-page) { overflow: hidden; }
+.preview-video { width: 100%; height: 100%; display: block; background: #000; object-fit: contain; }
+.preview-body:has(.preview-diagram, .preview-page, .preview-video) { overflow: hidden; }
 .preview-slides { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .preview-body.light:has(.preview-pdf) { background: var(--surface-2); }
 /* highlight.js: light palette inside white panes, dark palette on the app theme */
@@ -623,6 +628,9 @@ body.files-window #files { position: static; transform: none; width: auto; heigh
 .launch-model-label { grid-column: 1 / -1; color: var(--text); font-weight: 600; }
 .tab-git { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--accent); }
 .tab-git.dirty { color: var(--danger); }
+.tab-git .wt-icon { color: var(--worktree); width: 12px; height: 12px; margin-right: 3px; vertical-align: -2px; }
+#tooltip { position: fixed; z-index: 1000; max-width: 320px; padding: 4px 8px; border-radius: var(--radius-row); background: var(--surface-2); color: var(--text); border: 1px solid var(--pressed); font-size: 12px; line-height: 1.4; white-space: pre-wrap; pointer-events: none; box-shadow: 0 4px 12px rgb(0 0 0 / .25); }
+#tooltip[hidden] { display: none; }
 .git-strip { position: absolute; left: 0; right: 0; bottom: 0; height: 20px; line-height: 20px; padding: 0 8px; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--accent); background: rgb(119 223 192 / .16); user-select: none; -webkit-user-select: none; pointer-events: none; }
 .git-strip.dirty { color: var(--danger); background: var(--danger-soft); }
 .preview-markdown .mermaid-diagram { margin: 1em 0; text-align: center; overflow: auto; }

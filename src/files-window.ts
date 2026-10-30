@@ -40,6 +40,7 @@ async function main() {
     editInTerminal: async (directory, command) => { await send("files-request", { op: "edit", directory, command }); },
     previewFile: (path) => { send("files-request", { op: "preview", path }); },
     followPreview: (path) => { send("files-request", { op: "follow-preview", path }); },
+    hasPreview: () => false,
     insertIntoTerminal: async (text) => { await send("files-request", { op: "insert", text }); },
     focusTerminal: () => {},
     layoutChanged: () => {},

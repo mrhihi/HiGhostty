@@ -813,6 +813,7 @@ fn main() {
             tools::save_launch_tools,
             tools::open_with_app,
             git::git_status,
+            git::git_worktree,
             usage::usage_codex,
             usage::usage_claude,
             snippets::save_snippets,

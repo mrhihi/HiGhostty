@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   clampColumnWidth,
-  clampPreviewHeight,
+  effectiveCollapsed,
   columnChain,
   columnRootFor,
   DEFAULT_COLUMN_WIDTH,
@@ -11,7 +11,6 @@ import {
   clampDropHeight,
   defaultDropHeight,
   shellEscape,
-  fileKindLabel,
   parentOf,
   previewTarget,
   formatSize,
@@ -91,10 +90,9 @@ test("helpers", () => {
   assert.equal(clampDropHeight(50, 1000), 160);
   assert.equal(clampDropHeight(950, 1000), 850);
   assert.equal(defaultDropHeight(800), 400);
-  assert.equal(clampPreviewHeight(10, 800), 80);
-  assert.equal(clampPreviewHeight(300, 800), 300);
-  assert.equal(clampPreviewHeight(790, 800), 560);
-  assert.equal(clampPreviewHeight(500, 60), 80);
+  assert.equal(effectiveCollapsed(true, true), true);
+  assert.equal(effectiveCollapsed(true, false), false); // no preview showing: the list expands by itself
+  assert.equal(effectiveCollapsed(false, true), false);
   assert.equal(formatSize(512, false), "512 B");
   assert.equal(formatSize(12_300, false), "12 KB");
   assert.equal(formatSize(4_500_000, false), "4.5 MB");
@@ -112,9 +110,6 @@ test("parent paths and preview targets", () => {
   assert.equal(previewTarget({ paths: ["/d"] }, entries).kind, "dir");
   assert.equal(previewTarget({ paths: ["/f", "/gone"] }, entries).kind, "file");
   assert.deepEqual(previewTarget({ paths: ["/d", "/f"] }, entries), { kind: "many", count: 2 });
-  assert.equal(fileKindLabel("main.ts", false), "TS 檔案");
-  assert.equal(fileKindLabel(".env", false), "檔案");
-  assert.equal(fileKindLabel("x", true), "資料夾");
 });
 
 test("column root stays while going deeper and moves up past the left edge", () => {

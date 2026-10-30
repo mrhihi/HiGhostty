@@ -7,7 +7,7 @@ import DOMPurify from "dompurify";
 import { t } from "./i18n";
 import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import { marked } from "marked";
-import { highlightCode, renderCode, renderDiagram, renderMermaid, renderPage, renderPdf, renderSheet, renderSlides, renderWord, type Rendered } from "./preview-render";
+import { highlightCode, renderCode, renderDiagram, renderMermaid, renderPage, renderPdf, renderSheet, renderSlides, renderVideo, renderWord, type Rendered } from "./preview-render";
 import { clampFontSize, codeLanguage, DEFAULT_FONT_SIZE, isBinaryKind, linkTarget, localImagePath, previewKind, clampWidth, MAX_WIDTH_PCT, measureFor, parseWidthInput, WIDTH_PRESETS, sameStamp, scrollAfterUpdate, stepFontSize, type PreviewKind, type Stamp } from "./preview";
 
 type Content = { mtimeMs: number; size: number; text?: string; dataUrl?: string; truncated: boolean; unsupported?: string };
@@ -190,7 +190,9 @@ export function createPreviewView(host: PreviewViewHost) {
     const bytes = content instanceof ArrayBuffer ? content : undefined;
     const data = bytes ? undefined : (content as Content);
     let next: Rendered | undefined;
-    if (bytes) {
+    if (kind === "video") {
+      next = await renderVideo(body, path, () => t("preview.videoFailed"));
+    } else if (bytes) {
       next = kind === "pdf" ? await renderPdf(body, bytes) : kind === "word" ? await renderWord(body, bytes) : kind === "sheet" ? await renderSheet(body, bytes) : await renderSlides(body, bytes);
     } else if (data!.unsupported) note(data!.unsupported);
     else if (data!.dataUrl) {
@@ -263,7 +265,13 @@ export function createPreviewView(host: PreviewViewHost) {
     const kind = previewKind(path);
     try {
       let content: Content | ArrayBuffer;
-      if (isBinaryKind(kind)) {
+      if (kind === "video") {
+        // Streamed by the player itself; only the stamp is needed here.
+        const next = await invoke<Stamp>("preview_stat", { path });
+        if (mine !== generation) return;
+        stamp = next;
+        content = { mtimeMs: next.mtimeMs, size: next.size, truncated: false };
+      } else if (isBinaryKind(kind)) {
         const next = await invoke<Stamp>("preview_stat", { path });
         content = await invoke<ArrayBuffer>("preview_bytes", { path });
         if (mine !== generation) return;

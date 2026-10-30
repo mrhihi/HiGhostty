@@ -246,7 +246,7 @@ export async function renderDiagram(body: HTMLElement, xml: string): Promise<Ren
 // .html: served by the Rust `hgpage` protocol into an iframe whose sandbox has allow-scripts but not
 // allow-same-origin, so the page's scripts run with an opaque origin and cannot reach the app or its IPC.
 // Relative css/js/images load from the file's folder. Refreshes reload the frame (`update`).
-const pageUrl = (path: string, version: number): string => {
+export const pageUrl = (path: string, version: number): string => {
   const base = navigator.userAgent.includes("Windows") ? "http://hgpage.localhost" : "hgpage://localhost";
   return `${base}${encodeURI(path).replace(/[?#]/g, encodeURIComponent)}?v=${version}`;
 };
@@ -262,6 +262,23 @@ export async function renderPage(body: HTMLElement, path: string): Promise<Rende
   body.replaceChildren(frame);
   await load();
   return { dispose() {}, update: () => load() };
+}
+
+// Video: a <video> streaming from the same hgpage protocol (it answers Range requests, so seeking works).
+export async function renderVideo(body: HTMLElement, path: string, failed: (message: string) => string): Promise<Rendered> {
+  const video = document.createElement("video");
+  video.className = "preview-video";
+  video.controls = true;
+  video.preload = "metadata";
+  video.src = pageUrl(path, Date.now());
+  video.addEventListener("error", () => {
+    const note = document.createElement("p");
+    note.className = "preview-note";
+    note.textContent = failed(path);
+    body.replaceChildren(note);
+  }, { once: true });
+  body.replaceChildren(video);
+  return { dispose() { video.pause(); video.removeAttribute("src"); video.load(); } };
 }
 
 let mermaidReady: Promise<typeof import("mermaid").default> | undefined;

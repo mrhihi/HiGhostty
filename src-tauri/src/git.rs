@@ -15,6 +15,14 @@ pub struct GitInfo {
     pub behind: u32,
 }
 
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    // This worktree's root and the main work tree it was added from.
+    pub root: String,
+    pub main: String,
+}
+
 // Parses `git status --porcelain=v2 --branch -uno`. Header lines start with `#`; every other
 // non-empty line is a changed or unmerged entry.
 pub fn parse_status(text: &str) -> GitInfo {
@@ -39,6 +47,34 @@ pub fn parse_status(text: &str) -> GitInfo {
     info
 }
 
+// A linked worktree's git dir (.git/worktrees/<name>) differs from the shared common dir; in the
+// main work tree they are the same directory. Both may be relative to `dir`. The main work tree
+// is the common dir's parent (`<main>/.git`).
+fn linked_worktree(dir: &Path, root: &str, git_dir: &str, common_dir: &str) -> Option<Worktree> {
+    let resolve = |p: &str| dir.join(p).canonicalize().ok();
+    let (git, common) = (resolve(git_dir)?, resolve(common_dir)?);
+    if git == common {
+        return None;
+    }
+    Some(Worktree { root: root.to_string(), main: common.parent()?.to_string_lossy().into_owned() })
+}
+
+fn worktree_of(path: &str) -> Option<Worktree> {
+    let out = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    linked_worktree(Path::new(path), lines.next()?, lines.next()?, lines.next()?)
+}
+
 // None when the directory is not inside a git work tree (git exits non-zero there).
 #[tauri::command]
 pub async fn git_status(path: String) -> Result<Option<GitInfo>, String> {
@@ -57,6 +93,17 @@ pub async fn git_status(path: String) -> Result<Option<GitInfo>, String> {
     })
     .await
     .map_err(err)?
+}
+
+// Separate from `git_status` because it spawns a second git process and the tab row should not
+// wait for it. Some for a linked worktree (`git worktree add`), None for the main work tree or
+// outside a repo.
+#[tauri::command]
+pub async fn git_worktree(path: String) -> Result<Option<Worktree>, String> {
+    if !Path::new(&path).is_dir() {
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || worktree_of(&path)).await.map_err(err)
 }
 
 #[cfg(test)]
@@ -90,5 +137,20 @@ mod tests {
     #[test]
     fn unmerged_entries_count_as_dirty() {
         assert_eq!(parse_status("# branch.head main\nu UU N... 100644 100644 100644 100644 a b c d e\n").changed, 1);
+    }
+
+    #[test]
+    fn linked_worktree_has_distinct_git_and_common_dirs() {
+        let root = std::env::temp_dir().join(format!("hg-wt-{}", std::process::id()));
+        let main = root.join("main");
+        std::fs::create_dir_all(main.join(".git/worktrees/wt")).unwrap();
+        let wt = root.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let canon = |p: &Path| p.canonicalize().unwrap().to_string_lossy().into_owned();
+        assert_eq!(linked_worktree(&main, "/x/main", ".git", ".git"), None);
+        let found = linked_worktree(&wt, "/x/wt", main.join(".git/worktrees/wt").to_str().unwrap(), main.join(".git").to_str().unwrap());
+        assert_eq!(found, Some(Worktree { root: "/x/wt".into(), main: canon(&main) }));
+        assert_eq!(linked_worktree(&main, "/x/main", "missing", "missing"), None);
+        std::fs::remove_dir_all(&root).ok();
     }
 }

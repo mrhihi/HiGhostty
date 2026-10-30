@@ -183,7 +183,6 @@
   "app.opened": "已開啟",
   "app.workspaceOverview": "工作區一覽",
   "app.filesPanel": "檔案面板",
-  "app.togglePreviewSide": "切換預覽位置（左右/上下）",
   "app.closePreview": "關閉預覽",
   "app.newWorkspace": "新工作區",
   "app.newWindow": "新視窗",
@@ -227,5 +226,7 @@
   "git.title": "目前目錄的 git 狀態",
   "git.dirty": "有未提交的變更",
   "git.detached": "分離的 HEAD",
-  "git.noUpstream": "無遠端追蹤"
+  "git.noUpstream": "無遠端追蹤",
+  "git.worktree": "Worktree 目錄",
+  "git.worktreeMain": "主儲存庫"
 }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  MAX_PANES, activePane, importGroups, canMerge, movePane, closeGroup, closePane, detachPane, dropTarget, emptyTabs, groupTitle, mergeGroups,
+  MAX_PANES, activePane, importGroups, canMerge, movePane, closeGroup, closeGroups, closePane, detachPane, dropTarget, emptyTabs, groupTitle, mergeGroups,
   moveGroup, openPath, paneBoxes, paneCount, replacePanePath, setLayout, sizesFromDrag, splitGroup,
 } from "../src/preview-tabs.ts";
 
@@ -158,4 +158,19 @@ test("importGroups keeps popped-out tabs as they were and skips files already op
   assert.equal(s.groups[2].panes[0].origin.tab, "t1");
   assert.deepEqual(s.groups[2].sizes.map((x) => +x.toFixed(3)), [0.333, 0.333, 0.333]);
   assert.equal(importGroups(s, [{ paths: ["/a/a.md"] }]).groups.length, 3);
+});
+
+test("closeGroups closes relative to a tab and keeps the active one sensible", () => {
+  const s = three();
+  const [a, b, c] = s.groups.map((g) => g.id);
+  const names = (st) => st.groups.map((g) => groupTitle(g));
+  assert.deepEqual(names(closeGroups(s, b, "left")), ["b.md", "c.md"]);
+  assert.deepEqual(names(closeGroups(s, b, "right")), ["a.md", "b.md"]);
+  assert.deepEqual(names(closeGroups(s, b, "others")), ["b.md"]);
+  assert.equal(closeGroups(s, b, "all").groups.length, 0);
+  // active (c) was closed by "right of a"... a stays and becomes active
+  assert.equal(s.active, c);
+  assert.equal(closeGroups(s, a, "right").active, a);
+  assert.equal(closeGroups(s, a, "left"), s); // nothing to close
+  assert.equal(closeGroups(s, "nope", "all"), s);
 });

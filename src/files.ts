@@ -152,13 +152,9 @@ export function shellEscape(path: string) {
   if (/[\u0000-\u001f\u007f]/.test(path)) return `$'${path.replace(/[\\']/g, "\\$&").replace(/\n/g, "\\n").replace(/\t/g, "\\t").replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}'`;
   return path.replace(/[^A-Za-z0-9_@%+=:,./~\-\u0080-\uffff]/g, "\\$&");
 }
-export const DEFAULT_PREVIEW_HEIGHT = 220;
-const MIN_PREVIEW_HEIGHT = 80;
-// Bottom preview height in columns view; leaves at least room for the heading and a few rows.
-export function clampPreviewHeight(height: number, panelHeight: number) {
-  const max = Math.max(MIN_PREVIEW_HEIGHT, panelHeight * 0.7);
-  return Math.round(Math.max(MIN_PREVIEW_HEIGHT, Math.min(height, max)));
-}
+// The list collapses to an icon rail only while a preview is showing next to it; with no preview
+// (closed, or the overlay too narrow for it) the list is always expanded.
+export const effectiveCollapsed = (collapsed: boolean, previewVisible: boolean): boolean => collapsed && previewVisible;
 export function formatSize(size: number, isDir: boolean) {
   if (isDir) return "—";
   if (size < 1000) return `${size} B`;
@@ -196,13 +192,6 @@ export function previewTarget(selection: Selection, entries: Map<string, FileEnt
   const entry = entries.get(chosen[0])!;
   return { kind: entry.is_dir ? "dir" : "file", entry };
 }
-// Fallback when the system has no localized type description.
-export function fileKindLabel(name: string, isDir: boolean) {
-  if (isDir) return t("files.kind.folder");
-  const dot = name.lastIndexOf(".");
-  return dot > 0 && dot < name.length - 1 ? t("files.kind.ext", { ext: name.slice(dot + 1).toUpperCase() }) : t("files.kind.file");
-}
-
 // Leftmost column folder: kept while the path stays below it, otherwise the
 // parent of the path (parent | current | child at the start).
 export function columnRootFor(root: string | undefined, path: string) {

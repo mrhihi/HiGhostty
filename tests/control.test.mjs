@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { OPS, AGENT_KINDS, MAX_KEYS, MAX_PROMPT_CHARS, agentCommand, confirmedState, keysProblem, promptProblem, startReady, ALERT_LIMITS, SNIPPET_LIMITS, STATUS_MAX_CHARS, alertInput, snippetInput, statusText, DEFAULT_WAIT_MS, KEY_NAMES, MAX_COMMAND_CHARS, commandLine, commandProblem, isShellName, shellQuote, validKey, MAX_WAIT_MS, authorize, claimFor, errReply, findMatch, helpResult, makeMatcher, okReply, parseArgv, previewSide, resolveCaller, tailLines, usage, waitLimit, waitSatisfied } from "../src/control.ts";
+import { OPS, AGENT_KINDS, MAX_KEYS, MAX_PROMPT_CHARS, agentCommand, confirmedState, keysProblem, promptProblem, startReady, ALERT_LIMITS, SNIPPET_LIMITS, STATUS_MAX_CHARS, alertInput, snippetInput, statusText, DEFAULT_WAIT_MS, KEY_NAMES, MAX_COMMAND_CHARS, commandLine, commandProblem, isShellName, shellQuote, validKey, MAX_WAIT_MS, authorize, claimFor, errReply, findMatch, helpResult, makeMatcher, okReply, parseArgv, resolveCaller, tailLines, usage, waitLimit, waitSatisfied } from "../src/control.ts";
 
 const parse = (...argv) => parseArgv(argv);
 
@@ -341,7 +341,7 @@ test("the skill's write examples are the ones that need full mode", () => {
   }
 });
 
-test("preview commands are read-only and parse path and --side", () => {
+test("preview commands are read-only and parse path (--side is accepted and ignored)", () => {
   for (const name of ["preview open", "preview close", "preview status"]) assert.equal(OPS.find((op) => op.name === name).write, false);
   const { parsed } = parse("preview", "open", "docs/PLAN.md", "--side", "bottom");
   assert.equal(parsed.op.name, "preview open");
@@ -349,12 +349,6 @@ test("preview commands are read-only and parse path and --side", () => {
   assert.equal(parsed.flags.side, "bottom");
   assert.equal(authorize("readonly", parsed.op), null);
   assert.ok(parse("preview", "open").reply);
-});
-
-test("previewSide leaves the default to the app and rejects anything else", () => {
-  assert.deepEqual(previewSide({}), { ok: true, side: undefined });
-  assert.deepEqual(previewSide({ side: "bottom" }), { ok: true, side: "bottom" });
-  assert.equal(previewSide({ side: "left" }).reply.error.code, "bad_args");
 });
 
 test("preview window opens a new window, so it needs full mode", () => {

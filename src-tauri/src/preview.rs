@@ -3,7 +3,10 @@
 // keeps working when an editor or agent saves via write-temp-then-rename.
 use crate::{err, expand_path};
 use serde::Serialize;
-use std::{io::Read, time::UNIX_EPOCH};
+use std::{
+    io::{Read, Seek, SeekFrom},
+    time::UNIX_EPOCH,
+};
 
 const MAX_TEXT: u64 = 2 * 1024 * 1024;
 const MAX_IMAGE: u64 = 15 * 1024 * 1024;
@@ -182,6 +185,9 @@ fn page_mime(path: &str) -> &'static str {
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "txt" => "text/plain; charset=utf-8",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
         _ => "application/octet-stream",
     }
 }
@@ -205,10 +211,62 @@ pub fn serve_page(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Respon
     if !path.starts_with('/') || path.split('/').any(|part| part == "..") {
         return reply(400, "text/plain", Vec::new());
     }
-    match std::fs::read(&path) {
-        Ok(bytes) => reply(200, page_mime(&path), bytes),
-        Err(_) => reply(404, "text/plain", Vec::new()),
+    let mime = page_mime(&path);
+    let range = request
+        .headers()
+        .get("range")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_range);
+    let Some((start, end)) = range else {
+        return match std::fs::read(&path) {
+            Ok(bytes) => tauri::http::Response::builder()
+                .status(200)
+                .header("Content-Type", mime)
+                .header("Accept-Ranges", "bytes")
+                .header("Cache-Control", "no-store")
+                .body(bytes)
+                .unwrap_or_default(),
+            Err(_) => reply(404, "text/plain", Vec::new()),
+        };
+    };
+    // Media players ask for byte ranges; read only the slice (capped) instead of the whole file.
+    let Ok(mut file) = std::fs::File::open(&path) else {
+        return reply(404, "text/plain", Vec::new());
+    };
+    let Ok(total) = file.metadata().map(|m| m.len()) else {
+        return reply(404, "text/plain", Vec::new());
+    };
+    if total == 0 || start >= total {
+        return reply(416, "text/plain", Vec::new());
     }
+    let last = end.unwrap_or(u64::MAX).min(total - 1).min(start + MAX_RANGE - 1);
+    let mut bytes = vec![0u8; (last - start + 1) as usize];
+    if file.seek(SeekFrom::Start(start)).and_then(|_| file.read_exact(&mut bytes)).is_err() {
+        return reply(500, "text/plain", Vec::new());
+    }
+    tauri::http::Response::builder()
+        .status(206)
+        .header("Content-Type", mime)
+        .header("Accept-Ranges", "bytes")
+        .header("Content-Range", format!("bytes {start}-{last}/{total}"))
+        .header("Cache-Control", "no-store")
+        .body(bytes)
+        .unwrap_or_default()
+}
+
+// Largest slice answered for one Range request; players just ask again for the rest.
+const MAX_RANGE: u64 = 8 * 1024 * 1024;
+
+// `bytes=START-END` (END optional). Suffix ranges (`bytes=-N`) are not supported and get the whole file.
+fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
+    let spec = value.strip_prefix("bytes=")?;
+    let (start, end) = spec.split_once('-')?;
+    let start = start.trim().parse().ok()?;
+    let end = match end.trim() {
+        "" => None,
+        text => Some(text.parse().ok()?),
+    };
+    Some((start, end))
 }
 
 #[tauri::command]

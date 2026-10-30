@@ -1,60 +1,61 @@
-import { activePane, emptyTabs, importGroups, openPath, replacePanePath, type GroupSeed, type TabsState } from "./preview-tabs.ts";
+import { activePane, emptyTabs, importGroups, openPath, type GroupSeed, type TabsState } from "./preview-tabs.ts";
 
-// Pure state for the per-tab preview pane that sits beside (or below) the
-// terminals. DOM lives in preview-panel.ts; nothing here touches the window.
-export type PreviewSide = "right" | "bottom";
-// The pane beside the terminals holds a tab strip (preview-tabs.ts); `tabs` is that state.
-export type PreviewState = { side: PreviewSide; ratio: number; tabs: TabsState };
+// Pure state for the per-tab preview pane that sits in the right half of the files
+// overlay. DOM lives in preview-panel.ts; nothing here touches the window.
+// The pane holds a tab strip (preview-tabs.ts); `tabs` is that state.
+export type PreviewState = { tabs: TabsState };
 export type Box = { x: number; y: number; width: number; height: number };
-export type PreviewKind = "markdown" | "code" | "text" | "image" | "pdf" | "sheet" | "word" | "slides" | "diagram" | "page";
+export type PreviewKind = "markdown" | "code" | "text" | "image" | "pdf" | "sheet" | "word" | "slides" | "diagram" | "page" | "video";
 
-export const DEFAULT_RATIO = 0.45;
-export const DEFAULT_SIDE: PreviewSide = "bottom";
-export const MIN_RATIO = 0.15;
-export const MAX_RATIO = 0.85;
-// Below this the pane is hidden instead of shrunk to a useless sliver.
-const MIN_WIDTH = 200;
-const MIN_HEIGHT = 120;
-
-const MARKDOWN = new Set(["md", "markdown", "mdx"]);
-const IMAGE = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"]);
+export const DEFAULT_RATIO = 0.5;
+export const MIN_RATIO = 0.2;
+export const MAX_RATIO = 0.8;
+// Below this overlay width the preview is hidden instead of squeezed into a useless sliver.
+export const MIN_OVERLAY_WIDTH = 560;
+// Smallest width of either half while the divider is dragged.
+export const MIN_HALF_WIDTH = 240;
 
 export const clampRatio = (ratio: number): number =>
   Number.isFinite(ratio) ? Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio)) : DEFAULT_RATIO;
 
-export function isPreviewSide(value: unknown): value is PreviewSide {
-  return value === "right" || value === "bottom";
+/** Share of the overlay width given to the preview, keeping both halves usable. */
+export function clampPreviewRatio(ratio: number, width: number): number {
+  const base = clampRatio(ratio);
+  if (!(width > 0)) return base;
+  const min = MIN_HALF_WIDTH / width;
+  return Math.min(Math.max(base, min), Math.max(min, 1 - min));
 }
 
-export function openPreview(path: string, side: PreviewSide = DEFAULT_SIDE, ratio = DEFAULT_RATIO): PreviewState {
-  return { side, ratio: clampRatio(ratio), tabs: openPath(emptyTabs(), path) };
+/** The overlay is wide enough to show the preview next to the list. */
+export const previewFits = (width: number): boolean => width >= MIN_OVERLAY_WIDTH;
+
+/** Ratio after dragging the divider to `pointer` (client x), in an overlay spanning `left`..`left + width`. */
+export function ratioFromPointer(left: number, width: number, pointer: number): number {
+  return clampPreviewRatio(1 - (pointer - left) / Math.max(1, width), width);
+}
+
+export function openPreview(path: string): PreviewState {
+  return { tabs: openPath(emptyTabs(), path) };
 }
 
 /** Path of the file shown first (the active tab's first pane). */
 export const previewPath = (state: PreviewState): string | undefined => activePane(state.tabs)?.path;
 
 /** An explicitly opened file gets its own tab; the same file only activates its tab. */
-export function addPreviewFile(state: PreviewState, path: string, side?: PreviewSide): PreviewState {
-  return { ...state, side: side ?? state.side, tabs: openPath(state.tabs, path) };
+export function addPreviewFile(state: PreviewState | undefined, path: string): PreviewState {
+  return state ? { ...state, tabs: openPath(state.tabs, path) } : openPreview(path);
 }
 
 /** Tabs sent back from the preview window join the pane as they were (merged groups included). */
-export function importPreviewGroups(state: PreviewState | undefined, seeds: GroupSeed[], activeIndex = 0, side: PreviewSide = DEFAULT_SIDE): PreviewState {
-  const base: PreviewState = state ?? { side, ratio: DEFAULT_RATIO, tabs: emptyTabs() };
+export function importPreviewGroups(state: PreviewState | undefined, seeds: GroupSeed[], activeIndex = 0): PreviewState {
+  const base: PreviewState = state ?? { tabs: emptyTabs() };
   return { ...base, tabs: importGroups(base.tabs, seeds, activeIndex) };
 }
 
-/** Files-panel navigation: the active pane shows the other file instead of piling up tabs. */
-export function followPreviewFile(state: PreviewState, path: string): PreviewState {
-  const pane = activePane(state.tabs);
-  if (!pane || pane.path === path) return state;
-  return { ...state, tabs: replacePanePath(state.tabs, pane.id, path) };
-}
-
-export function togglePreviewSide(state: PreviewState): PreviewState {
-  return { ...state, side: state.side === "right" ? "bottom" : "right" };
-}
-
+const MARKDOWN = new Set(["md", "markdown", "mdx"]);
+const IMAGE = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"]);
+// Formats WKWebView plays natively (no mkv/avi).
+const VIDEO = new Set(["mp4", "m4v", "mov", "webm"]);
 const DIAGRAM = new Set(["drawio", "dio"]);
 const PAGE = new Set(["html", "htm", "xhtml"]);
 const BINARY_KINDS: Record<string, PreviewKind> = { pdf: "pdf", xlsx: "sheet", xlsm: "sheet", docx: "word", pptx: "slides" };
@@ -91,6 +92,7 @@ export function previewKind(path: string): PreviewKind {
   if (IMAGE.has(ext)) return "image";
   if (DIAGRAM.has(ext)) return "diagram";
   if (PAGE.has(ext)) return "page";
+  if (VIDEO.has(ext)) return "video";
   if (BINARY_KINDS[ext]) return BINARY_KINDS[ext];
   return codeLanguage(path) ? "code" : "text";
 }
@@ -98,39 +100,6 @@ export function previewKind(path: string): PreviewKind {
 // Kinds read as raw bytes (preview_bytes) and rendered by a library.
 export const isBinaryKind = (kind: PreviewKind): boolean =>
   kind === "pdf" || kind === "sheet" || kind === "word" || kind === "slides";
-
-// Splits the terminal area in two. `gap` is the divider between them. When the
-// box is too small for a usable pane the preview is dropped and the terminals
-// keep everything.
-export function splitBox(box: Box, preview: PreviewState | undefined, gap = 6): { terminals: Box; preview?: Box } {
-  if (!preview) return { terminals: box };
-  const ratio = clampRatio(preview.ratio);
-  if (preview.side === "right") {
-    const span = Math.max(0, box.width - gap);
-    const width = Math.round(span * ratio);
-    if (width < MIN_WIDTH || span - width < MIN_WIDTH) return { terminals: box };
-    const terminalWidth = span - width;
-    return {
-      terminals: { ...box, width: terminalWidth },
-      preview: { x: box.x + terminalWidth + gap, y: box.y, width, height: box.height },
-    };
-  }
-  const span = Math.max(0, box.height - gap);
-  const height = Math.round(span * ratio);
-  if (height < MIN_HEIGHT || span - height < MIN_HEIGHT) return { terminals: box };
-  const terminalHeight = span - height;
-  return {
-    terminals: { ...box, height: terminalHeight },
-    preview: { x: box.x, y: box.y + terminalHeight + gap, width: box.width, height },
-  };
-}
-
-// Ratio after dragging the divider to `pointer` (pixel offset inside `box`).
-export function ratioFromPointer(box: Box, side: PreviewSide, pointer: number, gap = 6): number {
-  const span = Math.max(1, (side === "right" ? box.width : box.height) - gap);
-  const start = side === "right" ? box.x : box.y;
-  return clampRatio(1 - (pointer - start - gap / 2) / span);
-}
 
 export type Scroll = { top: number; height: number; client: number };
 const NEAR_BOTTOM = 24;

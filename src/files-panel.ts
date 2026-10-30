@@ -3,17 +3,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { popupMenu } from "./context-menu";
 import { t } from "./i18n";
+import { previewFits } from "./preview";
 import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import {
   clampColumnWidth,
-  clampPreviewHeight,
   clampDropHeight,
   defaultDropHeight,
   columnChain,
   columnRootFor,
   DEFAULT_COLUMN_WIDTH,
-  DEFAULT_PREVIEW_HEIGHT,
-  fileKindLabel,
+  effectiveCollapsed,
   formatDate,
   formatSize,
   initialFiles,
@@ -55,8 +54,10 @@ export type FilesHost = {
   openTerminal(path: string): Promise<void>;
   editInTerminal(directory: string, command: string): Promise<void>;
   previewFile(path: string): void;
-  // Swaps the tab's preview pane to this file; does nothing when no preview pane is open.
+  // Swaps the tab's preview pane to this file, opening the pane when there is none.
   followPreview(path: string): void;
+  // The active tab has a preview pane (shown in the right half while the overlay is wide enough).
+  hasPreview(): boolean;
   insertIntoTerminal(text: string): Promise<void>;
   focusTerminal(): void;
   layoutChanged(): void;
@@ -83,6 +84,7 @@ const extraIcons = {
   follow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
   popOut: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>',
   dock: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 20H4v-6M4 20l9-9M6 10V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-4"/></svg>',
+  sidebar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>',
   collapse: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>',
   list: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>',
   columns: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></svg>',
@@ -99,20 +101,21 @@ export function initFilesPanel(host: FilesHost) {
 <button id="files-follow" class="icon-btn" title="Return to Terminal's Directory" aria-label="Return to Terminal's Directory" data-i18n-title="files.follow" data-i18n-aria-label="files.follow" hidden>${extraIcons.follow}</button>
 <div class="files-view-switch" role="group" aria-label="View Mode" data-i18n-aria-label="files.viewMode"><button id="files-view-list" class="icon-btn" title="List" aria-label="List" data-i18n-title="files.viewList" data-i18n-aria-label="files.viewList">${extraIcons.list}</button><button id="files-view-columns" class="icon-btn" title="Columns" aria-label="Columns" data-i18n-title="files.viewColumns" data-i18n-aria-label="files.viewColumns">${extraIcons.columns}</button></div>
 <button id="files-hidden" class="icon-btn" title="Show Hidden Files" aria-label="Show Hidden Files" data-i18n-title="files.showHidden" data-i18n-aria-label="files.showHidden" aria-pressed="false">${icons.eye}</button>
+<button id="files-list-toggle" class="icon-btn" title="Collapse File List" aria-label="Collapse File List" data-i18n-title="files.listCollapse" data-i18n-aria-label="files.listCollapse" hidden>${extraIcons.sidebar}</button>
 <button id="files-popout" class="icon-btn" title="Open in Window" aria-label="Open in Window" data-i18n-title="files.popOut" data-i18n-aria-label="files.popOut">${extraIcons.popOut}</button>
 <button id="files-close" class="icon-btn" title="Collapse (⌘O / ⌘0)" aria-label="Collapse Files Panel" data-i18n-title="${host.standalone ? "files.close.title" : "files.collapse.title"}" data-i18n-aria-label="${host.standalone ? "files.close.label" : "files.collapse.label"}">${host.standalone ? icons.close : extraIcons.collapse}</button>
 </div>
+<div id="files-main"><div id="files-left"><div class="files-rail" role="toolbar" aria-orientation="vertical" aria-label="File list" data-i18n-aria-label="files.rail.label"><button id="files-rail-expand" class="icon-btn" title="Show File List" aria-label="Show File List" data-i18n-title="files.listExpand" data-i18n-aria-label="files.listExpand">${extraIcons.sidebar}</button><button id="files-rail-up" class="icon-btn" title="Enclosing Folder (⌘↑)" aria-label="Enclosing Folder" data-i18n-title="files.up.title" data-i18n-aria-label="files.up.label">${icons.up}</button><span id="files-rail-folder" class="files-rail-icon">${icons.folder}</span></div>
 <div class="files-columns"><button data-sort="name" data-i18n="files.col.name">Name</button><button data-sort="size" data-i18n="files.col.size">Size</button><button data-sort="modified" data-i18n="files.col.modified">Date Modified</button></div>
-<div id="files-split"><div id="files-body"><div id="files-list" role="tree" tabindex="0" aria-label="Files" data-i18n-aria-label="files.list.label" aria-multiselectable="true"></div><div class="col-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Column" data-i18n-aria-label="files.resizeColumn"></div><div class="col-child" aria-label="Folder Contents" data-i18n-aria-label="files.folderContents"></div><div class="col-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Column" data-i18n-aria-label="files.resizeColumn"></div></div><div id="files-preview-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize Preview Height" data-i18n-aria-label="files.resizePreview"></div><div class="col-preview" aria-label="Preview" data-i18n-aria-label="files.preview"></div></div>
-<div id="files-status" role="status" hidden></div>
+<div id="files-split"><div id="files-body"><div id="files-list" role="tree" tabindex="0" aria-label="Files" data-i18n-aria-label="files.list.label" aria-multiselectable="true"></div><div class="col-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Column" data-i18n-aria-label="files.resizeColumn"></div><div class="col-child" aria-label="Folder Contents" data-i18n-aria-label="files.folderContents"></div><div class="col-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Column" data-i18n-aria-label="files.resizeColumn"></div></div></div>
+<div id="files-status" role="status" hidden></div></div>
+<div id="files-pv-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Preview Width" data-i18n-aria-label="files.resizePreviewWidth"></div><div id="files-pv"></div></div>
 <div id="files-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize Files Panel" data-i18n-aria-label="files.resizeHeight"></div>`;
   const resizer = document.getElementById("files-resizer")!;
   const $ = (id: string) => document.getElementById(id)!;
   const list = $("files-list");
   const body = $("files-body");
   const childColumn = panel.querySelector<HTMLElement>(".col-child")!;
-  const previewColumn = panel.querySelector<HTMLElement>(".col-preview")!;
-  const previewResizer = $("files-preview-resizer");
   let columnWidths: Record<string, number> = {};
 
   let cache = new Map<string, FileEntry[]>();
@@ -129,17 +132,18 @@ export function initFilesPanel(host: FilesHost) {
   let showHidden = false;
   let sort: Sort = { key: "name", descending: false };
   let height = 0;
-  let previewHeight = DEFAULT_PREVIEW_HEIGHT;
+  // Icon rail instead of the list while a preview is showing (UI preference, shared by all tabs).
+  let listCollapsed = false;
+  let previewShown = false;
   let view: FilesView = "list";
   // Last view the user picked; new tabs and tabs without a saved view start with it.
   let defaultView: FilesView = "list";
   // Selected after the next load: a path, or "first" for the first row.
   let pendingSelect: string | undefined;
-  let previewToken = 0;
+  let childToken = 0;
   let childPick: FileEntry | undefined;
-  let previewTimer: ReturnType<typeof setTimeout> | undefined;
-  const previewCache = new Map<string, FileEntry[]>();
-  const thumbnails = new Map<string, { image: string; kind: string }>();
+  let childTimer: ReturnType<typeof setTimeout> | undefined;
+  const childCache = new Map<string, FileEntry[]>();
   // Entries behind the read-only rows in the parent and child columns, for their context menus.
   const miniEntries = new WeakMap<Element, FileEntry>();
   try {
@@ -147,7 +151,7 @@ export function initFilesPanel(host: FilesHost) {
     showHidden = localStorage.getItem("show-hidden") === "true";
     sort = { ...sort, ...JSON.parse(localStorage.getItem("files-sort") || "{}") };
     height = Number(localStorage.getItem("files-height")) || 0;
-    previewHeight = Number(localStorage.getItem("files-preview-height")) || DEFAULT_PREVIEW_HEIGHT;
+    listCollapsed = localStorage.getItem("files-list-collapsed") === "true";
     const saved = JSON.parse(localStorage.getItem("files-column-widths") || "{}");
     if (saved && typeof saved === "object") columnWidths = saved;
   } catch {}
@@ -186,7 +190,38 @@ export function initFilesPanel(host: FilesHost) {
     cutoutKey = key;
     host.native({ op: "overlay-cutout", slot: "files", x: box.x - 8, y: box.y - 8, width: open ? box.width + 16 : 0, height: open ? box.height + 16 : 0, viewportWidth: window.innerWidth, restoreFocus }).catch(host.notify);
   }
-  if (!host.standalone) new ResizeObserver(() => reportCutout()).observe(panel);
+  // The right half (preview) shows while the overlay is open, the tab has a preview and there is room for it.
+  // Returns whether it shows; updateLayout hands that to the preview pane.
+  function refreshPreview(): boolean {
+    const shown = !host.standalone && isOpen() && host.hasPreview() && previewFits(panel.clientWidth);
+    previewShown = shown;
+    const collapsed = effectiveCollapsed(listCollapsed, shown);
+    const main = $("files-main");
+    main.classList.toggle("has-preview", shown);
+    main.classList.toggle("list-collapsed", collapsed);
+    const toggle = $("files-list-toggle");
+    toggle.hidden = !shown;
+    const label = t(collapsed ? "files.listExpand" : "files.listCollapse");
+    toggle.title = label;
+    toggle.setAttribute("aria-label", label);
+    toggle.classList.toggle("active", collapsed);
+    toggle.setAttribute("aria-pressed", String(collapsed));
+    return shown;
+  }
+  function setListCollapsed(next: boolean) {
+    listCollapsed = next;
+    try { localStorage.setItem("files-list-collapsed", String(next)); } catch {}
+    refreshPreview();
+    if (!next && previewShown) list.focus();
+  }
+  if (!host.standalone) {
+    new ResizeObserver(() => {
+      reportCutout();
+      const was = previewShown;
+      refreshPreview();
+      if (was !== previewShown) host.layoutChanged();
+    }).observe(panel);
+  }
   const workspaceHeight = () => workspace.clientHeight || window.innerHeight;
 
   function applyLayout(notifyHost = true) {
@@ -197,8 +232,6 @@ export function initFilesPanel(host: FilesHost) {
     resizer.hidden = !!host.standalone;
     height = height ? clampDropHeight(height, workspaceHeight()) : defaultDropHeight(workspaceHeight());
     panel.style.setProperty("--files-height", height + "px");
-    previewHeight = clampPreviewHeight(previewHeight, panel.clientHeight || window.innerHeight);
-    panel.style.setProperty("--preview-height", previewHeight + "px");
     $("files-popout").innerHTML = host.standalone ? extraIcons.dock : extraIcons.popOut;
     $("files-popout").title = t(host.standalone ? "files.dock" : "files.popOut");
     $("files-popout").setAttribute("aria-label", t(host.standalone ? "files.dock" : "files.popOut"));
@@ -215,6 +248,7 @@ export function initFilesPanel(host: FilesHost) {
       toggleButton.setAttribute("aria-pressed", String(open));
       (toggleButton as HTMLButtonElement).disabled = !host.activeTab();
     }
+    refreshPreview();
     reportCutout();
     if (notifyHost) host.layoutChanged();
   }
@@ -259,7 +293,7 @@ export function initFilesPanel(host: FilesHost) {
       renderedPath = root;
       cache = next;
       stampKey = "";
-      previewCache.clear();
+      childCache.clear();
       draw();
       if (pendingSelect && !renaming) {
         const target = pendingSelect === "first" ? order[0] : pendingSelect;
@@ -416,73 +450,26 @@ export function initFilesPanel(host: FilesHost) {
     if (list.offsetLeft < left) left = list.offsetLeft;
     body.scrollLeft = left;
   }
-  function schedulePreview() {
+  function scheduleChild() {
     if (view !== "columns") return;
-    clearTimeout(previewTimer);
-    previewTimer = setTimeout(() => drawPreview().catch(host.notify), 120);
+    clearTimeout(childTimer);
+    childTimer = setTimeout(() => drawChild().catch(host.notify), 120);
   }
-  async function drawPreview() {
-    const token = ++previewToken;
+  async function drawChild() {
+    const token = ++childToken;
     const target = previewTarget(selection, entries);
-    // The child column lists a selected folder; the bottom pane describes the selection.
+    // The child column lists a selected folder; the file itself is previewed in the overlay's right half.
     const child = document.createElement("div");
-    const box = document.createElement("div");
-    const addFacts = (name: string, rows: [string, string][]) => {
-      const title = document.createElement("strong");
-      title.textContent = name;
-      const facts = document.createElement("dl");
-      for (const [term, value] of rows) {
-        const dt = document.createElement("dt"), dd = document.createElement("dd");
-        dt.textContent = term;
-        dd.textContent = value;
-        facts.append(dt, dd);
-      }
-      const info = document.createElement("div");
-      info.className = "preview-info";
-      info.append(title, facts);
-      box.append(info);
-    };
-    // Fills the bottom pane with a file preview; false when a newer draw superseded this one.
-    const showFile = async (entry: FileEntry) => {
-      const key = `${entry.path}|${entry.modified_ms}`;
-      let info = thumbnails.get(key);
-      if (!info) {
-        try { info = await invoke<{ image: string; kind: string }>("file_op", { request: { op: "preview", path: entry.path } }); }
-        catch { info = { image: "", kind: "" }; }
-        if (token !== previewToken) return false;
-        thumbnails.set(key, info);
-        // Keep the cache small; Map iterates oldest first.
-        if (thumbnails.size > 64) thumbnails.delete(thumbnails.keys().next().value!);
-      }
-      box.className = "preview-file";
-      if (info.image) {
-        const image = document.createElement("img");
-        image.src = info.image;
-        image.alt = "";
-        box.append(image);
-      }
-      const rows: [string, string][] = [
-        [t("files.kind"), info.kind || fileKindLabel(entry.name, false)],
-        [t("files.col.size"), formatSize(entry.size, false)],
-        [t("files.col.modified"), formatDate(entry.modified_ms)],
-      ];
-      if (entry.is_symlink) rows.push(["", t("files.alias")]);
-      addFacts(entry.name, rows);
-      return true;
-    };
-    if (target.kind === "many") {
-      box.className = "preview-note";
-      box.textContent = t("files.selected", { n: target.count });
-    } else if (target.kind === "dir") {
+    if (target.kind === "dir") {
       const dir = target.entry.path;
-      let listing = previewCache.get(dir);
+      let listing = childCache.get(dir);
       if (!listing) {
         try { listing = await invoke<FileEntry[]>("list_files", { path: dir, showHidden }); }
         catch (error) { listing = []; child.className = "preview-note"; child.textContent = String(error); }
-        if (token !== previewToken) return;
-        previewCache.set(dir, listing);
+        if (token !== childToken) return;
+        childCache.set(dir, listing);
       }
-      // A file picked in the child column stays there and is previewed below; folders still open.
+      // A file picked in the child column stays highlighted there; folders still open.
       const picked = childPick && parentOf(childPick.path) === dir ? listing.find((entry) => entry.path === childPick!.path) : undefined;
       childPick = picked;
       for (const entry of sortEntries(listing, sort))
@@ -491,24 +478,12 @@ export function initFilesPanel(host: FilesHost) {
           childPick = entry;
           followPreview();
           if (quickLook) previewSelection(true).catch(host.notify);
-          drawPreview().catch(host.notify);
+          drawChild().catch(host.notify);
         }));
       if (!listing.length && !child.textContent) { child.className = "preview-note"; child.textContent = t("files.empty"); }
-      if (picked) { if (!(await showFile(picked))) return; }
-      else {
-        box.className = "preview-file";
-        addFacts(target.entry.name, [
-          [t("files.kind"), t("files.kind.folder")],
-          [t("files.items"), t("files.itemCount", { n: listing.length })],
-          [t("files.col.modified"), formatDate(target.entry.modified_ms)],
-        ]);
-      }
-    } else if (target.kind === "file") {
-      if (!(await showFile(target.entry))) return;
     }
-    if (token === previewToken) {
+    if (token === childToken) {
       childColumn.replaceChildren(child);
-      previewColumn.replaceChildren(box);
       childColumn.dataset.dir = target.kind === "dir" ? target.entry.path : "";
       applyColumnWidths();
       revealColumns();
@@ -522,7 +497,6 @@ export function initFilesPanel(host: FilesHost) {
     if (files) update({ ...files, view: next });
     try { localStorage.setItem("files-view", view); } catch {}
     childColumn.replaceChildren();
-    previewColumn.replaceChildren();
     applyLayout();
     load().catch(host.notify);
     list.focus();
@@ -549,6 +523,7 @@ export function initFilesPanel(host: FilesHost) {
       nav.append(crumb);
     });
     nav.scrollLeft = nav.scrollWidth;
+    $("files-rail-folder").title = host.displayPath(path);
   }
   function syncSelection() {
     const chosen = new Set(selection.paths);
@@ -558,7 +533,7 @@ export function initFilesPanel(host: FilesHost) {
       element.setAttribute("aria-selected", String(on));
     }
     if (quickLook) previewSelection(true).catch(host.notify);
-    schedulePreview();
+    scheduleChild();
   }
   function setSelection(next: Selection, reveal = true) {
     selection = next;
@@ -910,7 +885,7 @@ export function initFilesPanel(host: FilesHost) {
       // Highlight a file in the child column like a click does, without moving the columns.
       if (childColumn.contains(element) && !entry.is_dir && childPick?.path !== entry.path) {
         childPick = entry;
-        drawPreview().catch(host.notify);
+        drawChild().catch(host.notify);
       }
       itemMenu(entry, [entry]).catch((error) => status(String(error)));
       return;
@@ -926,8 +901,10 @@ export function initFilesPanel(host: FilesHost) {
     const target = previewTarget(selection, entries);
     return target.kind === "dir" ? target.entry.path : undefined;
   }));
-  previewColumn.addEventListener("contextmenu", (event) => event.preventDefault());
   $("files-up").onclick = goUp;
+  $("files-rail-up").onclick = goUp;
+  $("files-rail-expand").onclick = () => setListCollapsed(false);
+  $("files-list-toggle").onclick = () => setListCollapsed(!effectiveCollapsed(listCollapsed, previewShown));
   $("files-view-list").onclick = () => setView("list");
   $("files-view-columns").onclick = () => setView("columns");
   $("files-follow").onclick = () => {
@@ -958,23 +935,6 @@ export function initFilesPanel(host: FilesHost) {
     resizer.addEventListener("pointermove", move);
     resizer.addEventListener("pointerup", up, { once: true });
     resizer.addEventListener("pointercancel", up, { once: true });
-  });
-  previewResizer.addEventListener("pointerdown", (event) => {
-    previewResizer.setPointerCapture(event.pointerId);
-    previewResizer.classList.add("dragging");
-    const bottom = panel.getBoundingClientRect().bottom;
-    const move = (e: PointerEvent) => {
-      previewHeight = clampPreviewHeight(bottom - e.clientY, panel.clientHeight);
-      panel.style.setProperty("--preview-height", previewHeight + "px");
-    };
-    const up = () => {
-      previewResizer.classList.remove("dragging");
-      previewResizer.removeEventListener("pointermove", move);
-      try { localStorage.setItem("files-preview-height", String(previewHeight)); } catch {}
-    };
-    previewResizer.addEventListener("pointermove", move);
-    previewResizer.addEventListener("pointerup", up, { once: true });
-    previewResizer.addEventListener("pointercancel", up, { once: true });
   });
   // Each column's width is remembered per folder; double-click a handle to reset it.
   body.addEventListener("pointerdown", (event) => {
@@ -1030,6 +990,7 @@ export function initFilesPanel(host: FilesHost) {
 
   // ---- Public API -----------------------------------------------------------
   async function focusList() {
+    if (listCollapsed && previewShown) setListCollapsed(false);
     await host.native({ op: "focus-web" });
     list.focus();
     if (!selection.paths.length && order.length) setSelection({ paths: [order[0]], anchor: order[0] });
@@ -1055,7 +1016,7 @@ export function initFilesPanel(host: FilesHost) {
   onLocaleChange(() => {
     applyI18n(panel);
     applyLayout(false);
-    if (isOpen()) { draw(); drawPreview().catch(host.notify); }
+    if (isOpen()) { draw(); drawChild().catch(host.notify); }
   });
   return {
     // ⌘O: open and focus, focus if already open, close when already focused.
@@ -1078,6 +1039,16 @@ export function initFilesPanel(host: FilesHost) {
       else if (isOpen()) close();
       else await openPanel(true);
     },
+    // Whether the right half shows now (sets the has-preview / list-collapsed classes); called after sync().
+    refreshPreview,
+    // A preview was opened from outside the panel: show the tab's overlay without taking focus.
+    async reveal(tab: FilesTab) {
+      if (tab.files?.detached) return;
+      if (tab === host.activeTab()) { if (!isOpen()) await openPanel(false); return; }
+      if (tab.files?.open) return;
+      tab.files = { ...(tab.files || initialFiles()), open: true };
+      host.visibilityChanged(tab);
+    },
     // A tab's saved panel state was applied after it became active: show it on the next sync.
     invalidate() { shownTab = undefined; },
     // Called before every terminal layout: when the active tab changed, show
@@ -1090,8 +1061,7 @@ export function initFilesPanel(host: FilesHost) {
       // Each tab remembers its own view; tabs that never chose one use the last choice.
       view = state()?.view ?? defaultView;
       childColumn.replaceChildren();
-      previewColumn.replaceChildren();
-      applyLayout(false);
+        applyLayout(false);
       if (isOpen()) {
         const cwd = host.cwd();
         if (cwd) update(onCwd(state()!, cwd));

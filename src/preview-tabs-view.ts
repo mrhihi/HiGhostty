@@ -5,7 +5,7 @@
 import { createPreviewView } from "./preview-view";
 import { popupMenu } from "./context-menu";
 import {
-  canMerge, closeGroup, closePane, detachPane, dropTarget, groupOf, groupTitle, mergeGroups, moveGroup, movePane,
+  canMerge, closeGroup, closeGroups, closePane, detachPane, dropTarget, groupOf, groupTitle, mergeGroups, moveGroup, movePane,
   paneBoxes, replacePanePath, setLayout, setSizes, sizesFromDrag, splitGroup,
   type Group, type Pane, type TabsState,
 } from "./preview-tabs";
@@ -182,6 +182,10 @@ export function createTabsView(host: TabsViewHost) {
       { text: t("preview.layoutRows"), enabled: multi && group.layout !== "rows", action: () => apply(setLayout(state()!, group.id, "rows")) },
       { item: "Separator" as const },
       { text: t("preview.tabClose"), action: () => apply(closeGroup(state()!, group.id)) },
+      { text: t("preview.closeOthers"), enabled: s.groups.length > 1, action: () => apply(closeGroups(state()!, group.id, "others")) },
+      { text: t("preview.closeLeft"), enabled: index > 0, action: () => apply(closeGroups(state()!, group.id, "left")) },
+      { text: t("preview.closeRight"), enabled: index < s.groups.length - 1, action: () => apply(closeGroups(state()!, group.id, "right")) },
+      { text: t("preview.closeAll"), action: () => apply(closeGroups(state()!, group.id, "all")) },
     ] }).catch(host.notify);
   }
   function dragTab(event: PointerEvent, group: Group, el: HTMLElement) {

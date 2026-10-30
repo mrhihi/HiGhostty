@@ -30,6 +30,7 @@
 - 會改動檔案的操作（拷貝、搬移、改名、新增、垃圾桶）集中在 `files.m` 的 `hg_files`，同名改名規則只在這裡實作；它在背景執行緒執行，不可碰 AppKit UI。剪貼簿、Quick Look、打開方式等 AppKit 操作走 `hg_command` 的 `files-*` op（主執行緒）。
 - 原生程式沿用 `@try/@catch`，不讓 Objective-C exception 漏出。
 - 原生右鍵選單一律走 `src/context-menu.ts` 的 `popupMenu`；選單開著時送 `Menu.new`／`close` 會讓整個 App 死結。
+- 浮層是左右佈局：左目錄（`#files-left`）、右預覽（`#files-pv`，由 `src/preview-panel.ts` 填入）。右半只在 `refreshPreview()` 判定可見時顯示（浮層開著＋有預覽＋寬 ≥ 560px）；左半收成 icon 列只在預覽可見時成立（`effectiveCollapsed`），預覽關閉或過窄時必須自動展開。
 - 純狀態邏輯放 `src/files.ts` 並補 `tests/files.test.mjs`；`npm test` 不涵蓋原生操作，改完照 `docs/files-panel.md` 的驗收清單實機操作。
 
 ## 指令片段面板（`src/snippet-palette.ts`、`src/snippets.ts`、`src-tauri/src/snippets.rs`）
@@ -72,13 +73,13 @@
 
 ## 檔案預覽窗（`src/preview.ts`、`src/preview-panel.ts`、`src-tauri/src/preview.rs`、`ctl preview`）
 
-修改預覽窗、`updateLayout()` 的版面切分或 `ctl preview` 前，先讀 `docs/preview.md`。重點：
+修改預覽窗、浮層左右佈局或 `ctl preview` 前，先讀 `docs/preview.md`。重點：
 
-- 預覽窗靠 `updateLayout()` 把 `#terminals` 切成「終端機區＋預覽區」，原生終端機只佔終端機區；不用 cutout、不放進分割樹。不可對 `#terminals` 呼叫 `replaceChildren`（會清掉預覽窗），只移除 `.surface-outline`。
+- 預覽在檔案浮層右半（HTML，`#files-pv`），浮層本身靠 `overlay-cutout` 顯示，所以預覽不用自己的 cutout、不放進分割樹，`updateLayout()` 不再切 `#terminals`；不可對 `#terminals` 呼叫 `replaceChildren`，只移除 `.surface-outline`。「開啟預覽」一律經 `main.ts` 的 `showPreview`／`showPreviewInline`（會自動展開浮層且不搶焦點），檔案面板單擊／方向鍵走 `followPreview`（一律新增頁籤，已開著的檔案只切過去）。
 - 幾何與狀態邏輯只放 `src/preview.ts` 並補 `tests/preview.test.mjs`。自動更新是對路徑輪詢 `preview_stat`，不要改成對檔案 watch（rename 存檔會失效）。
 - Markdown 一定要經 `DOMPurify.sanitize`；連結只處理 http(s) 與 `.md`，其餘忽略。
 - `tab.preview` 只存在記憶體，不寫進 session／收藏；`ctl preview *` 維持 `write: false`，並保持不搶焦點。
-- 預覽窗（頁籤旁與獨立視窗）都有頁籤列，可合併最多 3 格（三欄／三列）並交換順序；獨立視窗是單一視窗（label `preview-viewer`）。頁籤與分格規則只放 `src/preview-tabs.ts` 並補 `tests/preview-tabs.test.mjs`，DOM 只放 `src/preview-tabs-view.ts`（兩個宿主共用）。`PreviewState` 是 `{ side, ratio, tabs }`，檔案路徑用 `previewPath()` 取。彈出是整個預覽搬進視窗，視窗存在時所有「開啟預覽」都走 `showPreview` 進視窗頁籤；放回用 `showPreviewInline`，不可再繞回視窗。`createPreviewView` 會有多個實例，不可依賴固定 id；關閉分格要呼叫 `dispose()`。
+- 預覽窗（浮層右半與獨立視窗）都有頁籤列，可合併最多 3 格（三欄／三列）並交換順序；獨立視窗是單一視窗（label `preview-viewer`）。頁籤與分格規則只放 `src/preview-tabs.ts` 並補 `tests/preview-tabs.test.mjs`，DOM 只放 `src/preview-tabs-view.ts`（兩個宿主共用）。`PreviewState` 是 `{ tabs }`（左右比例是全域的 `files-preview-ratio`），檔案路徑用 `previewPath()` 取。彈出是整個預覽搬進視窗，視窗存在時所有「開啟預覽」都走 `showPreview` 進視窗頁籤；放回用 `showPreviewInline`，不可再繞回視窗。`createPreviewView` 會有多個實例，不可依賴固定 id；關閉分格要呼叫 `dispose()`。
 - 改完照 `docs/preview.md` 的驗收清單實機操作。
 
 ## 多國語系（`src/i18n.ts`、`src/i18n-runtime.ts`、`src/locales/`、`src-tauri/src/locales.rs`）

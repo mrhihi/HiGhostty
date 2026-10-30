@@ -34,7 +34,7 @@
 | 指令 | 範圍 | 說明 |
 |---|---|---|
 | `alert raise --title T [--body B] [--option O…]` | caller | 對使用者發出待處理提示：出現在待處理面板（問題＝body，選項＝各個 `--option`）與頁籤列的標籤，頁籤變色、鈴鐺加一。來源 `agent` 的優先度高於偵測到的提示與響鈴（`signal` < `prompt` < `agent`），所以不會被畫面偵測覆蓋，也不會因畫面改變而消失；使用者切到該頁籤、聚焦視窗或按「忽略」才清除。使用者正在看這個終端機時回 `raised:false`。標題單行 80 字、說明 2000 字、選項最多 12 個 |
-| `preview open <path> [--side right\|bottom]`、`preview close`、`preview status` | caller | 在呼叫者所在頁籤開／關／查詢預覽窗（見 `docs/preview.md`）。只改畫面配置、狀態只存在記憶體，不搶焦點，所以屬唯讀；相對路徑以呼叫者的目錄為準，目錄與二進位以外的檔案都可開；獨立預覽視窗開著時改開成視窗的新頁籤（回覆 `window: true`） |
+| `preview open <path>`、`preview close`、`preview status` | caller | 在呼叫者所在頁籤的檔案浮層右半開／關／查詢預覽（浮層沒開會自動展開；`--side` 已無作用、接受但忽略；見 `docs/preview.md`）。只改畫面配置、狀態只存在記憶體，不搶焦點，所以屬唯讀；相對路徑以呼叫者的目錄為準，目錄與二進位以外的檔案都可開；獨立預覽視窗開著時改開成視窗的新頁籤（回覆 `window: true`） |
 | `alert clear` | caller | 清除自己發出的提示（問題解決後用） |
 | `tab status <text>` \| `--clear` | caller | 在頁籤列顯示一行短狀態（最多 40 字），只存在記憶體，不進工作階段；用於「跑測試 3/5」這類進度 |
 
@@ -114,7 +114,7 @@
 23b. 按「移除」：`~/.claude/skills/highostty/` 消失、狀態回「尚未安裝」、移除鈕變灰；換成沒有標記的內容時移除鈕為灰、檔案不變。
 24. 「複製 skill 內容」後貼到文字編輯器是完整的 SKILL.md。
 25. 端到端：在 Claude Code 裡說「用 HiGhostty 看一下另一個頁籤在跑什麼」，Claude 會載入 skill、先檢查 `HIGHOSTTY_ENV`、用 `ctl tab list` 與 `surface read` 回答；在唯讀模式要求它開頁籤時，它應回報 `forbidden` 並請你改設定，而不是繞過。
-5. 預覽窗：在唯讀模式下 `ctl preview open README.md` 回 `{path,side:"bottom",kind:"markdown"}`，終端機下方出現預覽；`ctl preview status` 回同一份；`ctl preview open 目錄` 回 `bad_args`；`ctl preview close` 後預覽消失。細節驗收見 `docs/preview.md`。
+5. 預覽窗：在唯讀模式下 `ctl preview open README.md` 回 `{path,kind:"markdown"}`，檔案浮層右半出現預覽；`ctl preview status` 回同一份；`ctl preview open 目錄` 回 `bad_args`；`ctl preview close` 後預覽消失。細節驗收見 `docs/preview.md`。
 
 ## 啟動參數轉交
 

@@ -16,7 +16,6 @@
   "preview.waiting": "{error}; waiting for the file to appear…",
   "preview.loading": "Loading…",
   "preview.popout": "Pop out all tabs into the preview window",
-  "preview.swapSide": "Switch side-by-side / stacked",
   "preview.reveal": "Show in Finder",
   "preview.close": "Close preview",
   "preview.resize": "Resize preview",
@@ -43,5 +42,10 @@
   "preview.dockAll": "Move all tabs back to their terminal tabs",
   "preview.tabMoveLeft": "Move tab left",
   "preview.tabMoveRight": "Move tab right",
-  "preview.refresh": "Refresh this tab"
+  "preview.refresh": "Refresh this tab",
+  "preview.videoFailed": "Cannot play this video (the format may not be supported)",
+  "preview.closeOthers": "Close other tabs",
+  "preview.closeLeft": "Close tabs to the left",
+  "preview.closeRight": "Close tabs to the right",
+  "preview.closeAll": "Close all tabs"
 }

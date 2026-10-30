@@ -54,10 +54,10 @@ export const OPS: OpSpec[] = [
   { name: "alert raise", write: false, flags: { title: "string", body: "string", option: "list" }, summary: "對使用者發出待處理提示（待處理面板與頁籤上顯示標題、說明與選項）；使用者正在看這個終端機時不會提示。--title 必填" },
   { name: "alert clear", write: false, summary: "清除自己發出的待處理提示" },
   { name: "tab status", write: false, args: ["text?"], flags: { clear: "boolean" }, summary: "在頁籤列顯示一行短狀態（最多 40 字，不會存入工作階段）；--clear 清除" },
-  { name: "preview open", write: false, args: ["path"], flags: { side: "string" }, summary: "在呼叫者所在頁籤旁開預覽窗顯示檔案（Markdown 會排版），檔案被改動時自動更新，不必重開；--side bottom（預設，在下方）或 right。相對路徑以呼叫者的目錄為準；不搶焦點" },
+  { name: "preview open", write: false, args: ["path"], flags: { side: "string" }, summary: "在呼叫者所在頁籤的檔案浮層右半開預覽顯示檔案（Markdown 會排版；浮層沒開會自動展開），檔案被改動時自動更新，不必重開；--side 已無作用（相容舊用法，忽略）。相對路徑以呼叫者的目錄為準；不搶焦點" },
   { name: "preview window", write: true, args: ["path"], summary: "把檔案加到獨立預覽視窗的新頁籤（同樣會自動更新；所有檔案共用一個視窗，同一個檔案只開一個頁籤，不搶焦點，使用者自行關閉）。可能多出視窗，所以需要完整模式；相對路徑以呼叫者的目錄為準" },
-  { name: "preview close", write: false, summary: "關閉呼叫者所在頁籤的預覽窗" },
-  { name: "preview status", write: false, summary: "呼叫者所在頁籤目前預覽的檔案與位置；沒有開則 preview 為 null" },
+  { name: "preview close", write: false, summary: "關閉呼叫者所在頁籤的預覽（檔案浮層本身不關）" },
+  { name: "preview status", write: false, summary: "呼叫者所在頁籤目前預覽的檔案；沒有開則 preview 為 null" },
   { name: "files reveal", write: true, variadic: "path", summary: "在 Finder 顯示檔案（會把 Finder 帶到前景）；相對路徑以呼叫者的目錄為準" },
   { name: "files quicklook", write: true, variadic: "path", summary: "用 Quick Look 預覽檔案給使用者看（會取得視窗的鍵盤焦點，使用者按空白鍵或 Esc 關閉）" },
   { name: "snippet add", write: true, flags: { name: "string", text: "string", scope: "string", keyword: "list" }, summary: "新增指令片段到 ⌘⇧P 面板：--name、--text 必填；--scope global、cwd（呼叫者目前的目錄，預設）或絕對目錄。片段不會自動執行，由使用者在面板選取" },
@@ -273,15 +273,6 @@ export function snippetInput(flags: Parsed["flags"], cwd: string | undefined): {
   const keywords = (Array.isArray(flags.keyword) ? flags.keyword : []).map((word) => word.trim()).filter(Boolean);
   if (keywords.length > SNIPPET_LIMITS.keywords || keywords.some((word) => word.length > SNIPPET_LIMITS.keyword || /\s/.test(word))) return bad(`--keyword 最多 ${SNIPPET_LIMITS.keywords} 個，每個不含空白、最多 ${SNIPPET_LIMITS.keyword} 字`);
   return { ok: true, input: { name, text, scope, keywords: keywords.length ? keywords.join(" ") : undefined } };
-}
-
-// `preview open --side`: no flag leaves the choice to the app (below the terminals, or
-// wherever that tab's preview already is).
-export function previewSide(flags: Parsed["flags"]): { ok: true; side: "right" | "bottom" | undefined } | { ok: false; reply: Reply } {
-  if (flags.side === undefined) return { ok: true, side: undefined };
-  const side = flags.side;
-  if (side === "right" || side === "bottom") return { ok: true, side };
-  return { ok: false, reply: errReply("bad_args", "--side 必須是 right 或 bottom") };
 }
 
 // `agent start <kind> -- args…`: the shell line that launches it (each word quoted).

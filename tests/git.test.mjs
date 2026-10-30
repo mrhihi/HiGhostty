@@ -42,3 +42,17 @@ test("tabGitText: compact branch and change count", async () => {
   assert.equal(tabGitText({ ...base, changed: 3 }, "detached"), "main ●3");
   assert.equal(tabGitText({ ...base, detached: true }, "detached"), "detached ✓");
 });
+
+test("worktree tooltip lists where it lives and what it came from", async () => {
+  const { gitTip } = await import("../src/git.ts");
+  const l = { ...labels, worktree: "Worktree", worktreeMain: "Main repo" };
+  const wt = { root: "/a/wt", main: "/a/main" };
+  assert.equal(gitTip(clean, l, wt), "⎇ main  ✓\nWorktree: /a/wt\nMain repo: /a/main");
+  assert.equal(gitTip(clean, l), "");
+  assert.equal(gitTip({ ...clean, ahead: 2 }, l), "⎇ main  ✓  ↑2");
+  assert.equal(gitTip({ ...clean, upstream: false }, l), "⎇ main  ✓  no upstream");
+  const { sameWorktree } = await import("../src/git.ts");
+  assert.equal(sameWorktree(null, undefined), true);
+  assert.equal(sameWorktree(wt, { ...wt }), true);
+  assert.equal(sameWorktree(wt, null), false);
+});

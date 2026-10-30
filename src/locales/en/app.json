@@ -183,7 +183,6 @@
   "app.opened": "Open",
   "app.workspaceOverview": "Workspace overview",
   "app.filesPanel": "Files panel",
-  "app.togglePreviewSide": "Switch preview position (side / bottom)",
   "app.closePreview": "Close preview",
   "app.newWorkspace": "New workspace",
   "app.newWindow": "New window",
@@ -227,5 +226,7 @@
   "git.title": "Git status of this directory",
   "git.dirty": "Uncommitted changes",
   "git.detached": "detached",
-  "git.noUpstream": "No upstream"
+  "git.noUpstream": "No upstream",
+  "git.worktree": "Worktree",
+  "git.worktreeMain": "Main repo"
 }

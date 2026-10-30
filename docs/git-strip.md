@@ -9,6 +9,12 @@
 - DOM 與刷新：`src/main.ts` 的 `refreshGit`、`gitStrip`。資訊列是 `.surface-outline` 的子元素（`pointer-events:none`）。
 - 版面：`updateLayout()` 送給原生的矩形底部縮短 20px，終端機不被資訊列蓋住；不用 `overlay-cutout`。只移除 `.surface-outline`，不對 `#terminals` 呼叫 `replaceChildren`。
 
+## linked worktree 標示
+
+- 獨立命令 `git_worktree` 跑 `git rev-parse --show-toplevel --git-dir --git-common-dir`（較慢，所以不併進 `git_status`：徽章先出現，worktree 資訊稍後補上，每個目錄 60 秒才重查一次），兩者 canonicalize 後不同即回傳 `{ root, main }`（`linked_worktree`，有 `cargo test`；`main` 是 common dir 的上層，即主工作樹）。
+- 頁籤／收藏列的 git 徽章前面多一個 `icons.worktree` 圖示（`.wt-icon`，12px，用獨立色票 `--worktree`，不跟 git 狀態顏色）；窗格資訊列不加圖示。
+- 徽章 tooltip 用 `src/tooltip.ts` 的 `data-tip`（無延遲，`#tooltip` 是 `position:fixed`、`pointer-events:none`），不用原生 `title`；tooltip 內容是摘要＋ worktree 目錄＋主儲存庫路徑（`gitTip`）。
+
 ## 刷新時機
 
 - `cwd` 事件與 `focus` 事件（有 1 秒快取）。
@@ -30,3 +36,4 @@
 3. 拖分隔線、⌘D 分割、zoom、切換頁籤、開關預覽窗後，資訊列位置與終端機大小正常。
 4. 關閉窗格後不殘留資訊列；detached HEAD 顯示本地化的「分離的 HEAD」。
 5. 英文與繁中切換時 tooltip 文字正確。
+6. `git worktree add ../wt-x`：主 repo 頁籤無圖示、`wt-x` 頁籤有圖示；滑過徽章 tooltip 立即出現、不被側欄裁切，移開即消失；`git worktree remove` 後圖示消失。

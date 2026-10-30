@@ -1,6 +1,5 @@
 #import <Cocoa/Cocoa.h>
 #import <Quartz/Quartz.h>
-#import <QuickLookThumbnailing/QuickLookThumbnailing.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "files.h"
 
@@ -81,12 +80,6 @@ static NSDictionary *transfer(NSArray<NSString *> *sources, NSString *destinatio
     }
     return @{@"paths": paths, @"errors": errors};
 }
-static NSString *pngDataURL(CGImageRef image) {
-    if (!image) return nil;
-    NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithCGImage:image];
-    NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-    return png ? [@"data:image/png;base64," stringByAppendingString:[png base64EncodedStringWithOptions:0]] : nil;
-}
 // Apps that can open a file, default first. LaunchServices can be slow, so this runs off the main thread.
 static NSString *appName(NSURL *app) {
     NSString *name = [NSFileManager.defaultManager displayNameAtPath:app.path];
@@ -108,33 +101,6 @@ static NSDictionary *openWithApps(NSString *path) {
     [others sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"name"] localizedStandardCompare:b[@"name"]]; }];
     [apps addObjectsFromArray:others];
     return @{@"apps": apps};
-}
-// Thumbnail for the files panel preview column; falls back to the file icon.
-static NSDictionary *preview(NSString *path) {
-    NSURL *url = [NSURL fileURLWithPath:path];
-    UTType *type = nil;
-    [url getResourceValue:&type forKey:NSURLContentTypeKey error:nil];
-    QLThumbnailGenerationRequest *request = [[QLThumbnailGenerationRequest alloc] initWithFileAtURL:url size:CGSizeMake(256, 256) scale:2 representationTypes:QLThumbnailGenerationRequestRepresentationTypeAll];
-    dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    // The handler may still run after a timeout, so it writes into its own box.
-    NSMutableDictionary *box = [NSMutableDictionary dictionary];
-    [QLThumbnailGenerator.sharedGenerator generateBestRepresentationForRequest:request completionHandler:^(QLThumbnailRepresentation *thumbnail, NSError *error) {
-        NSString *image = pngDataURL(thumbnail.CGImage);
-        @synchronized (box) { if (image) box[@"image"] = image; }
-        dispatch_semaphore_signal(done);
-    }];
-    NSString *image = nil;
-    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)) == 0) {
-        @synchronized (box) { image = box[@"image"]; }
-    } else {
-        [QLThumbnailGenerator.sharedGenerator cancelRequest:request];
-    }
-    if (!image) {
-        NSImage *icon = [NSWorkspace.sharedWorkspace iconForFile:path];
-        NSRect rect = NSMakeRect(0, 0, 256, 256);
-        image = pngDataURL([icon CGImageForProposedRect:&rect context:nil hints:nil]);
-    }
-    return @{@"image": image ?: @"", @"kind": type.localizedDescription ?: @""};
 }
 static NSDictionary *filesOperation(NSDictionary *req) {
     NSFileManager *fm = NSFileManager.defaultManager;
@@ -162,7 +128,6 @@ static NSDictionary *filesOperation(NSDictionary *req) {
         NSError *error = nil;
         return [fm moveItemAtPath:from toPath:to error:&error] ? @{@"paths": @[to], @"errors": @[]} : @{@"error": describe(error)};
     }
-    if ([op isEqualToString:@"preview"]) return preview(req[@"path"]);
     if ([op isEqualToString:@"open-with-apps"]) return openWithApps(req[@"path"]);
     if ([op isEqualToString:@"trash"]) {
         NSMutableArray *paths = [NSMutableArray array], *errors = [NSMutableArray array];

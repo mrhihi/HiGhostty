@@ -16,17 +16,20 @@ import {
   openPreview,
   addPreviewFile,
   importPreviewGroups,
-  followPreviewFile,
   previewPath,
   previewKind,
   ratioFromPointer,
+  clampPreviewRatio,
+  previewFits,
   sameStamp,
   scrollAfterUpdate,
-  splitBox,
-  togglePreviewSide,
 } from "../src/preview.ts";
 
-const box = { x: 10, y: 20, width: 1000, height: 600 };
+
+test("previewKind recognises playable video", () => {
+  for (const f of ["a.mp4", "a.MOV", "a.m4v", "a.webm"]) assert.equal(previewKind("/x/" + f), "video");
+  assert.equal(previewKind("/x/a.mkv"), "text");
+});
 
 test("previewKind picks markdown, image, else text", () => {
   assert.equal(previewKind("/a/PLAN.md"), "markdown");
@@ -60,58 +63,35 @@ test("previewKind maps office and pdf files, codeLanguage maps languages", () =>
 });
 
 test("clampRatio keeps the pane usable", () => {
-  assert.equal(clampRatio(0), 0.15);
-  assert.equal(clampRatio(2), 0.85);
-  assert.equal(clampRatio(NaN), 0.45);
+  assert.equal(clampRatio(0), 0.2);
+  assert.equal(clampRatio(2), 0.8);
+  assert.equal(clampRatio(NaN), 0.5);
   assert.equal(clampRatio(0.5), 0.5);
 });
 
-test("splitBox without preview leaves terminals alone", () => {
-  assert.deepEqual(splitBox(box, undefined), { terminals: box });
+test("clampPreviewRatio leaves both halves at least 240px", () => {
+  assert.equal(clampPreviewRatio(0.5, 1000), 0.5);
+  assert.equal(clampPreviewRatio(0.2, 600), 0.4);
+  assert.equal(clampPreviewRatio(0.8, 600), 0.6);
+  assert.equal(clampPreviewRatio(0.3, 0), 0.3);
 });
 
-test("splitBox right puts the preview on the right edge", () => {
-  const { terminals, preview } = splitBox(box, openPreview("/a.md", "right", 0.5));
-  assert.equal(terminals.x, 10);
-  assert.equal(terminals.width + 6 + preview.width, 1000);
-  assert.equal(preview.x, terminals.x + terminals.width + 6);
-  assert.equal(preview.height, 600);
-  assert.equal(terminals.height, 600);
+test("previewFits needs a wide enough overlay", () => {
+  assert.equal(previewFits(559), false);
+  assert.equal(previewFits(560), true);
 });
 
-test("splitBox bottom puts the preview under the terminals", () => {
-  const { terminals, preview } = splitBox(box, openPreview("/a.md", "bottom", 0.5));
-  assert.equal(terminals.height + 6 + preview.height, 600);
-  assert.equal(preview.y, terminals.y + terminals.height + 6);
-  assert.equal(preview.width, 1000);
-});
-
-test("splitBox drops the preview when the window is too small", () => {
-  const small = { x: 0, y: 0, width: 300, height: 200 };
-  assert.deepEqual(splitBox(small, openPreview("/a.md", "right")), { terminals: small });
-  assert.deepEqual(splitBox(small, openPreview("/a.md", "bottom")), { terminals: small });
-});
-
-test("a new preview opens below the terminals by default", () => {
+test("a new preview holds one tab", () => {
   const opened = openPreview("/a.md");
   assert.equal(previewPath(opened), "/a.md");
-  assert.equal(opened.side, "bottom");
-  assert.equal(opened.ratio, 0.45);
-});
-
-test("togglePreviewSide flips and keeps the rest", () => {
-  const next = togglePreviewSide(openPreview("/a.md", "right", 0.3));
-  assert.equal(next.side, "bottom");
-  assert.equal(next.ratio, 0.3);
-  assert.equal(previewPath(next), "/a.md");
-  assert.equal(togglePreviewSide(next).side, "right");
+  assert.equal(opened.tabs.groups.length, 1);
 });
 
 test("ratioFromPointer maps the divider position back to a ratio", () => {
-  const ratio = ratioFromPointer(box, "right", 10 + 497 + 3, 6);
+  const ratio = ratioFromPointer(100, 1000, 100 + 500);
   assert.ok(Math.abs(ratio - 0.5) < 0.01);
-  assert.equal(ratioFromPointer(box, "right", 5000), 0.15);
-  assert.equal(ratioFromPointer(box, "bottom", -100), 0.85);
+  assert.equal(ratioFromPointer(100, 1000, 5000), 0.24);
+  assert.equal(ratioFromPointer(100, 1000, -100), 0.76);
 });
 
 test("scrollAfterUpdate follows the bottom, otherwise keeps the offset", () => {
@@ -203,28 +183,23 @@ test("localImagePath resolves relative images and skips other schemes", () => {
   assert.equal(localImagePath("note.md", "/p/x.md"), undefined);
 });
 
-test("addPreviewFile adds a tab, followPreviewFile replaces the active file", () => {
-  const base = openPreview("/a.md", "right");
+test("addPreviewFile always adds a tab and only activates one that already shows the file", () => {
+  const base = openPreview("/a.md");
   const two = addPreviewFile(base, "/b.md");
   assert.equal(two.tabs.groups.length, 2);
   assert.equal(previewPath(two), "/b.md");
   assert.equal(addPreviewFile(two, "/a.md").tabs.groups.length, 2); // same file: just activates
   assert.equal(previewPath(addPreviewFile(two, "/a.md")), "/a.md");
-  assert.equal(addPreviewFile(base, "/b.md", "bottom").side, "bottom");
-  const followed = followPreviewFile(two, "/c.md");
-  assert.equal(followed.tabs.groups.length, 2);
-  assert.equal(previewPath(followed), "/c.md");
-  assert.equal(followPreviewFile(two, "/b.md"), two);
+  assert.equal(previewPath(addPreviewFile(undefined, "/z.md")), "/z.md");
+  assert.equal(addPreviewFile(two, "/c.md").tabs.groups.length, 3);
 });
 
 test("importPreviewGroups creates the pane or joins it, keeping merged groups", () => {
   const seeds = [{ paths: ["/a.md", "/b.md"], layout: "rows" }, { paths: ["/c.md"] }];
   const fresh = importPreviewGroups(undefined, seeds, 1);
-  assert.equal(fresh.side, "bottom");
   assert.equal(fresh.tabs.groups.length, 2);
   assert.equal(fresh.tabs.groups[0].layout, "rows");
   assert.equal(previewPath(fresh), "/c.md");
-  const joined = importPreviewGroups(openPreview("/z.md", "right"), seeds);
-  assert.equal(joined.side, "right");
+  const joined = importPreviewGroups(openPreview("/z.md"), seeds);
   assert.equal(joined.tabs.groups.length, 3);
 });

@@ -38,9 +38,9 @@ import {
 } from "./model";
 import { initFilesPanel } from "./files-panel";
 import { initPreviewPanel } from "./preview-panel";
-import { gitSummary, isDirty, sameGit, stripHeight, tabGitText, type GitInfo } from "./git";
+import { gitSummary, gitTip, isDirty, sameGit, sameWorktree, stripHeight, tabGitText, type GitInfo, type Worktree } from "./git";
 import type { GroupSeed } from "./preview-tabs";
-import { addPreviewFile, followPreviewFile, importPreviewGroups, openPreview, previewKind, previewPath, relativeToDir, resolveInDir, splitBox, togglePreviewSide, type PreviewSide, type PreviewState } from "./preview";
+import { addPreviewFile, importPreviewGroups, previewKind, previewPath, relativeToDir, resolveInDir, type PreviewState } from "./preview";
 import { restoreFiles, sameSaved, saveFiles, setDetached, toggleOpen, type FilesState, type SavedFiles } from "./files";
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
@@ -55,7 +55,8 @@ import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./
 import builtinRules from "./prompt-rules.json?raw";
 import { formatEnv, normalizeEnv, parseEnv, sameEnv, type Env } from "./tab-env";
 import { newSessionName, restorable, tmuxCommand, validSession, withProgramDir, withProgramPath } from "./tmux";
-import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, previewSide, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
+import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
+import { initTooltips } from "./tooltip";
 import "./style.css";
 
 type MenuEntry = { text: string; action: () => unknown } | { item: "Separator" };
@@ -69,7 +70,7 @@ type Info = {
   exited: boolean;
   needsConfirm: boolean;
 };
-type Surface = { id: string; cwd: string; title: string; exited: boolean; tmuxSession?: string; openedAt?: number; command?: string };
+type Surface = { id: string; cwd: string; home: string; title: string; exited: boolean; tmuxSession?: string; openedAt?: number; command?: string };
 type Tab = {
   id: string;
   tree: Node;
@@ -156,6 +157,7 @@ const filesPanel = initFilesPanel({
   openTerminal: async (path) => { await newSurface(path); },
   previewFile: (path) => { if (active) showPreview(active, path).catch(notify); },
   followPreview: (path) => { if (active) followPreview(active, path); },
+  hasPreview: () => !!active?.preview,
   editInTerminal: async (directory, command) => {
     if (active) await newSurface(directory, active.focused, 0, { command, commandInShell: true });
   },
@@ -206,9 +208,6 @@ function dockFiles(tab: Tab, files: FilesState | undefined, close: boolean) {
 }
 const previewPanel = initPreviewPanel({
   activeTab: () => active,
-  area: () => $("terminals").getBoundingClientRect(),
-  layoutChanged: scheduleLayout,
-  toggleSide: () => togglePreview(),
   close: () => closePreview(),
   reveal: (path) => { native({ op: "files-reveal", paths: [path] }).catch(notify); },
   // The whole pane moves: its tabs (merged groups too) become tabs of the standalone window.
@@ -219,29 +218,28 @@ const previewPanel = initPreviewPanel({
   },
   notify,
 });
-// While the standalone preview window exists every opened file becomes one of its tabs;
-// otherwise it goes beside the terminals. Docking or closing the window switches back.
-async function showPreview(tab: Tab, path: string, side?: PreviewSide, focus = true): Promise<"window" | "inline"> {
-  if (await invoke<boolean>("preview_window_open")) {
+// While the standalone preview window exists (or the tab's files panel is popped out, so there is no overlay
+// to host it) every opened file becomes one of its tabs; otherwise it opens in the right half of the tab's
+// files overlay. Docking or closing the window switches back.
+async function showPreview(tab: Tab, path: string, focus = true): Promise<"window" | "inline"> {
+  if (tab.files?.detached || await invoke<boolean>("preview_window_open")) {
     await invoke("open_preview_window", { path, focus, origin: { window: win.label, tab: tab.id } });
     return "window";
   }
-  showPreviewInline(tab, path, side);
+  showPreviewInline(tab, path);
   return "inline";
 }
-function showPreviewInline(tab: Tab, path: string, side?: PreviewSide) {
-  // An explicitly opened file gets its own tab in the pane.
-  tab.preview = tab.preview ? addPreviewFile(tab.preview, path, side) : openPreview(path, side);
+function showPreviewInline(tab: Tab, path: string) {
+  // An explicitly opened file gets its own tab in the pane; the overlay opens (without focus) to show it.
+  tab.preview = addPreviewFile(tab.preview, path);
+  filesPanel.reveal(tab).catch(notify);
   scheduleLayout();
 }
-// Files-panel navigation swaps the file of the active pane instead of adding tabs.
+// Picking a file in the files panel opens it in its own preview tab (or just activates the tab already showing it).
 function followPreview(tab: Tab, path: string) {
-  if (!tab.preview) return;
-  const next = followPreviewFile(tab.preview, path);
-  if (next !== tab.preview) { tab.preview = next; scheduleLayout(); }
-}
-function togglePreview() {
-  if (active?.preview) { active.preview = togglePreviewSide(active.preview); scheduleLayout(); }
+  if (!tab.files?.open || tab.files.detached) return;
+  tab.preview = addPreviewFile(tab.preview, path);
+  scheduleLayout();
 }
 function closePreview(tab = active) {
   if (!tab?.preview) return;
@@ -1391,11 +1389,12 @@ function appendTabRow(parent: HTMLElement, tab: Tab, folder?: FavoriteFolder, ho
   row.append(label);
   if (tab.tmux || ids.some((id) => surfaces.get(id)?.tmuxSession)) row.append(tmuxMark());
   if (tab.status) { const note = document.createElement("span"); note.className = "tab-status"; note.textContent = tab.status; note.title = tab.status; row.append(note); }
-  const rowGit = showTabGit && surface?.cwd ? tabGit.get(surface.cwd)?.info : null;
+  const rowEntry = showTabGit && surface?.cwd ? tabGit.get(surface.cwd) : undefined;
+  const rowGit = rowEntry?.info, rowWt = rowEntry?.worktree;
   if (alert) { const pill = document.createElement("span"); pill.className = "alert-pill"; pill.textContent = alert.prompt?.low ? t("app.waiting") : alert.title; pill.title = alert.prompt ? [alert.prompt.question, ...alert.prompt.options].filter(Boolean).join("\n") : alert.body; row.append(pill); }
   if (ids.length > 1) { const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = String(ids.length); badge.title = t("app.splitTitle", { n: ids.length }); row.append(badge); }
   // Git state sits at the right end of the content, just before the hotkey/menu slot.
-  if (rowGit) row.append(tabGitBadge(rowGit));
+  if (rowGit) row.append(tabGitBadge(rowGit, rowWt));
   // One slot at the row end: the ⌘N hint at rest, a floating "more" button on
   // hover. The button overlays the hint so hovering never reflows the label.
   const menu = () => popupMenu([
@@ -1496,8 +1495,9 @@ function appendWorkspaceFavoriteRow(parent: HTMLElement, item: WorkspaceFavorite
   const edit = button("", () => editFavorite(item), t("app.editFavorite")); edit.className = "icon-btn row-action"; edit.innerHTML = icons.pencil;
   row.oncontextmenu = (event) => { event.preventDefault(); if (event.ctrlKey) { openFavoriteShell(item).catch(notify); return; } popupMenu(favoriteMenuItems(item)); };
   row.append(state, label); if (item.tab.tmux) row.append(tmuxMark());
-  const favGit = showTabGit && item.tab.paths[0] ? tabGit.get(item.tab.paths[0])?.info : null;
-  if (favGit) row.append(tabGitBadge(favGit));
+  const favEntry = showTabGit && item.tab.paths[0] ? tabGit.get(item.tab.paths[0]) : undefined;
+  const favGit = favEntry?.info, favWt = favEntry?.worktree;
+  if (favGit) row.append(tabGitBadge(favGit, favWt));
   row.append(edit); parent.append(row);
 }
 function tmuxMark() { const mark = document.createElement("span"); mark.className = "tmux-mark"; mark.textContent = "tmux"; mark.title = t("app.tmuxTabMark"); return mark; }
@@ -1538,7 +1538,7 @@ const GIT_POLL_AGE_MS = 4000;
 function gitStrip(info: GitInfo): HTMLElement {
   const strip = document.createElement("div");
   strip.className = "git-strip" + (isDirty(info) ? " dirty" : "");
-  strip.textContent = gitSummary(info, { detached: t("git.detached"), noUpstream: t("git.noUpstream") });
+  strip.textContent = gitSummary(info, { detached: t("git.detached"), noUpstream: t("git.noUpstream"), worktree: "", worktreeMain: "" });
   strip.title = isDirty(info) ? t("git.dirty") : t("git.title");
   return strip;
 }
@@ -1574,23 +1574,61 @@ const TAB_GIT_ACTIVE_MS = 4000;
 const TAB_GIT_BACKGROUND_MS = 30000;
 let showTabGit = true;
 try { showTabGit = localStorage.getItem("tab-git") !== "false"; } catch {}
-const tabGit = new Map<string, { info: GitInfo | null; at: number }>();
-function tabGitBadge(info: GitInfo): HTMLElement {
+const tabGit = new Map<string, { info: GitInfo | null; at: number; worktree?: Worktree | null; worktreeAt?: number }>();
+const TAB_WORKTREE_MS = 60000;
+function tabGitBadge(info: GitInfo, worktree?: Worktree | null): HTMLElement {
   const g = document.createElement("span");
   g.className = "tab-git" + (isDirty(info) ? " dirty" : "");
-  g.textContent = tabGitText(info, t("git.detached"));
-  g.title = gitSummary(info, { detached: t("git.detached"), noUpstream: t("git.noUpstream") });
+  if (worktree) g.insertAdjacentHTML("afterbegin", icons.worktree.replace("<svg ", '<svg class="wt-icon" '));
+  g.append(tabGitText(info, t("git.detached")));
+  const tip = gitTip(info, { detached: t("git.detached"), noUpstream: t("git.noUpstream"), worktree: t("git.worktree"), worktreeMain: t("git.worktreeMain") }, worktree);
+  if (tip) g.dataset.tip = tip;
+  g.setAttribute("aria-label", tip || tabGitText(info, t("git.detached")));
   return g;
 }
 function tabCwd(tab: Tab): string | undefined {
   return surfaces.get(tab.focused)?.cwd || undefined;
 }
+// Several results arriving close together redraw the tab list once.
+let tabRenderQueued = false;
+function scheduleTabRender() {
+  if (tabRenderQueued) return;
+  tabRenderQueued = true;
+  requestAnimationFrame(() => { tabRenderQueued = false; renderTabs(); });
+}
+const tabGitBusy = new Set<string>();
 async function refreshTabGit(cwd: string, minAgeMs: number) {
   const known = tabGit.get(cwd);
   if (known && Date.now() - known.at < minAgeMs) return;
-  const info = await invoke<GitInfo | null>("git_status", { path: cwd }).catch(() => null);
-  tabGit.set(cwd, { info, at: Date.now() });
-  if (!sameGit(known?.info, info)) renderTabs();
+  if (tabGitBusy.has(cwd)) return;
+  tabGitBusy.add(cwd);
+  let info: GitInfo | null;
+  try {
+    info = await invoke<GitInfo | null>("git_status", { path: cwd }).catch(() => null);
+  } finally {
+    tabGitBusy.delete(cwd);
+  }
+  const entry = { info, at: Date.now(), worktree: known?.worktree, worktreeAt: known?.worktreeAt };
+  tabGit.set(cwd, entry);
+  if (!sameGit(known?.info, info)) scheduleTabRender();
+  // Not awaited: the poll goes on to the next directory's git status while this runs.
+  if (info && Date.now() - (entry.worktreeAt ?? 0) >= TAB_WORKTREE_MS) refreshTabWorktree(cwd);
+}
+const worktreeBusy = new Set<string>();
+async function refreshTabWorktree(cwd: string) {
+  if (worktreeBusy.has(cwd)) return;
+  worktreeBusy.add(cwd);
+  try {
+    const worktree = await invoke<Worktree | null>("git_worktree", { path: cwd }).catch(() => null);
+    const latest = tabGit.get(cwd);
+    if (!latest) return;
+    const changed = !sameWorktree(latest.worktree, worktree);
+    latest.worktree = worktree;
+    latest.worktreeAt = Date.now();
+    if (changed) scheduleTabRender();
+  } finally {
+    worktreeBusy.delete(cwd);
+  }
 }
 let tabGitRunning = false;
 async function pollTabGit() {
@@ -1608,10 +1646,12 @@ async function pollTabGit() {
       if (cwd && !cwds.has(cwd)) cwds.set(cwd, TAB_GIT_BACKGROUND_MS);
     }
     for (const cwd of tabGit.keys()) if (!cwds.has(cwd)) tabGit.delete(cwd);
-    for (const [cwd, age] of cwds) {
-      if (closing) break;
-      await refreshTabGit(cwd, age);
-    }
+    // A few directories at a time; one at a time made the first appearance wait for every repo.
+    const queue = [...cwds];
+    const worker = async () => {
+      for (let next = queue.shift(); next && !closing; next = queue.shift()) await refreshTabGit(next[0], next[1]);
+    };
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
   } finally {
     tabGitRunning = false;
   }
@@ -1673,12 +1713,8 @@ function wireDivider(el: HTMLElement) {
 async function updateLayout() {
   filesPanel.sync();
   const area = $("terminals").getBoundingClientRect();
-  const split = splitBox(
-    { x: area.x, y: area.y, width: area.width, height: area.height },
-    active ? active.preview : undefined,
-  );
-  const box = split.terminals;
-  previewPanel.sync(split.preview, { x: area.x, y: area.y, width: area.width, height: area.height });
+  const box = { x: area.x, y: area.y, width: area.width, height: area.height };
+  previewPanel.sync(filesPanel.refreshPreview());
   const visible = active
     ? active.zoom
       ? [
@@ -1833,6 +1869,7 @@ async function newSurface(path: string, source?: string, direction?: number, opt
   surfaces.set(result.id, {
     id: result.id,
     cwd: result.cwd,
+    home: result.cwd,
     title: "",
     exited: false,
     tmuxSession,
@@ -2192,7 +2229,7 @@ async function showFavoritePreview(tab: Tab | undefined, rel: string | undefined
   const path = dir && rel ? resolveInDir(dir, rel) : undefined;
   if (!tab || !path) return;
   try { await invoke("preview_stat", { path }); } catch { return; }
-  await showPreview(tab, path, "bottom", false);
+  await showPreview(tab, path, false);
 }
 function favoriteIsOpen(item: WorkspaceFavorite) {
   return !!recentFavoriteInstance(tabs, item.id, recentFavoriteInstances.get(item.id));
@@ -2296,10 +2333,13 @@ function newFavorite(options: { tabId?: string; groupId?: string }) {
 }
 // Write the tab's current directories, splits and files panel into its favorite;
 // name, command and tmux options live only in the favorite.
-async function updateFavoriteLayout(tab: Tab) {
+async function updateFavoriteLayout(tab: Tab, useCwd = true) {
   const favorite = favoriteOf(tab);
   if (!favorite) return;
-  const { paths, tree, focused, files } = savedTab(tab);
+  const saved = savedTab(tab);
+  const { tree, focused, files } = saved;
+  // 自動寫回時保留各窗格開啟時的目錄，只有使用者按「更新收藏版面」才用目前 cwd。
+  const paths = useCwd ? saved.paths : leaves(tab.tree).map((id) => surfaces.get(id)?.home || surfaces.get(id)?.cwd || "");
   const updated: WorkspaceFavorite = { ...favorite, tab: { ...favorite.tab, paths, tree, focused, files } };
   await persistFavorites(favorites.map((item) => item.id === favorite.id ? updated : item));
   // 編輯面板的「內容」「目前開啟」是建立時取的快照，強制重建才會反映新版面。
@@ -2309,7 +2349,7 @@ async function updateFavoriteLayout(tab: Tab) {
 // 手動關閉分割／頁籤時自動寫回收藏；失敗不影響關閉。
 function syncFavoriteLayout(tab: Tab) {
   if (!favoriteOf(tab) || tab.parentId) return Promise.resolve(); // 子頁籤的版面不代表收藏
-  return updateFavoriteLayout(tab).catch(() => {});
+  return updateFavoriteLayout(tab, false).catch(() => {});
 }
 async function openFavorite(item: WorkspaceFavorite, forceNew = false) {
   const existing = recentFavoriteInstance(tabs, item.id, recentFavoriteInstances.get(item.id));
@@ -2409,7 +2449,6 @@ async function showPalette(overview = false) {
   } else {
     add(t("app.filesPanel"), () => filesPanel.toggle());
     if (active?.preview) {
-      add(t("app.togglePreviewSide"), async () => togglePreview());
       add(t("app.closePreview"), async () => closePreview());
     }
     add(t("app.newWorkspace"), () => newSurface(defaultPath()));
@@ -2481,6 +2520,7 @@ async function handleEvent(event: NativeEvent) {
       if (s && event.path && event.path !== s.cwd) {
         s.cwd = event.path;
         renderTabs();
+        if (showTabGit) refreshTabGit(event.path, TAB_GIT_ACTIVE_MS).catch(() => {});
         refreshGit(s.id).catch(() => {});
         if (event.id === active?.focused) await filesPanel.cwdChanged(event.path);
       }
@@ -2570,7 +2610,12 @@ async function handleEvent(event: NativeEvent) {
       });
       break;
     case "split":
-      if (s) await newSurface(s.cwd, s.id, event.direction);
+      if (s) {
+        await newSurface(s.cwd, s.id, event.direction);
+        // 新分割沿用來源窗格的起始目錄，cd 後的目錄不會被記進收藏。
+        const created = surfaces.get(active!.focused);
+        if (created) created.home = s.home;
+      }
       break;
     case "close-surface":
       if (s) await requestClose([s.id], async (force) => {
@@ -2832,6 +2877,7 @@ $("drawer-primary").addEventListener("transitionend", scheduleLayout);
 $("drawer-detail").addEventListener("transitionend", scheduleLayout);
 async function start() {
   await initI18n();
+  initTooltips();
   await loadLaunchTools();
   const launchSection = createLaunchToolsSection(notify);
   window.addEventListener("focus", () => { loadLaunchTools().then(() => (launchSection as HTMLElement & { rerender?: () => void }).rerender?.()).catch(() => {}); });
@@ -2971,7 +3017,7 @@ async function start() {
     const tab = tabs.find((item) => item.id === event.payload.tab) ?? active;
     if (!tab) return notify(t("app.noTabForPreview"));
     const { groups, path } = event.payload;
-    if (groups) { tab.preview = importPreviewGroups(tab.preview, groups.items, groups.active ?? 0); scheduleLayout(); }
+    if (groups) { tab.preview = importPreviewGroups(tab.preview, groups.items, groups.active ?? 0); filesPanel.reveal(tab).catch(notify); scheduleLayout(); }
     else if (path) showPreviewInline(tab, path);
     if (tab !== active) activate(tab).catch(notify);
   });
@@ -3056,6 +3102,7 @@ async function start() {
     if (document.visibilityState === "visible" && !closing) for (const r of lastRects) refreshGit(r.id, GIT_POLL_AGE_MS).catch(() => {});
   }, 5000);
   // 頁籤列的 git：只看頁籤自己的目錄；同目錄共用一次查詢，背景頁籤 30 秒、目前頁籤 4 秒，逐一執行。
+  pollTabGit().catch(() => {});
   setInterval(() => {
     if (document.visibilityState === "visible" && !closing) pollTabGit().catch(() => {});
   }, 5000);
@@ -3233,13 +3280,11 @@ async function runControl(ctx: { caller?: string; mode: ControlMode; input?: unk
     case "preview open": {
       const tab = ctx.caller ? tabFor(ctx.caller) : undefined;
       if (!tab) return errReply("not_found", "找不到呼叫者的頁籤");
-      const picked = previewSide(flags);
-      if (!picked.ok) return picked.reply;
       const base = (ctx.caller && surfaces.get(ctx.caller)?.cwd) || homePath || undefined;
       const [path] = await invoke<string[]>("control_resolve_files", { paths: [args.path], base });
       try { await invoke("preview_stat", { path }); } catch (error) { return errReply("bad_args", `${args.path}：${String(error)}`); }
-      const where = await showPreview(tab, path, picked.side, false);
-      return okReply({ path, side: tab.preview?.side ?? picked.side, kind: previewKind(path), window: where === "window" });
+      const where = await showPreview(tab, path, false);
+      return okReply({ path, kind: previewKind(path), window: where === "window" });
     }
     case "preview window": {
       const base = (ctx.caller && surfaces.get(ctx.caller)?.cwd) || homePath || undefined;
@@ -3259,7 +3304,7 @@ async function runControl(ctx: { caller?: string; mode: ControlMode; input?: unk
     case "preview status": {
       const tab = ctx.caller ? tabFor(ctx.caller) : undefined;
       if (!tab) return errReply("not_found", "找不到呼叫者的頁籤");
-      return okReply({ preview: tab.preview && previewPath(tab.preview) ? { path: previewPath(tab.preview), side: tab.preview.side, kind: previewKind(previewPath(tab.preview)!) } : null });
+      return okReply({ preview: tab.preview && previewPath(tab.preview) ? { path: previewPath(tab.preview), kind: previewKind(previewPath(tab.preview)!) } : null });
     }
     case "files reveal":
     case "files quicklook": {

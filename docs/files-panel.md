@@ -1,27 +1,29 @@
 # 檔案面板
 
-每個頁籤各有一個檔案面板，用來查看並操作終端機所在目錄，操作方式比照 Finder。它取代了原本左側 Rail 的「目錄」面板（`docs/ui-drawer-redesign.md` §8）。
+每個頁籤各有一個檔案面板，用來查看並操作終端機所在目錄，操作方式比照 Finder。它取代了原本左側 Rail 的「目錄」面板（`docs/ui-drawer-redesign.md` §8）。檔案預覽也在這個浮層裡：左邊目錄、右邊預覽（見下節與 `docs/preview.md`）。
 
 ## 版面與狀態
 
 ```
 ┌rail┬─────────────────────────────────────────────┐
-│    │  ┌ ↑ ~ › proj › src  ⟲ 👁 ⤢ ^ ─────────────┐ │
-│ ▣  │  │ 名稱 ▲            大小     修改日期        │ │  ← #files（浮層）
-│ ★  │  │ › 📁 native        —       今天          │ │
-│    │  └──────────── ═ #files-resizer ───────────┘ │
+│    │  ┌ ↑ ~ › proj › src  ⟲ ▯ 👁 ⤢ ^ ───────────┐ │
+│ ▣  │  │ 名稱 ▲        大小   ║ ┌ 預覽頁籤列 ─────┐ │  ← #files（浮層）
+│ ★  │  │ › 📁 native    —    ║ │ # PLAN.md        │ │     左：#files-left／右：#files-pv
+│    │  └──────────── ═ #files-resizer ───────────┘ │     ║ ＝ #files-pv-resizer
 │    │   終端機（整面仍可點、可拖入）                    │
 └────┴─────────────────────────────────────────────┘
 ```
 
-- `#files` 是 `#workspace` 內的絕對定位浮層，從頂部落下（`width:80%`，視窗／終端機區改變寬度時跟著變，最小 360px；`z-index:29`，比待處理／⌘⇧P 低，它們可疊在上面）。**不佔空間、不擠窄終端機。**
+- `#files` 是 `#workspace` 內的絕對定位浮層，從頂部落下（`width:94%`，視窗／終端機區改變寬度時跟著變，最小 360px；`z-index:29`，比待處理／⌘⇧P 低，它們可疊在上面）。**不佔空間、不擠窄終端機。**
   - 原生終端機 NSView 疊在 WebView 之上，所以靠 `overlay-cutout`（`slot:"files"`）把浮層範圍挖洞顯示；`reportCutout` 在開關、ResizeObserver（含寬度隨工作區變動）、切頁籤時送出，關閉時一定送全零（收合時帶 `restoreFocus`）。
   - 原生端 `cutoutRequests[label][slot]`：不同 slot 的洞可同時存在（palette／attention／usage 共用 `default`，與檔案浮層互不影響）。重疊的洞會先切成不相交的矩形再做 even-odd 遮罩。
 - **Esc、`^`（`#files-close`）、右上資料夾鈕、⌘O（焦點已在列表時）會收合；失去焦點（點終端機、切換視窗／App）不收**，讓它可留著當參考或一邊拖曳。獨立視窗內 Esc 只清除選取。
   - Esc 與側欄收合不衝突：`main.ts` 的 window 層 Esc 處理在焦點不在側欄（`#rail`／`#drawer-*`）時先呼叫 `filesPanel.collapse()`，面板開著就只收面板；焦點在側欄內才由側欄處理。
+- **左右佈局**：`#files-main` 是橫向 flex：`#files-left`（欄頭、清單／直欄、狀態列）｜`#files-pv-resizer`｜`#files-pv`（預覽，見 `docs/preview.md`）。剛開浮層、還沒點過檔案（`tab.preview` 不存在）時預覽與分隔線都隱藏，目錄佔滿整個浮層。右半可見的條件由 `refreshPreview()` 判斷（浮層開著、未彈出、`host.hasPreview()`、浮層寬 ≥ 560px `previewFits`），`updateLayout()` 在 `filesPanel.sync()` 之後呼叫它並把結果交給 `previewPanel.sync()`；`ResizeObserver` 發現可見性改變也會觸發 `layoutChanged`。左右比例是全域的 `localStorage("files-preview-ratio")`（預設 0.5，`clampPreviewRatio` 讓兩邊至少 240px）。
+- **左半收合成 icon 列**：預覽可見時標題列多一個 `#files-list-toggle`，左半可收成約 44px 的垂直 icon 列（展開鈕、上層、目前資料夾 icon），預覽佔滿其餘寬度。偏好存 `localStorage("files-list-collapsed")`，所有頁籤共用。實際收合狀態是 `effectiveCollapsed(collapsed, previewVisible)`（`src/files.ts`）：**預覽不可見（關閉、浮層過窄）時一律自動展開**，不會出現左邊收著右邊沒東西。收合時 ⌘O 聚焦列表會先展開。
 - 高度存在 `localStorage("files-height")`（預設工作區 50%，`clampDropHeight`：160px～工作區 85%），所有頁籤共用，拖曳浮層底緣的 `#files-resizer` 調整。
 - 已沒有「滿版」（浮層蓋住終端機沒有意義；要大畫面請彈出成視窗）。`restoreFiles` 會忽略舊存檔的 `full`。
-- 面板寬度 < 420px 時（container query），只留名稱欄。
+- 面板寬度 < 420px 時（container query），只留名稱欄；預覽可見且浮層 < 900px 時也只留名稱欄（左半較窄）。
 - 每個頁籤的狀態存在 `tab.files`（`FilesState`，見 `src/files.ts`）：`open`、`path`、`follow`、`expanded`。
   - `SavedTab.files`（`SavedFiles`，`saveFiles`／`restoreFiles` 在 `src/files.ts`）存 `open`、`path`、`follow`、`expanded`、`columnRoot`、`view`：重開時面板維持開合、瀏覽位置、展開的資料夾、直欄最左欄與清單／直欄檢視。`restoreFiles` 會丟掉格式不對的欄位；`expanded` 只保留在 `path` 底下的項目。若 `follow` 為真而重開後終端機 cwd 與存的 `path` 不同，`onCwd` 照舊跟隨 cwd 並清空展開。
     - `files-panel.ts` 的 `update`（含 `openPanel`，不可再直接指定 `tab.files`）發現存檔欄位改變就呼叫 host 的 `visibilityChanged`；`main.ts` 的 `rememberFilesState` 立即排程 tmux session 存檔，收藏則 600ms 去抖後 `persistFavorites`。非收藏、非 tmux 的頁籤本來就不會跨啟動還原。
@@ -32,27 +34,19 @@
 標題列的分段按鈕切換「清單」與「直欄」（舊稱「三欄」）。每個頁籤各記自己的檢視（`tab.files.view`，隨上面的狀態存檔還原）；`localStorage("files-view")` 只是「最後一次選擇」，給沒選過的頁籤當預設。切換頁籤時 `sync()` 套用該頁籤的檢視。沒有快捷鍵，因為 ⌘1～⌘9 已用於切換頁籤。
 
 - **清單**：樹狀列表，有名稱、大小、修改日期三欄，點欄頭排序，資料夾可就地展開。
-- **直欄**：上方是 Finder 式的一排欄位，每往下一層就多一欄，下方是橫跨全寬的預覽區，類似 ranger／yazi。`#files-body` 是水平 flex 捲動容器，欄位超出可視範圍時可左右捲動；`#files-split` 把它與預覽區上下排列。
+- **直欄**：Finder 式的一排欄位，每往下一層就多一欄，類似 ranger／yazi。`#files-body` 是水平 flex 捲動容器，欄位超出可視範圍時可左右捲動。檔案內容不再在底部顯示縮圖，而是點檔案後在浮層右半預覽。
   - **欄位鏈**：`[祖先欄…] [目前欄] [資料夾內容欄]`。最左欄的資料夾存在 `tab.files.columnRoot`（只在記憶體，純函式 `columnRootFor`／`columnChain` 在 `src/files.ts`）。
     - 起點是進入點的上層（上層｜目前｜內容）；→ 進入資料夾時 root 不變，往右多一欄；← 回上層只少一欄，退到最左欄之外時 root 跟著上移，往左補一欄。
     - 路徑跳到 root 以外（cd 跟隨、麵包屑）會重設為新路徑的上層。
     - 導航或選取後 `revealColumns()` 自動橫向捲動，讓目前欄左緣與內容欄右緣可見。
   - **欄寬**：每欄右緣有 `.col-resizer`，拖曳調寬，雙擊恢復預設 200px（範圍 120～800px）。寬度**依該欄列出的資料夾路徑**記在 `localStorage("files-column-widths")`（`{路徑: px}`），所有頁籤共用；預設寬度不存，最多 300 筆，超過刪最舊的（`rememberColumnWidth`）。
     - 清理：`load()` 讀取目錄失敗就刪該路徑與其底下的紀錄；讀到目錄內容時，刪掉不在清單裡的子資料夾紀錄（`pruneColumnWidths`）。沒顯示隱藏檔時保留點開頭的資料夾，避免誤刪。只會清到瀏覽過的路徑。
-  - 預覽區高度可拖曳 `#files-preview-resizer` 調整，存 `localStorage("files-preview-height")`，所有頁籤共用，範圍 80px～面板高 70%（`clampPreviewHeight`）。
   - **祖先欄**（`.col-ancestor`，動態產生）：列出該層目錄，通往目前目錄的那一列反白。點資料夾會進入該資料夾，點檔案會回到該層並選取它。
   - **目前欄**（`#files-list`）：和清單模式是同一個元素，選取、鍵盤、右鍵選單、改名、剪貼簿、拖入全部共用。直欄模式不就地展開資料夾，新增資料夾／檔案一律建在目前目錄。
-  - **資料夾內容欄**（`.col-child`）與**底部預覽區**（`.col-preview`）：選取後 120ms 更新。
-    - 單選資料夾 → 內容欄唯讀列出內容，點其中一列會進入並選取該項；預覽區顯示名稱、種類、項目數、修改日期。
-    - 單選檔案 → 內容欄留空；預覽區上方是縮圖（盡量放大），下方是名稱、種類、大小、修改日期。
-    - 在內容欄點檔案 → 該檔案在內容欄反白、不移動欄位，預覽區顯示它；點資料夾仍會進入。
-    - 多選 → 預覽區顯示「已選取 N 個項目」。
+  - **資料夾內容欄**（`.col-child`）：選取單一資料夾後 120ms 更新，唯讀列出內容；點其中的資料夾會進入並選取該項，點檔案則在內容欄反白（不移動欄位）並讓右半預覽換成它（`followPreview`）。選到檔案本身時內容欄留空。
   - **側欄右鍵**：祖先欄與內容欄的項目也有右鍵選單，只對按到的那一項操作，不改變目前欄的選取。在空白處按右鍵 → 對該欄列出的資料夾開背景選單。
     - 重新命名，以及在別的資料夾新增項目時，會先移到該資料夾並選取該項，再就地改名，因為改名只能在目前欄進行。
     - 在內容欄的檔案上按右鍵，會像單擊一樣把它反白。
-  - **縮圖**：`hg_files` 的 `preview` op 在背景執行緒用 `QLThumbnailGenerator` 產生，最長邊 256pt @2x，最多等 3 秒。失敗時改用 `NSWorkspace iconForFile:`，種類取自 `UTType.localizedDescription`。
-    - 回傳 PNG data URL，CSP 已允許 `img-src data:`。
-    - 前端以「路徑＋修改時間」快取 64 筆。
 
 ## 跟隨 cwd
 
@@ -67,7 +61,7 @@
 
 | 操作 | 方式 |
 |---|---|
-| 選取 | 單擊；⌘ 切換（資料夾）；⇧ 範圍；↑↓（⇧ 延伸）；⌘A。⌘+單擊檔案＝在預覽窗開啟（自動更新） |
+| 選取 | 單擊；⌘ 切換（資料夾）；⇧ 範圍；↑↓（⇧ 延伸）；⌘A。單擊／↑↓ 選到單一檔案＝在右半預覽新增一個頁籤（已開著就切過去）；⌘+單擊檔案＝在預覽新增頁籤 |
 | 展開／收合（清單） | 點三角形；→／← |
 | 進入／回上層（直欄） | → 進入選中的資料夾並選第一項；← 或 ⌘↑ 回上層並選回原資料夾 |
 | 開啟 | 雙擊或 ⌘↓。資料夾會進入該資料夾，檔案用預設 App 開啟 |
@@ -129,7 +123,7 @@
 - 刪除：一律 `trashItemAtURL` 丟到垃圾桶，不提供永久刪除。
 - 部分成功時，面板底部列出失敗項目，不跳 toast。
 
-`hg_files` 也負責兩個唯讀查詢，避免慢速磁碟或 LaunchServices 造成彩球：`preview`（縮圖）與 `open-with-apps`（「打開方式」清單，只用 NSWorkspace 的 URL 查詢，不碰 UI）。同理，輪詢用的 `dir_stamp` 也是 async command，不在主執行緒 `stat`。
+`hg_files` 也負責唯讀查詢 `open-with-apps`（「打開方式」清單，只用 NSWorkspace 的 URL 查詢，不碰 UI），避免慢速磁碟或 LaunchServices 造成彩球。同理，輪詢用的 `dir_stamp` 也是 async command，不在主執行緒 `stat`。
 
 AppKit 相關的操作走 `hg_command` 的 `files-*` op（主執行緒）：`files-pasteboard-write`、`files-pasteboard-read`、`files-pasteboard-text`、`files-open`（可指定 App）、`files-reveal`、`files-quicklook`／`-update`／`-close`。另外兩個 op 在 `bridge.m`：
 - `insert-text`：把文字送進終端機，不送 Enter。
@@ -154,12 +148,12 @@ AppKit 相關的操作走 `hg_command` 的 `files-*` op（主執行緒）：`fil
 - [ ] 面板拷貝 → Finder 貼上，以及反向；剪下＋貼上會搬移；同名自動改名；在同一資料夾 ⌘D 產生「副本」；拷貝路徑。
 - [ ] 改名與新增資料夾（含中文輸入法選字中按 Enter 不會提前送出）；⌘⌫ 丟到垃圾桶，可從垃圾桶還原。
 - [ ] 空白鍵開 Quick Look，預覽視窗有內容（圖片、PDF、程式碼）；↑↓ 切換預覽；再按空白鍵或 Esc 關閉後，鍵盤回到檔案列表；多選時 Quick Look 可翻頁。
-- [ ] 清單／直欄切換後模式會記住；各祖先欄、目前欄、內容欄、預覽欄內容正確。
+- [ ] 清單／直欄切換後模式會記住；各祖先欄、目前欄、內容欄內容正確。
 - [ ] 直欄連續 → 進入多層，每層多一欄並自動捲到右側；← 退回，退到最左欄之外時往左補一欄；cd 到不相關目錄會重設為「上層｜目前｜內容」起點。
 - [ ] 拖曳欄間分隔線可調寬、雙擊恢復預設；重啟後回到同一資料夾，該欄寬度保留；窄面板（約 360px）可左右捲動。
-- [ ] 拖曳預覽區上方分隔線可調高度，重啟後保留；拉到上下限不破版。
-- [ ] 直欄下 ←→ 進出資料夾，回上層時選回原資料夾；點上層欄、預覽欄的項目會跳過去，鍵盤仍在目前欄。
-- [ ] 預覽欄：圖片、PDF 顯示縮圖；沒有縮圖的檔案顯示系統圖示與種類；多選顯示數量。
+- [ ] 直欄下 ←→ 進出資料夾，回上層時選回原資料夾；點上層欄、內容欄的項目會跳過去，鍵盤仍在目前欄。
+- [ ] 剛開浮層（沒點過檔案）目錄佔滿全寬；單擊檔案 → 右半出現預覽、↑↓ 換檔；點資料夾、多選不變；右半 ✕ 後回到全寬；Esc 收合再開，預覽還在。
+- [ ] 拖左右分隔線調寬並記住；浮層 < 560px 時右半隱藏且目錄自動展開；右半可見時標題列出現收合鈕：收成 icon 列、預覽佔滿，再展開還原；收合狀態下關掉最後一個預覽，目錄自動展開；收合時 ⌘O 先展開再聚焦列表。
 - [ ] 直欄模式下的右鍵、剪下貼上、改名、新增資料夾、Finder 拖入都正常；窄面板（約 360px）仍可用。
 - [ ] 上層欄／內容欄的項目與空白處按右鍵都有選單；拷貝、貼到此資料夾、改名（會先跳到該層）、丟到垃圾桶、新增資料夾都正常，目前欄的選取不變。
 - [ ] 外接碟或慢速磁碟上開著面板、反覆在少見類型的檔案上按右鍵，不會出現彩球。

@@ -101,6 +101,16 @@ export function closeGroup(state: TabsState, groupId: string): TabsState {
   const groups = state.groups.filter((g) => g.id !== groupId);
   return { ...state, groups, active: activeAfterRemoval(groups, index, state.active === groupId, state.active) };
 }
+export type CloseMode = "all" | "left" | "right" | "others";
+/** Bulk close relative to one tab: everything, everything left of it, right of it, or all but it. The tab itself stays (except "all"); if the active tab went away it becomes active. */
+export function closeGroups(state: TabsState, groupId: string, mode: CloseMode): TabsState {
+  const index = state.groups.findIndex((g) => g.id === groupId);
+  if (index < 0) return state;
+  const groups = state.groups.filter((_, i) => mode === "all" ? false : mode === "left" ? i >= index : mode === "right" ? i <= index : i === index);
+  if (groups.length === state.groups.length) return state;
+  const active = groups.some((g) => g.id === state.active) ? state.active : groups.find((g) => g.id === groupId)?.id;
+  return { ...state, groups, active };
+}
 /** Removes one pane; the tab goes away with its last pane. */
 export function closePane(state: TabsState, paneId: string): TabsState {
   const group = groupOf(state, paneId);

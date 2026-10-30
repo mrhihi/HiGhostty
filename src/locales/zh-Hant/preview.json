@@ -16,7 +16,6 @@
   "preview.waiting": "{error}，等待檔案出現…",
   "preview.loading": "載入中…",
   "preview.popout": "全部彈出到獨立預覽視窗",
-  "preview.swapSide": "切換左右／上下",
   "preview.reveal": "在 Finder 顯示",
   "preview.close": "關閉預覽",
   "preview.resize": "調整預覽大小",
@@ -43,5 +42,10 @@
   "preview.dockAll": "全部放回原頁籤",
   "preview.tabMoveLeft": "頁籤往左移",
   "preview.tabMoveRight": "頁籤往右移",
-  "preview.refresh": "重新整理目前頁籤"
+  "preview.refresh": "重新整理目前頁籤",
+  "preview.videoFailed": "無法播放這個影片（格式可能不支援）",
+  "preview.closeOthers": "只保留目前頁籤",
+  "preview.closeLeft": "關閉左側所有頁籤",
+  "preview.closeRight": "關閉右側所有頁籤",
+  "preview.closeAll": "關閉所有頁籤"
 }
