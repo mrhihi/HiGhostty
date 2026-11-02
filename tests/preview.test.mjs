@@ -21,6 +21,10 @@ import {
   ratioFromPointer,
   clampPreviewRatio,
   previewFits,
+  previewHalfShown,
+  previewOpenTarget,
+  previewGroups,
+  previewFromGroups,
   sameStamp,
   scrollAfterUpdate,
 } from "../src/preview.ts";
@@ -79,6 +83,34 @@ test("clampPreviewRatio leaves both halves at least 240px", () => {
 test("previewFits needs a wide enough overlay", () => {
   assert.equal(previewFits(559), false);
   assert.equal(previewFits(560), true);
+});
+
+test("previewHalfShown needs the panel open, a preview, and room", () => {
+  assert.equal(previewHalfShown(true, true, 560), true);
+  assert.equal(previewHalfShown(true, true, 559), false);
+  assert.equal(previewHalfShown(false, true, 800), false);
+  assert.equal(previewHalfShown(true, false, 800), false);
+});
+
+test("previewOpenTarget keeps a popped-out files panel with its preview", () => {
+  assert.equal(previewOpenTarget(false, false), "inline");
+  assert.equal(previewOpenTarget(true, false), "files");
+  assert.equal(previewOpenTarget(false, true), "viewer");
+  assert.equal(previewOpenTarget(true, true), "viewer");
+});
+
+test("previewGroups round-trips tabs, layout and the active one", () => {
+  const state = addPreviewFile(addPreviewFile(undefined, "/a.md"), "/b.md");
+  const groups = previewGroups(state);
+  assert.equal(groups.active, 1);
+  assert.deepEqual(groups.items.map((item) => item.paths), [["/a.md"], ["/b.md"]]);
+  assert.equal(previewPath(previewFromGroups(groups)), "/b.md");
+  const merged = previewFromGroups({ items: [{ paths: ["/a.md", "/b.md"], layout: "rows", sizes: [0.3, 0.7] }], active: 0 });
+  assert.equal(merged.tabs.groups[0].layout, "rows");
+  assert.deepEqual(merged.tabs.groups[0].sizes, [0.3, 0.7]);
+  assert.equal(previewFromGroups(null), undefined);
+  assert.equal(previewFromGroups({ items: [], active: 0 }), undefined);
+  assert.equal(previewGroups(undefined), null);
 });
 
 test("a new preview holds one tab", () => {

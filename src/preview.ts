@@ -29,6 +29,33 @@ export function clampPreviewRatio(ratio: number, width: number): number {
 /** The overlay is wide enough to show the preview next to the list. */
 export const previewFits = (width: number): boolean => width >= MIN_OVERLAY_WIDTH;
 
+/** Right half of a files panel (tab overlay or its own window) while it is open, a preview exists, and there is room. */
+export const previewHalfShown = (open: boolean, hasPreview: boolean, width: number): boolean =>
+  open && hasPreview && previewFits(width);
+
+/** Where an explicitly opened file is shown. The preview window wins while it is open. */
+export type PreviewOpenTarget = "inline" | "files" | "viewer";
+export function previewOpenTarget(detached: boolean, viewerOpen: boolean): PreviewOpenTarget {
+  if (viewerOpen) return "viewer";
+  if (detached) return "files";
+  return "inline";
+}
+
+/** Tabs handed to the popped-out files window and back. `null` means the pane is closed. */
+export type PreviewGroups = { items: GroupSeed[]; active: number };
+export function previewGroups(state: PreviewState | undefined): PreviewGroups | null {
+  const groups = state?.tabs.groups.filter((group) => group.panes.length) ?? [];
+  if (!groups.length || !state) return null;
+  return {
+    items: groups.map((group) => ({ paths: group.panes.map((pane) => pane.path), layout: group.layout, sizes: group.sizes })),
+    active: Math.max(0, groups.findIndex((group) => group.id === state.tabs.active)),
+  };
+}
+export function previewFromGroups(groups: PreviewGroups | null | undefined): PreviewState | undefined {
+  if (!groups?.items.some((item) => item.paths.length)) return undefined;
+  return importPreviewGroups(undefined, groups.items, groups.active);
+}
+
 /** Ratio after dragging the divider to `pointer` (client x), in an overlay spanning `left`..`left + width`. */
 export function ratioFromPointer(left: number, width: number, pointer: number): number {
   return clampPreviewRatio(1 - (pointer - left) / Math.max(1, width), width);

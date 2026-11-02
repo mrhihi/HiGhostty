@@ -9,8 +9,10 @@ import { initFilesPanel } from "./files-panel";
 import type { FilesState } from "./files";
 import { icons } from "./icons";
 import { applyI18n, initI18n } from "./i18n-runtime";
+import { initPreviewPanel } from "./preview-panel";
+import { addPreviewFile, previewFromGroups, previewGroups, type PreviewGroups, type PreviewState } from "./preview";
 
-type Init = { tab: string; origin: string; cwd?: string; home: string; files: FilesState };
+type Init = { tab: string; origin: string; cwd?: string; home: string; files: FilesState; preview?: PreviewGroups | null };
 declare global { interface Window { __HIGHOSTTY_FILES__?: Init } }
 export const FILES_WINDOW_SIZE_KEY = "files-window-size";
 
@@ -24,11 +26,28 @@ async function main() {
     setTimeout(() => notice.classList.remove("show"), 7000);
   };
   let cwd = init.cwd;
-  const tab = { files: { ...init.files, open: true, detached: undefined } as FilesState };
+  const tab: { files: FilesState; preview?: PreviewState } = {
+    files: { ...init.files, open: true, detached: undefined },
+    preview: previewFromGroups(init.preview),
+  };
   const send = (event: string, payload: Record<string, unknown> = {}) => emitTo(init.origin, event, { tab: init.tab, ...payload }).catch(notify);
+  // Coalesce the stream of tab edits (dragging a split fires on every move) into one snapshot.
+  let gen = 0;
+  let reportTimer: ReturnType<typeof setTimeout> | undefined;
+  const reportPreview = () => {
+    clearTimeout(reportTimer);
+    reportTimer = setTimeout(() => { send("files-preview", { gen: ++gen, preview: previewGroups(tab.preview) ?? { items: [], active: 0 } }); }, 40);
+  };
   const dock = async (close: boolean) => {
-    await send("files-dock", { files: tab.files, close });
+    clearTimeout(reportTimer);
+    await send("files-dock", { files: tab.files, close, preview: previewGroups(tab.preview) ?? { items: [], active: 0 } });
     await invoke("close_files_window", { tab: init.tab }).catch(notify);
+  };
+  let syncPreview = () => {};
+  const showPreviewLocal = (path: string) => {
+    tab.preview = addPreviewFile(tab.preview, path);
+    syncPreview();
+    reportPreview();
   };
   const panel = initFilesPanel({
     native: (request) => invoke("native", { request }),
@@ -38,12 +57,13 @@ async function main() {
     displayPath: (path) => init.home && (path === init.home || path.startsWith(init.home + "/")) ? "~" + path.slice(init.home.length) : path,
     openTerminal: async (path) => { await send("files-request", { op: "open-terminal", path }); },
     editInTerminal: async (directory, command) => { await send("files-request", { op: "edit", directory, command }); },
+    // Explicit open goes back to the terminal window, which sends it here or to the preview window.
     previewFile: (path) => { send("files-request", { op: "preview", path }); },
-    followPreview: (path) => { send("files-request", { op: "follow-preview", path }); },
-    hasPreview: () => false,
+    followPreview: showPreviewLocal,
+    hasPreview: () => !!tab.preview,
     insertIntoTerminal: async (text) => { await send("files-request", { op: "insert", text }); },
     focusTerminal: () => {},
-    layoutChanged: () => {},
+    layoutChanged: () => syncPreview(),
     visibilityChanged: (changed) => { send("files-state", { files: changed.files }); },
     notify,
     standalone: true,
@@ -51,6 +71,16 @@ async function main() {
     closeWindow: () => { dock(true); },
     icons,
   });
+  const previewPanel = initPreviewPanel({
+    activeTab: () => tab,
+    close: () => { tab.preview = undefined; syncPreview(); reportPreview(); },
+    reveal: (path) => { invoke("native", { request: { op: "files-reveal", paths: [path] } }).catch(notify); },
+    changed: () => reportPreview(),
+    notify,
+  });
+  syncPreview = () => previewPanel.sync(panel.refreshPreview());
+  await listen<{ path?: string }>("files-preview-open", ({ payload }) => { if (payload.path) showPreviewLocal(payload.path); });
+  await listen("files-preview-close", () => { tab.preview = undefined; syncPreview(); reportPreview(); });
   await listen<{ cwd: string }>("files-cwd", ({ payload }) => { cwd = payload.cwd; panel.cwdChanged(payload.cwd).catch(notify); });
   await listen<{ type: string; key?: string; shift?: boolean }>("native-event", ({ payload }) => panel.handleEvent(payload));
   // Drops from Finder etc.: move or copy into the folder under the pointer, like in the tab panel.
@@ -69,6 +99,7 @@ async function main() {
     timer = setTimeout(() => { try { localStorage.setItem(FILES_WINDOW_SIZE_KEY, JSON.stringify({ width: window.innerWidth, height: window.innerHeight })); } catch {} }, 300);
   });
   panel.sync();
+  syncPreview();
   applyI18n(document.body);
 }
 initI18n({ native: false }).catch(() => {}).then(() => main().catch((error) => document.body.append(String(error))));

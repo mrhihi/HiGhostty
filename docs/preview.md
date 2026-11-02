@@ -7,11 +7,11 @@
 
 ## 架構
 
-- 純狀態與幾何：`src/preview.ts`（`clampPreviewRatio`、`ratioFromPointer`、`previewFits`、`previewKind`、`scrollAfterUpdate`、`linkTarget`），測試在 `tests/preview.test.mjs`。DOM 與輪詢：`src/preview-panel.ts`。讀檔：`src-tauri/src/preview.rs`。
+- 純狀態與幾何：`src/preview.ts`（`clampPreviewRatio`、`ratioFromPointer`、`previewFits`、`previewHalfShown`、`previewOpenTarget`、`previewKind`、`scrollAfterUpdate`、`linkTarget`），測試在 `tests/preview.test.mjs`。DOM 與輪詢：`src/preview-panel.ts`。讀檔：`src-tauri/src/preview.rs`。
 - `PreviewState` 只有 `{ tabs }`（`TabsState`，`src/preview-tabs.ts`）。左右比例是全域設定 `localStorage("files-preview-ratio")`，不在 state 裡；`tab.preview` 仍只在記憶體。
 - **預覽是浮層裡的 HTML，不用額外的 `overlay-cutout`，也不放進分割樹，也不再切 `#terminals`。** 浮層本身已靠 `overlay-cutout`（`slot:"files"`）顯示，預覽在它範圍內所以不會被原生 view 蓋住；`updateLayout()` 把整塊 `#terminals` 都給終端機。
-- 右半可見＝浮層開著、未彈出、`tab.preview` 存在、浮層寬 ≥ 560px（`previewFits`）；判斷在 `files-panel.ts` 的 `refreshPreview()`，`updateLayout()` 把結果傳給 `previewPanel.sync(shown)`。不可見時 `state()` 回 `undefined`，所有 view `dispose`，不是關閉。
-- 彈出的檔案視窗（`files.html`）沒有右半預覽（`hasPreview` 恆為 false）：其 ⌘+click／右鍵開啟走 `showPreview` → 獨立預覽視窗；頁籤的檔案面板處於 `detached` 時 `showPreview` 一律進預覽視窗，`followPreview` 不動作。
+- 右半可見＝這個面板開著、`tab.preview` 存在、寬 ≥ 560px（`previewHalfShown`）。頁籤浮層彈出後不顯示（`shownInTab` 為假）；獨立檔案視窗用同一條規則，所以目錄和預覽仍並排。判斷在 `files-panel.ts` 的 `refreshPreview()`，`updateLayout()`（獨立視窗則是 `layoutChanged`）把結果傳給 `previewPanel.sync(shown)`。不可見時 `state()` 回 `undefined`，所有 view `dispose`，不是關閉。
+- 彈出的檔案視窗（`files.html`）右半預覽跟浮層同一份（頁籤、合併、排列經 `previewGroups` 帶過去，變更與放回再送回來）。單擊與方向鍵在視窗內更新右半。⌘+click／右鍵／`ctl preview open` 走 `previewOpenTarget`：獨立預覽視窗開著就進該視窗，否則進檔案視窗右半。檔案視窗的預覽頁籤列沒有「全部彈出」。
 - 分割樹（`model.ts`）的 leaf 在 `main.ts` 到處被當成終端機 id，預覽窗不是終端機，所以刻意不放進去；每個終端機頁籤一個預覽區，窗內用 `PreviewState.tabs` 管理自己的頁籤。
 
 ## 預覽窗內的頁籤與合併（浮層右半與獨立視窗共用）
@@ -29,7 +29,7 @@
 - 浮層右半預覽的頁籤列有「彈出」鈕：**整個預覽（所有頁籤，合併群組與排列方向原樣）**搬到唯一一個獨立預覽視窗（`open_preview_window` 的 `groups`，視窗端 `importGroups`，已開的檔案不重複），浮層右半預覽關閉。`ctl preview window <path>`（完整模式）則只把一個檔案加成視窗的新頁籤。視窗內容與浮層右半完全相同（共用 `src/preview-view.ts`），一樣自動更新、點 `.md` 連結換檔。
 - 入口是獨立頁面 `preview.html`＋`src/preview-window.ts`（`vite.config.ts` 為多頁建置），不載入 `main.ts`：沒有終端機、沒有原生層。
 - 視窗 label 固定為 `preview-viewer`。要開的檔案由 `open_preview_window` 推進 Rust 的 `PENDING` 佇列，視窗已存在就送 `preview-open` 事件；頁面啟動時先 `listen` 再呼叫 `preview_take_pending` 取出，之後每收到事件再取一次（不用 initialization_script，也不只靠事件，頁面尚未載好時才不會漏檔）。
-- **彈出與不彈出是同一套**：獨立視窗存在期間（`preview_window_open`），任何「開啟預覽」（檔案面板右鍵／⌘+click、指令選單、`ctl preview open`、收藏預設預覽）都直接開成視窗的新頁籤（`main.ts` 的 `showPreview`），不再開在浮層右半；視窗關閉或全部放回後才又開在浮層右半。放回（`preview-dock` 事件）一律開在浮層右半（`showPreviewInline`），不走視窗。檔案面板的跟隨（follow）只作用於浮層右半預覽，不影響視窗。
+- **彈出與不彈出是同一套**：獨立預覽視窗存在期間（`preview_window_open`），任何明確「開啟預覽」（檔案面板右鍵／⌘+click、指令選單、`ctl preview open`、收藏預設預覽）都直接開成視窗的新頁籤（`previewOpenTarget` 回 `viewer`），不再開在浮層或檔案視窗的右半；視窗關閉或全部放回後才回到右半。放回（`preview-dock` 事件）一律開在浮層右半（`showPreviewInline`），不走視窗。檔案面板的跟隨（follow）只作用於正在顯示的檔案面板右半（頁籤浮層或彈出的檔案視窗），不影響預覽視窗。
 - 視窗頁籤列的「全部放回原頁籤」把每個頁籤（群組）送回它來源的終端機頁籤並清空頁籤，最後視窗自動關閉。合併群組與排列方向一併放回（`preview_dock` 的 `groups`，來源頁籤的預覽窗以 `importPreviewGroups` 匯入，群組跟著它第一格的來源頁籤）。單格「放回頁籤」則只放該檔案。
 - 「放回頁籤」只放回該分格的檔案（`preview_dock` 不再關視窗），該分格從頁籤移除；沒有任何頁籤時前端自行 `destroy()` 視窗。
 - **預覽視窗不是終端機視窗**，Rust 列舉視窗時一律要排除（`preview::is_preview_window`）：`control.rs` 的 `expected` 視窗數（否則每個 ctl 指令都等不到「全部回覆」而拖到逾時）、`list_windows`（⌘ 切換視窗）、`ExitRequested`／`Opened` 挑選接收事件的視窗（否則 quit 事件送給不會處理的預覽視窗，App 關不掉）。最後一個終端機視窗關閉時，預覽視窗跟著關閉。
@@ -108,6 +108,6 @@
 34. 剛開浮層（⌘O）全寬目錄、沒有預覽；單擊檔案／↑↓／直欄內容欄點檔案才出現右半預覽；點資料夾、多選不變；Esc 收合再開，預覽還在；切到別的頁籤各自有各自的預覽。
 35. 預覽可見時標題列出現收合鈕：左半收成 icon 列（展開、上層、資料夾）、預覽佔滿；收合狀態下 ✕ 關掉最後一個預覽（或 `ctl preview close`、關閉最後一個頁籤、浮層縮到 < 560px）目錄自動展開；收合時 `ctl preview open` 維持收合；收合時 ⌘O 先展開再聚焦列表；重啟後收合偏好保留。
 36. `ctl preview open x.md`（`--side right` 照舊可下，忽略）：該頁籤浮層自動展開並顯示預覽，不搶焦點，終端機仍可直接打字；`ctl preview status` 回 `{path,kind}`，無 `side`。
-37. 檔案面板「彈出」成視窗後：單擊檔案不開預覽；⌘+click／右鍵開預覽走獨立預覽視窗；放回頁籤後恢復浮層右半預覽。
+37. 檔案面板「彈出」成視窗後：同一視窗左目錄、右預覽（原本的頁籤都在）；單擊／↑↓ 換的是這個右半；視窗窄於 560px 時右半隱藏、拉寬後回來；放回頁籤後浮層恢復並排。預覽視窗另外開著時，⌘+click／右鍵／`ctl preview open` 仍進預覽視窗（回覆 `window: true`）；預覽視窗沒開時這些操作進檔案視窗右半（回覆 `window: false`）。檔案視窗的預覽頁籤列沒有「全部彈出」。
 38. 單擊不同檔案：每個檔案各開一個新頁籤，不置換目前的；單擊已開著的檔案只切到它的頁籤。頁籤右鍵「只保留目前頁籤／關閉左側／右側所有／關閉所有頁籤」：對應頁籤被關掉，被關掉的是目前頁籤時改選右鍵的那個；全關後預覽消失、目錄回到全寬。
 39. 開 .mp4／.mov／.webm：可播放、拖進度條可跳轉（Range）、聲音正常；切到別的頁籤再回來可繼續播；關閉頁籤／預覽後聲音停止；mkv 或壞檔顯示「無法播放」；Web Inspector 無 CSP 違規；獨立預覽視窗也能播。

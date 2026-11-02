@@ -11,8 +11,11 @@ export type PreviewHost = {
   activeTab(): PreviewTab | undefined;
   close(): void;
   reveal(path: string): void;
-  // Move every tab (merged groups and their layout included) into the standalone preview window.
-  popOut(groups: GroupSeed[], active: number): Promise<unknown>;
+  // Move every tab into the standalone preview window. Absent in the popped-out files window:
+  // that window already holds the list and the preview together.
+  popOut?(groups: GroupSeed[], active: number): Promise<unknown>;
+  // Tabs changed inside the pane (merge, close, reorder). The files window reports this back.
+  changed?(): void;
   notify(error: unknown): void;
 };
 
@@ -36,16 +39,21 @@ export function initPreviewPanel(host: PreviewHost) {
   const tabsOf = () => (visible ? host.activeTab()?.preview?.tabs : undefined);
   const view = createTabsView({
     state: tabsOf,
-    set: (next) => { const state = host.activeTab()?.preview; if (state) state.tabs = next; lastTabs = next; },
+    set: (next) => {
+      const state = host.activeTab()?.preview;
+      if (state) state.tabs = next;
+      lastTabs = next;
+      if (state) host.changed?.();
+    },
     notify: host.notify,
     paneButtons: `<button type="button" class="icon-btn" data-act="reveal" data-i18n-title="preview.reveal" data-i18n-aria-label="preview.reveal">${icons.reveal}</button>`,
-    barButtons: `<button type="button" class="icon-btn" data-bar="popout" data-i18n-title="preview.popout" data-i18n-aria-label="preview.popout">${icons.popout}</button><button type="button" class="icon-btn" data-bar="close" data-i18n-title="preview.close" data-i18n-aria-label="preview.close">${icons.close}</button>`,
+    barButtons: `${host.popOut ? `<button type="button" class="icon-btn" data-bar="popout" data-i18n-title="preview.popout" data-i18n-aria-label="preview.popout">${icons.popout}</button>` : ""}<button type="button" class="icon-btn" data-bar="close" data-i18n-title="preview.close" data-i18n-aria-label="preview.close">${icons.close}</button>`,
     paneAction: (act, pane) => {
       if (act === "reveal") host.reveal(pane.path);
     },
     barAction: (act) => {
       if (act === "close") host.close();
-      else if (act === "popout") {
+      else if (act === "popout" && host.popOut) {
         const tabs = tabsOf();
         if (!tabs) return;
         const seeds = tabs.groups.map((g) => ({ paths: g.panes.map((p) => p.path), layout: g.layout, sizes: g.sizes }));

@@ -40,7 +40,7 @@ import { initFilesPanel } from "./files-panel";
 import { initPreviewPanel } from "./preview-panel";
 import { gitSummary, gitTip, isDirty, sameGit, sameWorktree, stripHeight, tabGitText, type GitInfo, type Worktree } from "./git";
 import type { GroupSeed } from "./preview-tabs";
-import { addPreviewFile, importPreviewGroups, previewKind, previewPath, relativeToDir, resolveInDir, type PreviewState } from "./preview";
+import { addPreviewFile, importPreviewGroups, previewFromGroups, previewGroups, previewKind, previewOpenTarget, previewPath, relativeToDir, resolveInDir, type PreviewGroups, type PreviewState } from "./preview";
 import { restoreFiles, sameSaved, saveFiles, setDetached, toggleOpen, type FilesState, type SavedFiles } from "./files";
 import { initSnippets } from "./snippet-palette";
 import { initAttentionDrop } from "./attention-drop";
@@ -177,18 +177,21 @@ const filesPanel = initFilesPanel({
 });
 // ---- Files panel in its own window (files-window.ts) ----
 const filesWindowLabel = (tab: Tab) => `preview-files-${tab.id}`;
-function filesWindowSize(): [number, number] | null {
+function filesWindowSize(hasPreview: boolean): [number, number] | null {
   try {
     const saved = JSON.parse(localStorage.getItem("files-window-size") || "null");
-    return saved && Number(saved.width) > 0 && Number(saved.height) > 0 ? [Number(saved.width), Number(saved.height)] : null;
-  } catch { return null; }
+    if (saved && Number(saved.width) > 0 && Number(saved.height) > 0) return [Number(saved.width), Number(saved.height)];
+  } catch { /* a missing or unreadable size falls through to the default */ }
+  // Wide enough for the list and the preview (the half hides below 560). No saved size and no preview keeps the Rust default.
+  return hasPreview ? [1100, 720] : null;
 }
 async function openFilesWindow(tab: Tab, focus: boolean) {
   const files = tab.files;
   if (!files) return;
+  const preview = previewGroups(tab.preview);
   await invoke("open_files_window", {
-    tab: tab.id, title: tabName(tab), focus, size: filesWindowSize(),
-    init: { tab: tab.id, origin: win.label, cwd: surfaces.get(tab.focused)?.cwd, home: homePath, files: { ...files, open: true, detached: undefined } },
+    tab: tab.id, title: tabName(tab), focus, size: filesWindowSize(!!preview),
+    init: { tab: tab.id, origin: win.label, cwd: surfaces.get(tab.focused)?.cwd, home: homePath, files: { ...files, open: true, detached: undefined }, preview },
   });
 }
 async function popOutFiles(tab: Tab) {
@@ -200,10 +203,15 @@ async function popOutFiles(tab: Tab) {
   catch (error) { tab.files = files; filesPanel.invalidate(); scheduleLayout(); rememberFilesState(tab); throw error; }
 }
 // The window sent its panel back (or was closed): the tab shows it again, or keeps it closed.
-function dockFiles(tab: Tab, files: FilesState | undefined, close: boolean) {
+function dockFiles(tab: Tab, files: FilesState | undefined, close: boolean, preview?: PreviewGroups | null) {
   if (!tab.files?.detached) return;
   const base = { ...(files ?? tab.files), detached: undefined };
   tab.files = close ? toggleOpen({ ...base, open: true }) : { ...base, open: true };
+  if (preview !== undefined) {
+    const next = previewFromGroups(preview);
+    if (next) tab.preview = next;
+    else delete tab.preview;
+  }
   filesPanel.invalidate(); scheduleLayout(); rememberFilesState(tab);
 }
 const previewPanel = initPreviewPanel({
@@ -218,13 +226,19 @@ const previewPanel = initPreviewPanel({
   },
   notify,
 });
-// While the standalone preview window exists (or the tab's files panel is popped out, so there is no overlay
-// to host it) every opened file becomes one of its tabs; otherwise it opens in the right half of the tab's
-// files overlay. Docking or closing the window switches back.
-async function showPreview(tab: Tab, path: string, focus = true): Promise<"window" | "inline"> {
-  if (tab.files?.detached || await invoke<boolean>("preview_window_open")) {
+// The preview window, while open, takes every explicitly opened file. Otherwise a popped-out files
+// panel shows it beside the list, and a docked panel shows it in the overlay. `window` in the ctl
+// reply means the preview window only.
+async function showPreview(tab: Tab, path: string, focus = true): Promise<"window" | "inline" | "files"> {
+  const target = previewOpenTarget(!!tab.files?.detached, await invoke<boolean>("preview_window_open"));
+  if (target === "viewer") {
     await invoke("open_preview_window", { path, focus, origin: { window: win.label, tab: tab.id } });
     return "window";
+  }
+  if (target === "files") {
+    tab.preview = addPreviewFile(tab.preview, path);
+    await emitTo(filesWindowLabel(tab), "files-preview-open", { path }).catch(notify);
+    return "files";
   }
   showPreviewInline(tab, path);
   return "inline";
@@ -242,10 +256,15 @@ function followPreview(tab: Tab, path: string) {
   scheduleLayout();
 }
 function closePreview(tab = active) {
-  if (!tab?.preview) return;
+  if (!tab?.preview) {
+    if (tab?.files?.detached) emitTo(filesWindowLabel(tab), "files-preview-close", {}).catch(() => {});
+    return;
+  }
   delete tab.preview;
+  if (tab.files?.detached) emitTo(filesWindowLabel(tab), "files-preview-close", {}).catch(() => {});
   scheduleLayout();
-  if (tab === active) native({ op: "focus", id: tab.focused }).catch(notify);
+  // The preview lives in the other window; focusing the terminal would pull the user out of it.
+  if (tab === active && !tab.files?.detached) native({ op: "focus", id: tab.focused }).catch(notify);
 }
 const snippets = initSnippets({
   native,
@@ -3038,17 +3057,28 @@ async function start() {
     if (tab !== active) activate(tab).catch(notify);
   });
   // Messages from a popped-out files panel (files-window.ts).
-  type FilesMessage = { tab: string; files?: FilesState; close?: boolean; op?: string; path?: string; directory?: string; command?: string; text?: string };
+  type FilesMessage = { tab: string; files?: FilesState; close?: boolean; op?: string; path?: string; directory?: string; command?: string; text?: string; preview?: PreviewGroups | null; gen?: number };
+  const previewRev = new Map<string, number>();
   await listen<FilesMessage>("files-state", ({ payload }) => {
     const tab = tabs.find((item) => item.id === payload.tab);
     if (!tab?.files?.detached || !payload.files) return;
     tab.files = { ...payload.files, open: true, detached: true };
     rememberFilesState(tab);
   });
+  await listen<FilesMessage>("files-preview", ({ payload }) => {
+    const tab = tabs.find((item) => item.id === payload.tab);
+    if (!tab?.files?.detached) return;
+    const gen = payload.gen ?? 0;
+    if (gen < (previewRev.get(tab.id) ?? 0)) return;
+    previewRev.set(tab.id, gen);
+    const next = previewFromGroups(payload.preview);
+    if (next) tab.preview = next;
+    else delete tab.preview;
+  });
   await listen<FilesMessage>("files-dock", ({ payload }) => {
     const tab = tabs.find((item) => item.id === payload.tab);
     if (!tab || closing || sessionFrozen) return;
-    dockFiles(tab, payload.files, !!payload.close);
+    dockFiles(tab, payload.files, !!payload.close, "preview" in payload ? payload.preview : undefined);
     if (!payload.close) activate(tab).catch(notify);
   });
   await listen<FilesMessage>("files-request", ({ payload }) => {
@@ -3058,7 +3088,10 @@ async function start() {
       if (payload.op === "open-terminal" && payload.path) await newSurface(payload.path);
       else if (payload.op === "edit" && payload.directory) { await activate(tab); await newSurface(payload.directory, tab.focused, 0, { command: payload.command, commandInShell: true }); }
       else if (payload.op === "insert" && payload.text) await native({ op: "insert-text", id: tab.focused, text: payload.text });
-      else if (payload.op === "preview" && payload.path) { await showPreview(tab, payload.path); if (tab !== active && tab.preview) await activate(tab); }
+      else if (payload.op === "preview" && payload.path) {
+        const where = await showPreview(tab, payload.path);
+        if (where === "inline" && tab !== active && tab.preview) await activate(tab);
+      }
       else if (payload.op === "follow-preview" && payload.path) followPreview(tab, payload.path);
     }).catch(notify);
   });

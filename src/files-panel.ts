@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { popupMenu } from "./context-menu";
 import { t } from "./i18n";
-import { previewFits } from "./preview";
+import { previewHalfShown } from "./preview";
 import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import {
   clampColumnWidth,
@@ -190,10 +190,10 @@ export function initFilesPanel(host: FilesHost) {
     cutoutKey = key;
     host.native({ op: "overlay-cutout", slot: "files", x: box.x - 8, y: box.y - 8, width: open ? box.width + 16 : 0, height: open ? box.height + 16 : 0, viewportWidth: window.innerWidth, restoreFocus }).catch(host.notify);
   }
-  // The right half (preview) shows while the overlay is open, the tab has a preview and there is room for it.
-  // Returns whether it shows; updateLayout hands that to the preview pane.
+  // The right half shows while this panel is open, a preview exists and there is room.
+  // The popped-out window uses the same rule, so the list and the preview stay side by side.
   function refreshPreview(): boolean {
-    const shown = !host.standalone && isOpen() && host.hasPreview() && previewFits(panel.clientWidth);
+    const shown = previewHalfShown(isOpen(), host.hasPreview(), panel.clientWidth);
     previewShown = shown;
     const collapsed = effectiveCollapsed(listCollapsed, shown);
     const main = $("files-main");
@@ -214,14 +214,14 @@ export function initFilesPanel(host: FilesHost) {
     refreshPreview();
     if (!next && previewShown) list.focus();
   }
-  if (!host.standalone) {
-    new ResizeObserver(() => {
-      reportCutout();
-      const was = previewShown;
-      refreshPreview();
-      if (was !== previewShown) host.layoutChanged();
-    }).observe(panel);
-  }
+  new ResizeObserver(() => {
+    reportCutout();
+    const was = previewShown;
+    refreshPreview();
+    // The overlay's own window resize already lays the preview out again. The popped-out
+    // window has no other resize path, so it must relayout whenever its width changes.
+    if (host.standalone || was !== previewShown) host.layoutChanged();
+  }).observe(panel);
   const workspaceHeight = () => workspace.clientHeight || window.innerHeight;
 
   function applyLayout(notifyHost = true) {
@@ -396,7 +396,7 @@ export function initFilesPanel(host: FilesHost) {
     miniEntries.set(element, entry);
     // Keep the keyboard on the current column after clicking a side column.
     element.onclick = (event) => {
-      // ⌘+click on a file: open the auto-updating preview window instead of selecting.
+      // ⌘+click on a file: open it in the preview (the host decides overlay, files window, or preview window).
       if (event.metaKey && !event.shiftKey && !entry.is_dir) { host.previewFile(entry.path); list.focus(); return; }
       onClick(); list.focus();
     };
@@ -788,7 +788,7 @@ export function initFilesPanel(host: FilesHost) {
     }
     // The second click of a double-click keeps the selection it is about to open.
     if (event.detail > 1) return;
-    // ⌘+click on a file opens it in the auto-updating preview window (same as the context menu entry).
+    // ⌘+click on a file opens it in the preview (same as the context menu entry).
     const clicked = entries.get(path);
     if (event.metaKey && !event.shiftKey && clicked && !clicked.is_dir) {
       setSelection({ paths: [path], anchor: path }, false);

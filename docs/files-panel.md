@@ -19,7 +19,7 @@
   - 原生端 `cutoutRequests[label][slot]`：不同 slot 的洞可同時存在（palette／attention／usage 共用 `default`，與檔案浮層互不影響）。重疊的洞會先切成不相交的矩形再做 even-odd 遮罩。
 - **Esc、`^`（`#files-close`）、右上資料夾鈕、⌘O（焦點已在列表時）會收合；失去焦點（點終端機、切換視窗／App）不收**，讓它可留著當參考或一邊拖曳。獨立視窗內 Esc 只清除選取。
   - Esc 與側欄收合不衝突：`main.ts` 的 window 層 Esc 處理在焦點不在側欄（`#rail`／`#drawer-*`）時先呼叫 `filesPanel.collapse()`，面板開著就只收面板；焦點在側欄內才由側欄處理。
-- **左右佈局**：`#files-main` 是橫向 flex：`#files-left`（欄頭、清單／直欄、狀態列）｜`#files-pv-resizer`｜`#files-pv`（預覽，見 `docs/preview.md`）。剛開浮層、還沒點過檔案（`tab.preview` 不存在）時預覽與分隔線都隱藏，目錄佔滿整個浮層。右半可見的條件由 `refreshPreview()` 判斷（浮層開著、未彈出、`host.hasPreview()`、浮層寬 ≥ 560px `previewFits`），`updateLayout()` 在 `filesPanel.sync()` 之後呼叫它並把結果交給 `previewPanel.sync()`；`ResizeObserver` 發現可見性改變也會觸發 `layoutChanged`。左右比例是全域的 `localStorage("files-preview-ratio")`（預設 0.5，`clampPreviewRatio` 讓兩邊至少 240px）。
+- **左右佈局**：`#files-main` 是橫向 flex：`#files-left`（欄頭、清單／直欄、狀態列）｜`#files-pv-resizer`｜`#files-pv`（預覽，見 `docs/preview.md`）。剛開浮層、還沒點過檔案（`tab.preview` 不存在）時預覽與分隔線都隱藏，目錄佔滿整個浮層。右半可見的條件由 `refreshPreview()` 判斷（`previewHalfShown`：面板開著、有預覽、寬 ≥ 560px），頁籤浮層與彈出的檔案視窗同一條規則。`updateLayout()` 在 `filesPanel.sync()` 之後呼叫它並把結果交給 `previewPanel.sync()`；`ResizeObserver` 在可見性改變時觸發 `layoutChanged`，獨立視窗則每次改大小都觸發（否則比例不會跟著縮）。cutout 仍只在頁籤浮層送。左右比例是全域的 `localStorage("files-preview-ratio")`（預設 0.5，`clampPreviewRatio` 讓兩邊至少 240px）。
 - **左半收合成 icon 列**：預覽可見時標題列多一個 `#files-list-toggle`，左半可收成約 44px 的垂直 icon 列（展開鈕、上層、目前資料夾 icon），預覽佔滿其餘寬度。偏好存 `localStorage("files-list-collapsed")`，所有頁籤共用。實際收合狀態是 `effectiveCollapsed(collapsed, previewVisible)`（`src/files.ts`）：**預覽不可見（關閉、浮層過窄）時一律自動展開**，不會出現左邊收著右邊沒東西。收合時 ⌘O 聚焦列表會先展開。
 - 高度存在 `localStorage("files-height")`（預設工作區 50%，`clampDropHeight`：160px～工作區 85%），所有頁籤共用，拖曳浮層底緣的 `#files-resizer` 調整。
 - 已沒有「滿版」（浮層蓋住終端機沒有意義；要大畫面請彈出成視窗）。`restoreFiles` 會忽略舊存檔的 `full`。
@@ -170,8 +170,9 @@ AppKit 相關的操作走 `hg_command` 的 `files-*` op（主執行緒）：`fil
 標題列的「彈出」按鈕（`#files-popout`）把目前頁籤的檔案面板移到獨立視窗；視窗裡同一個按鈕變成「放回頁籤」。
 
 - 視窗是 `files.html`（入口 `src/files-window.ts`），Rust 的 `open_files_window`／`close_files_window`（`src-tauri/src/preview.rs`）建立與關閉。label 為 `preview-files-<tabId>`，每個頁籤一個；沿用 `preview-` 前綴，所以不算終端機視窗，最後一個終端機視窗關閉時會一併關掉。
-- 視窗內跑的是同一份 `initFilesPanel`（host 的 `standalone: true`）。需要終端機的動作（在新頁籤開啟終端機、在終端機中編輯、插入路徑、預覽）用 `emitTo(origin, "files-request", …)` 送回原視窗處理；面板狀態用 `files-state` 回報，原頁籤的 `tab.files` 因此保持最新並照常存檔。終端機換目錄時，原視窗用 `files-cwd` 通知視窗跟隨。
+- 視窗內跑的是同一份 `initFilesPanel`（host 的 `standalone: true`），右半預覽用 `initPreviewPanel`（沒有「全部彈出」鈕）。需要終端機的動作（在新頁籤開啟終端機、在終端機中編輯、插入路徑）以及明確開預覽（⌘+click、右鍵）用 `emitTo(origin, "files-request", …)` 送回原視窗；單擊與方向鍵直接更新視窗右半。預覽頁籤用 `files-preview` 回報，放回時 `files-dock` 帶同一份。面板狀態用 `files-state` 回報，原頁籤的 `tab.files` 因此保持最新並照常存檔。終端機換目錄時，原視窗用 `files-cwd` 通知視窗跟隨。
+- 有預覽、且沒有記住過視窗大小時，預設開成 1100×720（右半要寬 ≥ 560 才出現）。之後的大小仍進 `localStorage("files-window-size")`；記住的寬度若小於 560，右半先隱藏，拉寬後再出現。
 - 狀態：`FilesState.detached`（`SavedFiles.detached`）為真表示彈出中，此時 `open` 仍為真，但頁籤內的面板不顯示（`shownInTab`）。重啟後 `restoreSnapshot` 會重新開出視窗。⌘O／右上角按鈕在彈出中只會把視窗帶到前面。
-- 放回：視窗送 `files-dock`，頁籤取回狀態並顯示面板。直接關閉視窗等於放回並關閉面板（`close: true`）；結束 App 時視窗是被銷毀的，不會改動 `detached`，所以下次啟動仍會彈出。關閉頁籤會一併關掉它的視窗。
+- 放回：視窗送 `files-dock`（含目前預覽頁籤），頁籤取回狀態並顯示面板，右半預覽跟著回來。直接關閉視窗等於放回並關閉面板（`close: true`），預覽仍留在記憶體，下次展開浮層還在；結束 App 時視窗是被銷毀的，不會改動 `detached`，所以下次啟動仍會彈出（預覽不寫進 session，不會跟著回來）。關閉頁籤會一併關掉它的視窗。
 - 視窗大小在調整後 300ms 存進 `localStorage("files-window-size")`，下次彈出沿用（所有頁籤共用）。視窗位置沒有記。
 - 視窗是獨立 WebView，Quick Look 與檔案操作走 `native` 的 `files-*` op，依視窗 label 回報事件（`native-event` 由視窗自己監聽）。
