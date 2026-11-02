@@ -22,6 +22,13 @@ test("parseUsage normalizes epoch seconds and ISO strings", () => {
   const claude = parseUsage({ five_hour: { pct: 6, resets_at: "2026-10-16T09:10:00+00:00" }, week: null });
   assert.equal(claude.fiveHour.resetsAt, Date.parse("2026-10-16T09:10:00Z"));
   assert.equal(claude.week, null);
+  const grok = parseUsage({ five_hour: null, week: { pct: 6, resets_at: "2026-11-09T10:52:05+00:00" }, plan: "SuperGrok Lite", updated_at: 1793617442 });
+  assert.equal(grok.fiveHour, null);
+  assert.equal(grok.week.pct, 6);
+  assert.equal(grok.week.resetsAt, Date.parse("2026-11-09T10:52:05Z"));
+  assert.equal(grok.plan, "SuperGrok Lite");
+  assert.equal(grok.updatedAt, 1793617442000);
+  assert.equal(grok.error, null);
 });
 
 test("parseUsage keeps error codes and flags empty data", () => {
@@ -51,6 +58,8 @@ test("formatting", () => {
 
 test("errorText falls back for unknown codes", () => {
   assert.match(errorText("no-token"), /Keychain/);
+  assert.match(errorText("grok-not-installed"), /Grok/);
+  assert.match(errorText("grok-no-data"), /Grok/);
   assert.equal(errorText("weird"), "Could not read usage.");
 });
 

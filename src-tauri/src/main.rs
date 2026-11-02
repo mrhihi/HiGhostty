@@ -816,6 +816,7 @@ fn main() {
             git::git_worktree,
             usage::usage_codex,
             usage::usage_claude,
+            usage::usage_grok,
             snippets::save_snippets,
             todos::todos,
             todos::save_todos,

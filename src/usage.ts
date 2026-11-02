@@ -1,4 +1,4 @@
-// Pure logic for the footer usage indicator (Claude Code / Codex); DOM lives in usage-bar.ts.
+// Pure logic for the footer usage indicator (Claude Code / Codex / Grok); DOM lives in usage-bar.ts.
 import { t } from "./i18n.ts";
 
 export type UsageWindow = { pct: number; resetsAt: number | null };

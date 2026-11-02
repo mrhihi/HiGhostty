@@ -3,7 +3,7 @@ import { applyI18n, onLocaleChange } from "./i18n-runtime";
 import { t } from "./i18n";
 import { displayPct, effective, errorText, warningText, formatDuration, formatPct, levelOf, parseUsage, resetText, type Mode, type ProductUsage, type UsageWindow } from "./usage";
 
-// 底部右側的用量指示（Claude Code / Codex 的 5 小時與每週用量），點擊浮出細節。
+// 底部右側的用量指示（Claude Code / Codex 的 5 小時與每週、Grok 的每週），點擊浮出細節。
 // 細節浮層和 ⌘⇧P 面板一樣靠 overlay-cutout 蓋在終端機 NSView 之上，規則見 docs/usage.md。
 export type UsageBarHost = {
   native: (request: Record<string, unknown>) => Promise<unknown>;
@@ -37,6 +37,7 @@ export function initUsageBar(host: UsageBarHost) {
   let mode = readMode();
   let claude: ProductUsage | null = null;
   let codex: ProductUsage | null = null;
+  let grok: ProductUsage | null = null;
   let fetchedAt = 0;
   let observer: ResizeObserver | undefined;
 
@@ -74,7 +75,21 @@ export function initUsageBar(host: UsageBarHost) {
     box.append(el("span", "usage-name", name));
     if (!usage) box.append(el("span", "usage-num", "…"));
     else {
-      box.append(num(usage.fiveHour, t("usage.fiveShort"), now), el("span", "usage-sep", "·"), num(usage.week, t("usage.weekShort"), now));
+      const slots = [
+        [t("usage.fiveShort"), usage.fiveHour],
+        [t("usage.weekShort"), usage.week],
+      ] as const;
+      const present = slots.filter((slot) => slot[1]);
+      if (present.length === 0) {
+        const dash = el("span", "usage-num", "—");
+        dash.dataset.level = "none";
+        box.append(dash);
+      } else {
+        present.forEach((slot, index) => {
+          if (index > 0) box.append(el("span", "usage-sep", "·"));
+          box.append(num(slot[1], slot[0], now));
+        });
+      }
     }
     return box;
   }
@@ -84,8 +99,14 @@ export function initUsageBar(host: UsageBarHost) {
   function renderButton() {
     const now = Date.now();
     const title = `${t("usage.barTitle")} (${t(mode === "left" ? "usage.modeLeft" : "usage.modeUsed")})`;
-    const next: HTMLElement[] = [group(t("usage.codex"), codex, now)];
-    if (claudeOn) next.unshift(group(t("usage.claude"), claude, now), el("span", "usage-div"));
+    const next: HTMLElement[] = [];
+    const push = (node: HTMLElement) => {
+      if (next.length) next.push(el("span", "usage-div"));
+      next.push(node);
+    };
+    if (claudeOn) push(group(t("usage.claude"), claude, now));
+    push(group(t("usage.codex"), codex, now));
+    push(group(t("usage.grok"), grok, now));
     const sig = `${title}|${next.map((n) => `${n.textContent}${[...n.querySelectorAll<HTMLElement>("[data-level]")].map((x) => x.dataset.level).join("")}`).join("|")}`;
     if (sig === buttonSig) return;
     buttonSig = sig;
@@ -112,7 +133,7 @@ export function initUsageBar(host: UsageBarHost) {
     return box;
   }
 
-  function section(name: string, usage: ProductUsage | null, now: number): HTMLElement {
+  function section(name: string, usage: ProductUsage | null, now: number, snapshot = false): HTMLElement {
     const box = el("section", "usage-section");
     const head = el("div", "usage-section-head");
     head.append(el("strong", "", name));
@@ -121,8 +142,12 @@ export function initUsageBar(host: UsageBarHost) {
     if (!usage) box.append(el("div", "usage-reset", t("usage.loading")));
     else if (usage.error) box.append(el("div", "usage-error", errorText(usage.error)));
     else {
-      box.append(row(t("usage.fiveHour"), usage.fiveHour, now), row(t("usage.week"), usage.week, now));
+      if (usage.fiveHour) box.append(row(t("usage.fiveHour"), usage.fiveHour, now));
+      if (usage.week) box.append(row(t("usage.week"), usage.week, now));
       if (usage.warning) box.append(el("div", "usage-reset", warningText(usage.warning)));
+      if (snapshot && usage.updatedAt !== null) {
+        box.append(el("div", "usage-reset", t("usage.snapshot", { time: formatDuration(now - usage.updatedAt) })));
+      }
     }
     return box;
   }
@@ -157,6 +182,7 @@ export function initUsageBar(host: UsageBarHost) {
       sections.append(off);
     }
     sections.append(section(t("usage.codex"), codex, now));
+    sections.append(section(t("usage.grok"), grok, now, true));
 
     const foot = el("div", "usage-foot");
     const label = el("label", "usage-toggle");
@@ -178,12 +204,14 @@ export function initUsageBar(host: UsageBarHost) {
   }
 
   async function refreshNow(force = false) {
-    const [codexRaw, claudeRaw] = await Promise.all([
+    const [codexRaw, claudeRaw, grokRaw] = await Promise.all([
       invoke("usage_codex").catch(() => ({ error: "no-data" })),
       claudeOn ? invoke("usage_claude", { force }).catch(() => ({ error: "network" })) : Promise.resolve(null),
+      invoke("usage_grok").catch(() => ({ error: "grok-no-data" })),
     ]);
     codex = parseUsage(codexRaw);
     claude = claudeRaw ? parseUsage(claudeRaw) : null;
+    grok = parseUsage(grokRaw);
     fetchedAt = Date.now();
     renderButton();
     renderPop();
