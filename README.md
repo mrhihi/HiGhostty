@@ -1,5 +1,7 @@
 # HiGhostty
 
+[English](README.en.md) | 繁體中文
+
 僅支援 macOS 13+。Rust + Tauri 管理介面，AppKit 原生視圖內嵌 Ghostty 1.3.1，以 CoreText 與 Metal 處理字型、中文輸入法及畫面。
 
 ## 開發與安裝包
