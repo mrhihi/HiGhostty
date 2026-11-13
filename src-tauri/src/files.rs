@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{
     ffi::{CStr, CString},
+    hash::{Hash, Hasher},
     time::UNIX_EPOCH,
 };
 extern "C" {
@@ -70,13 +71,32 @@ pub async fn list_files(path: String, show_hidden: bool) -> Result<Vec<FileEntry
     .await
     .map_err(err)?
 }
-// Cheap change detection for polling: the directory's own modification time.
+// Detect entry changes even on filesystems with coarse directory mtime precision.
 // Async so a slow volume never blocks the main thread.
 #[tauri::command]
-pub async fn dir_stamp(path: String) -> Result<u64, String> {
+pub async fn dir_stamp(path: String, show_hidden: bool) -> Result<u64, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let metadata = std::fs::metadata(expand_path(&path, None)?).map_err(err)?;
-        Ok(modified_ms(&metadata))
+        let directory = expand_path(&path, None)?;
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(directory).map_err(err)? {
+            let entry = entry.map_err(err)?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !visible(&name, show_hidden) {
+                continue;
+            }
+            let metadata = std::fs::metadata(entry.path()).or_else(|_| entry.metadata()).map_err(err)?;
+            let modified_ns = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            entries.push((name, metadata.is_dir(), metadata.len(), modified_ns));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        entries.hash(&mut hasher);
+        Ok(hasher.finish())
     })
     .await
     .map_err(err)?

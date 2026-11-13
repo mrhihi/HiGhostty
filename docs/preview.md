@@ -19,6 +19,7 @@
 - 頁籤列、分格、拖曳合併、右鍵選單的 DOM 只在 `src/preview-tabs-view.ts`（`createTabsView`），兩個宿主（`preview-panel.ts`、`preview-window.ts`）各自擁有 `TabsState`，只提供自己的按鈕與 `paneAction`／`barAction`。`state()` 回 `undefined` 代表目前不顯示（浮層右半預覽被隱藏或切到別的終端機頁籤）：所有 view 會 `dispose`，不是關閉。
 - 規則與幾何只放 `src/preview-tabs.ts`（測試 `tests/preview-tabs.test.mjs`）：一個頁籤（group）有 1–3 個分格（pane），`MAX_PANES = 3`；id 含每個 `TabsState` 的 `uid`，多個終端機頁籤的狀態共用同一份 DOM 快取也不會撞 id。同一個檔案再開只切到該頁籤。
 - 合併顯示（類似 Chrome 分割檢視）：把頁籤拖到另一個頁籤中段即合併（pointer events，不用 HTML5 DnD）、拖到頁籤左右各 30% 是重新排序（出現藍色插入線），中間 40% 才是合併（出現外框）；頁籤右鍵也有「頁籤往左移／往右移」（`moveGroup`）；頁籤右鍵（原生 `popupMenu`）可批次關閉（只保留目前頁籤／關閉左側所有／關閉右側所有／關閉所有頁籤，`closeGroups`；全關等於關閉預覽），也可「與…合併顯示」（超過 3 格的項目停用）、拆分、切換排列。合併頁籤各自選**三欄式（左右並排）或三列式（上下堆疊）**；分隔線可拖曳（`sizesFromDrag`，每格至少 12%）。
+- 頁籤可按 X 或滑鼠中鍵關閉；中鍵不會先切換到該頁籤。
 - 合併後可**交換順序**：每個分格標題列的 ←／→（三列式是 ↑／↓）把該格與鄰格交換（`movePane`，大小跟著格子走），第一格／最後一格的對應按鈕停用。分格標題列在多格時還有「移出成獨立頁籤」「關閉此格」。
 - 浮層右半預覽的「明確開啟」（檔案面板右鍵、指令選單、`ctl preview open`、收藏預設預覽、獨立視窗放回）都是新增頁籤（`addPreviewFile`），檔案面板單擊也一樣（沒有置換現有頁籤的路徑）。`ctl preview status` 回目前頁籤第一格的檔案。
 - 重新整理：頁籤列的重新整理鈕（或頁籤右鍵「重新整理目前頁籤」）對該頁籤的每一格呼叫 `view.refresh()`：清掉 stamp 後立刻 `load`，不管 mtime／size 有沒有變（HTML 頁會重載 iframe、圖表重畫）；保留捲動位置，檔案不存在時照常顯示等待訊息。（停止 500ms 輪詢、保留內容與捲動位置），切回時 `resume()` 立即 poll 一次；分格關閉時 `dispose()` 移除該 view 的 `storage`／語系監聽。`createPreviewView` 會被多次呼叫，不可再用固定 id（`#preview` 只由浮層右半的 `preview-panel.ts` 加在 `.pv-root` 上）。

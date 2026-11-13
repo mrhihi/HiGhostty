@@ -73,6 +73,10 @@ export function toggleExpanded(state: FilesState, path: string, expanded?: boole
       : state.expanded.filter((item) => item !== path && !item.startsWith(path + "/")),
   };
 }
+export function pruneExpanded(expanded: string[], directories: Iterable<string>): string[] {
+  const existing = new Set(directories);
+  return expanded.filter((path) => existing.has(path));
+}
 
 export type Selection = { paths: string[]; anchor?: string };
 // `order` is the visible row order; it resolves shift ranges.

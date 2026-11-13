@@ -21,6 +21,7 @@ import {
   moveSelection,
   navigate,
   onCwd,
+  pruneExpanded,
   parentOf,
   previewTarget,
   pruneColumnWidths,
@@ -289,6 +290,12 @@ export function initFilesPanel(host: FilesHost) {
         level = children;
       }
       if (token !== generation) return;
+      const directories = [...next.values()].flat().filter((entry) => entry.is_dir).map((entry) => entry.path);
+      const current = state();
+      if (current) {
+        const expanded = pruneExpanded(current.expanded, directories);
+        if (expanded.length !== current.expanded.length) update({ ...current, expanded });
+      }
       if (renderedPath !== root) { selection = { paths: [] }; list.scrollTop = 0; }
       renderedPath = root;
       cache = next;
@@ -978,15 +985,25 @@ export function initFilesPanel(host: FilesHost) {
     });
   }
   // Pick up changes made elsewhere (for example by commands in the terminal).
+  let polling = false;
   setInterval(async () => {
     const files = state();
-    if (!files || !shownInTab(files) || !files.path || renaming || document.visibilityState !== "visible") return;
-    const dirs = view === "columns" ? [files.path, ...columnChain(files.columnRoot, files.path)] : [files.path, ...files.expanded];
-    const stamps = await Promise.all(dirs.map((dir) => invoke<number>("dir_stamp", { path: dir }).catch(() => 0)));
-    const key = stamps.join(",");
-    if (stampKey && key !== stampKey) load().catch(host.notify);
-    else stampKey = key;
-  }, 2000);
+    if (polling || !files || !shownInTab(files) || !files.path || renaming || document.visibilityState !== "visible") return;
+    polling = true;
+    try {
+      const dirs = view === "columns" ? [files.path, ...columnChain(files.columnRoot, files.path)] : [files.path, ...files.expanded];
+      const stamps = await Promise.all(dirs.map(async (dir) => [dir, await invoke<number>("dir_stamp", { path: dir, showHidden }).catch(() => undefined)] as const));
+      const available = stamps.filter((entry): entry is readonly [string, number] => entry[1] !== undefined);
+      if (!available.length) return;
+      const key = available.map(([dir, stamp]) => `${dir}:${stamp}`).join(",");
+      if (stampKey && key !== stampKey) await load();
+      else stampKey = key;
+    } catch (error) {
+      host.notify(error);
+    } finally {
+      polling = false;
+    }
+  }, 1000);
 
   // ---- Public API -----------------------------------------------------------
   async function focusList() {

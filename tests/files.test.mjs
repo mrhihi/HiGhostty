@@ -12,6 +12,7 @@ import {
   defaultDropHeight,
   shellEscape,
   parentOf,
+  pruneExpanded,
   previewTarget,
   formatSize,
   initialFiles,
@@ -55,6 +56,13 @@ test("collapsing a folder forgets nested expansions", () => {
   state = toggleExpanded(state, "/a/b");
   state = toggleExpanded(state, "/ab");
   assert.deepEqual(toggleExpanded(state, "/a").expanded, ["/ab"]);
+});
+
+test("pruneExpanded removes folders no longer present in loaded listings", () => {
+  assert.deepEqual(
+    pruneExpanded(["/a/kept", "/a/removed", "/a/kept/nested"], ["/a/kept", "/a/kept/nested"]),
+    ["/a/kept", "/a/kept/nested"],
+  );
 });
 
 test("selection supports toggle, range and arrow keys", () => {

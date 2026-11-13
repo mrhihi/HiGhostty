@@ -248,6 +248,13 @@ export function createTabsView(host: TabsViewHost) {
       close.setAttribute("aria-label", t("preview.tabClose"));
       close.addEventListener("click", () => { const cur = state(); if (cur) apply(closeGroup(cur, group.id)); });
       el.append(title, close);
+      el.addEventListener("pointerdown", (event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const cur = state();
+        if (cur) apply(closeGroup(cur, group.id));
+      });
       el.addEventListener("pointerdown", (event) => dragTab(event, group, el));
       el.addEventListener("contextmenu", (event) => { event.preventDefault(); tabMenu(group); });
       return el;
