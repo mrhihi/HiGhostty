@@ -51,16 +51,17 @@
 | `preview window <path>` | caller | 把檔案加到獨立預覽視窗的新頁籤（所有彈出的檔案共用一個視窗，可合併最多 3 格；自動更新、同一個檔案只開一個頁籤、不搶焦點）；可能多出視窗，所以需要完整模式。詳見 `docs/preview.md` |
 | `snippet add --name N --text T [--scope global\|cwd\|絕對目錄] [--keyword K…]` | caller | 新增指令片段到 ⌘⇧P 面板。預設 scope 是呼叫者目前的目錄；同名、同 scope、同內容已存在時不重複新增（`created:false`）。**不提供 `--run`**：agent 新增的片段不會自動執行，由使用者在面板選取、確認後才送進終端機 |
 
-| `agent start <kind> [--cwd 路徑] [--focus] [--timeout ms] [-- 參數…]` | caller | 在新頁籤（預設背景）啟動 agent（claude、codex、gemini、opencode、copilot、aider，名稱即執行檔），參數各自加引號。等到偵測到 agent、畫面兩次輪詢不變且為 idle 或 blocked 才回傳 `{surface, tab, window, agent, state, ready}`（`ready` 為 state 是否 idle；卡在「信任此資料夾？」這類詢問時 `state:"blocked"`、`ready:false`）。逾時（預設 30 秒）回 `timeout`，但頁籤已開啟，訊息含 surface id |
+| `agent start <kind> [--tab 頁籤] [--new-session] [--cwd 路徑] [--focus] [--timeout ms] [-- 參數…]` | caller | 啟動 agent（claude、codex、gemini、opencode、copilot、aider，名稱即執行檔），參數各自加引號。沒有 `--tab` 時在新頁籤（預設背景）啟動。`--tab` 用該頁籤聚焦中的終端機（同一個視窗）：沒有 agent 且 shell 在提示字元就把命令送進去（明確的 `--cwd` 會先 `cd`）；已有 agent 或 shell 忙碌回 `busy`、不送輸入；不能對自己所在的終端機送。`--new-session` 必須搭配 `--tab`，走頁籤選單「以新 Shell 開新頁籤」（`shell: true`、掛在來源頁籤下，不繼承啟動命令、tmux、環境變數），shell 到提示字元後再送命令。等到偵測到 agent、畫面兩次輪詢不變且為 idle 或 blocked 才回傳 `{surface, tab, window, agent, state, ready}`，`--tab` 時多 `started`：`shell` 或 `new-shell`（`ready` 為 state 是否 idle；卡在「信任此資料夾？」時 `state:"blocked"`、`ready:false`）。逾時（預設 30 秒，shell 等待與就緒等待共用）回 `timeout`，訊息含 surface id |
 | `agent prompt <id> <text> [--wait] [--timeout ms]` | surface | 對終端機裡的 agent 送出 prompt 並按 Enter（貼上＋真正的 Enter；多行 prompt 靠 bracketed paste 不會提早送出）。**目標是 blocked 時回 `agent_blocked`，什麼都不送**；沒有偵測到 agent 回 `not_found`；不能對自己所在的終端機送。`--wait`：先要看到 working 或 blocked（5 秒內沒有回 `agent_prompt_stalled`），再等狀態穩定（連兩次輪詢）為 idle 或 blocked；逾時回 `timeout`。逾時與 stalled 都**不代表沒送出**，不要重送 |
 | `agent keys <id> <key…>` | surface | 對 agent 依序送按鍵（間隔 60 ms），先全部驗證才送；需要偵測到 agent；不能對自己送。處理 agent 的詢問畫面時使用 |
 
-- 判斷 shell 是否在提示字元：一般頁籤看原生 `info` 的前景行程是否為空；tmux 頁籤看 `tmux_panes` 的 pane_current_command 是不是 shell（`isShellName`）。
+- 判斷 shell 是否在提示字元：一般頁籤看原生 `info` 的前景行程是否為空；tmux 頁籤看 `tmux_panes` 的 pane_current_command 是不是 shell（`isShellName`）。`--new-session` 新開的終端機在 shell 建立前前景也是空的，所以要等 `pids` 出現且前景為空，並且連續兩次都成立，才送啟動命令。
 - `surface run` 先以 `insert-text`（走貼上路徑，有 bracketed paste）送命令，再以 `key enter` 送真正的 Enter，兩者在 Ghostty 同一個佇列依序處理。
 - `key` op（`bridge.m` 的 `sendNamedKey`）自己組 `ghostty_input_key_s` 呼叫 `ghostty_surface_key`（按下＋放開），**不經 NSEvent 與輸入法路徑**，不碰 `HGSurface` 的輸入方法；keycode 是 macOS 虛擬鍵碼。
 - 背景頁籤裡的 agent 要人時，照常由待處理偵測提示（背景頁籤正是它掃描的對象）。
 
 - 跨視窗：`surface`／`agent wait` 以終端機 id 定位，不限於呼叫者的視窗；`tab list`／`agent list`／`window list` 預設列出所有視窗。
+- 呼叫者的終端機已經不在（`HIGHOSTTY_SURFACE_ID` 過期，例如 agent 行程比那個終端機活得久）：`ping`、`help` 仍由任一個視窗回答。`agent start --tab` 改由擁有該頁籤的視窗處理，所以 `--new-session` 不需要呼叫者還在。必須在呼叫者視窗做事的指令（`whoami`、`tab new`、沒有 `--tab` 的 `agent start`）回 `not_found`，訊息是呼叫者的終端機已不在。
 - 輪詢在視窗的前端進行（每 500 ms），逾時回 `timeout`。逾時不等於失敗：之後可再讀畫面確認。
 - `agent list` 的狀態只是畫面判斷：`blocked` 包含低信心的提問，`idle` 不保證 agent 不在做背景工作。
 
@@ -106,6 +107,8 @@
 16. 完整模式：`ctl files reveal ~/Downloads/x.png` Finder 選取該檔；`ctl files quicklook 圖片.png 報表.pdf` 開 Quick Look（可左右翻頁、空白鍵關閉，關閉後鍵盤回到終端機）；不存在的路徑回 `failed`（訊息含路徑）、沒有任何動作。唯讀模式回 `forbidden`。
 17. `ctl snippet add --name "跑測試" --text "npm test"`：⌘⇧P 面板在該目錄下出現；重複執行 `created:false`；選取後送進終端機但**不會**自動 Enter；`--scope global` 全域可見；另一個視窗的面板也即時出現。
 18. 完整模式：`ctl agent start claude --timeout 60000` 開出背景頁籤，agent 就緒後才回傳；頁籤列多一個頁籤、焦點不變。啟動時若跳出「信任此資料夾」，回 `state:"blocked"`。`ctl agent start rm` 回 `bad_args`。
+18b. 同一個視窗裡一個閒置 shell 頁籤（沒有 agent）：`ctl agent start claude --tab <該頁籤 id> --timeout 60000` 在那個終端機啟動，不另開頁籤，回 `started:"shell"`。該頁籤已有 agent、或前景有其他程式時回 `busy` 且畫面沒有新輸入。對自己所在的終端機回 `bad_args`。
+18c. `ctl agent start claude --tab <頁籤 id> --new-session --timeout 60000`：多一個掛在該頁籤下的純 shell 頁籤（不帶該頁籤的啟動命令、tmux、環境變數），agent 在裡面啟動，焦點不變，回 `started:"new-shell"`。沒有 `--tab` 的 `--new-session` 回 `bad_args`。
 19. `ctl agent prompt <id> "回答 1+1" --wait --timeout 120000`：agent 收到、回答，指令在回答完成後回 `state:"idle"`。agent 正在跑時再送一次不會報錯。
 20. 讓 agent 停在權限詢問，再 `ctl agent prompt <id> "x"` → `agent_blocked`，且畫面上沒有任何新輸入；`ctl agent wait <id> --until blocked` 能在詢問出現時返回；`ctl agent keys <id> esc` 取消該詢問。
 21. 對自己所在的終端機 `agent prompt`／`agent keys` 回 `bad_args`；對一般 shell 回 `not_found`；`agent keys <id> esc f5` 回 `bad_args` 且 esc 也沒有送出。

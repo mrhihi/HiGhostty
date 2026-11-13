@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { OPS, AGENT_KINDS, MAX_KEYS, MAX_PROMPT_CHARS, agentCommand, confirmedState, keysProblem, promptProblem, startReady, ALERT_LIMITS, SNIPPET_LIMITS, STATUS_MAX_CHARS, alertInput, snippetInput, statusText, DEFAULT_WAIT_MS, KEY_NAMES, MAX_COMMAND_CHARS, commandLine, commandProblem, isShellName, shellQuote, validKey, MAX_WAIT_MS, authorize, claimFor, errReply, findMatch, helpResult, makeMatcher, okReply, parseArgv, resolveCaller, tailLines, usage, waitLimit, waitSatisfied } from "../src/control.ts";
+import { OPS, AGENT_KINDS, MAX_KEYS, MAX_PROMPT_CHARS, absentReply, agentCommand, agentInShell, confirmedState, keysProblem, promptProblem, startReady, ALERT_LIMITS, SNIPPET_LIMITS, STATUS_MAX_CHARS, alertInput, snippetInput, statusText, DEFAULT_WAIT_MS, KEY_NAMES, MAX_COMMAND_CHARS, commandLine, commandProblem, isShellName, shellPromptReady, shellQuote, validKey, MAX_WAIT_MS, authorize, claimFor, errReply, findMatch, helpResult, makeMatcher, okReply, parseArgv, resolveCaller, tailLines, usage, waitLimit, waitSatisfied } from "../src/control.ts";
 
 const parse = (...argv) => parseArgv(argv);
 
@@ -102,6 +102,8 @@ test("claims: caller scope needs the caller, surface scope the target, all scope
   const claim = (argv, callerHere, owned = []) => claimFor(parse(...argv).parsed, { callerHere, ownsSurface: (id) => owned.includes(id) });
   assert.equal(claim(["whoami"], true), "owner");
   assert.equal(claim(["whoami"], false), "none");
+  assert.equal(claim(["help"], false), "owner");
+  assert.equal(claim(["ping"], false), "owner");
   assert.equal(claim(["tab", "list"], false), "part");
   assert.equal(claim(["tab", "list"], true), "part");
   assert.equal(claim(["surface", "read", "s1"], false, ["s1"]), "owner");
@@ -177,6 +179,13 @@ test("commandProblem rejects empty, multi-line and oversized commands", () => {
   assert.match(commandProblem("a\nb"), /換行/);
   assert.match(commandProblem("a\rb"), /換行/);
   assert.match(commandProblem("x".repeat(MAX_COMMAND_CHARS + 1)), /太長/);
+});
+
+test("shellPromptReady waits until the shell process exists and nothing is in the foreground", () => {
+  assert.equal(shellPromptReady({ running: [], pids: [] }), false);
+  assert.equal(shellPromptReady({ running: [], pids: [{ pid: 1 }] }), true);
+  assert.equal(shellPromptReady({ running: ["claude (2)"], pids: [{ pid: 1 }] }), false);
+  assert.equal(shellPromptReady({ running: [], pids: [{ pid: 1 }], exited: true }), false);
 });
 
 test("isShellName recognises login shells and rejects programs", () => {
@@ -259,6 +268,17 @@ test("Phase 6 commands parse and need full mode", () => {
   }
   assert.equal(claimFor(parse("agent", "prompt", "s1", "hi").parsed, { callerHere: true, ownsSurface: (id) => id === "s2" }), "none");
   assert.equal(claimFor(parse("agent", "start", "claude").parsed, { callerHere: true, ownsSurface: () => false }), "owner");
+  assert.equal(claimFor(parse("agent", "start", "claude").parsed, { callerHere: false, ownsSurface: () => false }), "none");
+  const owns = { callerHere: false, ownsSurface: () => false, ownsTab: (id) => id === "tab-1" };
+  assert.equal(claimFor(parse("agent", "start", "claude", "--tab", "tab-1").parsed, owns), "owner");
+  assert.equal(claimFor(parse("agent", "start", "claude", "--tab", "other", "--new-session").parsed, owns), "none");
+  assert.match(absentReply(parse("whoami").parsed).error.message, /呼叫者的終端機已不在/);
+  assert.match(absentReply(parse("agent", "start", "claude", "--tab", "missing").parsed).error.message, /找不到這個頁籤/);
+  assert.equal(absentReply(parse("surface", "read", "s1").parsed), undefined);
+  const onTab = parse("agent", "start", "codex", "--tab", "tab-1", "--new-session", "--cwd", "/work");
+  assert.equal(onTab.parsed.flags.tab, "tab-1");
+  assert.equal(onTab.parsed.flags["new-session"], true);
+  assert.equal(onTab.parsed.flags.cwd, "/work");
 });
 
 test("agentCommand accepts only known agents and quotes their arguments", () => {
@@ -267,6 +287,8 @@ test("agentCommand accepts only known agents and quotes their arguments", () => 
   for (const kind of AGENT_KINDS) assert.ok(agentCommand(kind, []).ok, kind);
   for (const kind of ["rm", "claude;ls", "", "Claude", "node"]) assert.equal(agentCommand(kind, []).reply.error.code, "bad_args", kind);
   assert.equal(agentCommand("claude", ["a\nb"]).ok, false);
+  assert.equal(agentInShell("claude", undefined).line, "claude");
+  assert.equal(agentInShell("claude", "/work/my dir").line, "cd '/work/my dir' && claude");
 });
 
 test("promptProblem and keysProblem", () => {

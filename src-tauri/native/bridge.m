@@ -78,7 +78,7 @@ static void inputTrace(NSString *stage,NSEvent *event,NSString *text,BOOL result
 }
 #define HG_INPUT_TRACE(stage,event,text,result) inputTrace((stage),(event),(text),(result))
 #else
-#define HG_INPUT_TRACE(stage,event,text,result) ((void)0)
+#define HG_INPUT_TRACE(stage,event,text,result) ((void)(result))
 #endif
 static NSString *ghosttyCharacters(NSEvent *event) {
     NSString *text=event.characters;
@@ -755,7 +755,21 @@ static bool nativeAction(ghostty_app_t app,ghostty_target_s target,ghostty_actio
         case GHOSTTY_ACTION_SCROLLBAR:return true;
         case GHOSTTY_ACTION_RING_BELL:NSBeep();emit(owner,@{@"type":@"bell",@"id":identifier});return true;
         case GHOSTTY_ACTION_OPEN_URL:{NSString *url=[[NSString alloc] initWithBytes:action.action.open_url.url length:action.action.open_url.len encoding:NSUTF8StringEncoding];NSURL *u=[NSURL URLWithString:url];if(u)[NSWorkspace.sharedWorkspace openURL:u];return true;}
-        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:{UNMutableNotificationContent *content=[UNMutableNotificationContent new];content.title=str(action.action.desktop_notification.title);content.body=str(action.action.desktop_notification.body);emit(owner,@{@"type":@"notify",@"id":identifier,@"title":content.title,@"body":content.body});[UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL allowed,NSError *error){if(allowed)[UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:[UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil] withCompletionHandler:nil];}];return true;}
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:{
+            UNMutableNotificationContent *content=[UNMutableNotificationContent new];content.title=str(action.action.desktop_notification.title);content.body=str(action.action.desktop_notification.body);
+            emit(owner,@{@"type":@"notify",@"id":identifier,@"title":content.title,@"body":content.body});
+            // Debug builds run the bare executable, not an .app. UserNotifications then throws
+            // NSInternalInconsistencyException from currentNotificationCenter and aborts the process.
+            if(![NSBundle.mainBundle.bundlePath.pathExtension isEqualToString:@"app"])return true;
+            @try {
+                [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL allowed,NSError *error){
+                    if(!allowed)return;
+                    @try { [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:[UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString content:content trigger:nil] withCompletionHandler:nil]; }
+                    @catch(NSException *exception) { NSLog(@"[HiGhostty] desktop notification failed: %@ %@", exception.name, exception.reason); }
+                }];
+            } @catch(NSException *exception) { NSLog(@"[HiGhostty] desktop notification failed: %@ %@", exception.name, exception.reason); }
+            return true;
+        }
         case GHOSTTY_ACTION_PROGRESS_REPORT:case GHOSTTY_ACTION_COMMAND_FINISHED:case GHOSTTY_ACTION_KEY_SEQUENCE:case GHOSTTY_ACTION_KEY_TABLE:case GHOSTTY_ACTION_READONLY:return true;
         case GHOSTTY_ACTION_UNDO:event=@{@"type":@"undo"};break;
         case GHOSTTY_ACTION_REDO:event=@{@"type":@"redo"};break;

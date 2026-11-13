@@ -55,7 +55,7 @@ import { buildRules, formatRuleError, type CompiledRules, type Prompt } from "./
 import builtinRules from "./prompt-rules.json?raw";
 import { formatEnv, normalizeEnv, parseEnv, sameEnv, type Env } from "./tab-env";
 import { newSessionName, restorable, tmuxCommand, validSession, withProgramDir, withProgramPath } from "./tmux";
-import { agentCommand, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
+import { absentReply, agentCommand, agentInShell, alertInput, authorize, claimFor, commandLine, confirmedState, keysProblem, promptProblem, PROMPT_STALL_MS, shellPromptReady, startReady, commandProblem, errReply, findMatch, isShellName, usage, validKey, helpResult, makeMatcher, okReply, parseArgv, resolveCaller, snippetInput, statusText, tailLines, waitLimit, waitSatisfied, WAIT_STATES, type Claim, type ControlMode, type Parsed, type Reply } from "./control";
 import { initTooltips } from "./tooltip";
 import "./style.css";
 
@@ -3162,16 +3162,15 @@ type ControlRequest = { reqId: string; mode: ControlMode; caller: unknown; argv:
 async function handleControl({ reqId, mode, caller, argv, input }: ControlRequest) {
   const callerId = resolveCaller(caller, surfaces.values());
   const parsed = parseArgv(argv);
-  let claim: Claim = callerId ? "owner" : "none";
+  const here = { callerHere: !!callerId, ownsSurface: (id: string) => surfaces.has(id), ownsTab: (id: string) => tabs.some((tab) => tab.id === id) };
+  let claim: Claim = parsed.ok ? claimFor(parsed.parsed, here) : here.callerHere ? "owner" : "none";
   let reply: Reply | null = null;
-  if (!parsed.ok) reply = callerId ? parsed.reply : null;
+  if (!parsed.ok) reply = here.callerHere ? parsed.reply : null;
   else {
     const denied = authorize(mode, parsed.parsed.op);
-    if (denied) reply = callerId ? denied : null;
-    else {
-      claim = claimFor(parsed.parsed, { callerHere: !!callerId, ownsSurface: (id) => surfaces.has(id) });
-      if (claim !== "none") reply = await runControl({ caller: callerId, mode, input }, parsed.parsed).catch((error) => errReply("failed", String(error)));
-    }
+    if (denied && claim === "owner") reply = denied;
+    else if (!denied && claim !== "none") reply = await runControl({ caller: callerId, mode, input }, parsed.parsed).catch((error) => errReply("failed", String(error)));
+    else if (claim === "none") reply = denied ?? absentReply(parsed.parsed) ?? null;
   }
   await invoke("control_reply", { reqId, window: win.label, claim, reply });
 }
@@ -3213,6 +3212,20 @@ async function shellIdle(id: string): Promise<boolean> {
     return !!command && isShellName(command);
   }
   return (await native<Info>({ op: "info", id })).running.length === 0;
+}
+// 新開的終端機在 shell 建立前，前景行程也是空的。要看到 process tree 裡的 shell，而且連兩次都沒有前景程式。
+async function awaitNewShell(id: string, limit: number): Promise<boolean> {
+  let previous = false;
+  const hit = await poll(limit, async () => {
+    const surface = surfaces.get(id);
+    if (!surface || surface.exited) return undefined;
+    const info = await native<Info & { pids?: unknown[] }>({ op: "info", id });
+    const ready = shellPromptReady(info);
+    const done = previous && ready;
+    previous = ready;
+    return done ? true : undefined;
+  });
+  return hit === true;
 }
 async function runControl(ctx: { caller?: string; mode: ControlMode; input?: unknown }, { op, args, flags, rest }: Parsed): Promise<Reply> {
   const here = flags.here === true;
@@ -3256,17 +3269,53 @@ async function runControl(ctx: { caller?: string; mode: ControlMode; input?: unk
     case "agent start": {
       const made = agentCommand(args.kind, rest);
       if (!made.ok) return made.reply;
-      const cwd = typeof flags.cwd === "string" ? flags.cwd : (ctx.caller && surfaces.get(ctx.caller)?.cwd) || homePath || "~";
-      const opened = await newSurface(cwd, undefined, undefined, { command: made.line, commandInShell: true, background: flags.focus !== true });
+      const tabId = typeof flags.tab === "string" ? flags.tab : undefined;
+      const fresh = flags["new-session"] === true;
+      if (fresh && !tabId) return errReply("bad_args", "--new-session 需要 --tab <頁籤 id>");
+      const limit = waitLimit(flags.timeout);
+      const startedAt = Date.now();
+      const left = () => Math.max(0, limit - (Date.now() - startedAt));
+      const background = flags.focus !== true;
+      let opened: { surface: string; tab?: string };
+      let started: "shell" | "new-shell" | undefined;
+      if (!tabId) {
+        const cwd = typeof flags.cwd === "string" ? flags.cwd : (ctx.caller && surfaces.get(ctx.caller)?.cwd) || homePath || "~";
+        opened = await newSurface(cwd, undefined, undefined, { command: made.line, commandInShell: true, background });
+      } else {
+        const tab = tabs.find((item) => item.id === tabId);
+        if (!tab) return errReply("not_found", "這個視窗沒有這個頁籤");
+        const focused = surfaces.get(tab.focused);
+        if (!focused || focused.exited) return errReply("not_found", "這個頁籤的終端機已結束");
+        const cwd = typeof flags.cwd === "string" ? flags.cwd : focused.cwd || homePath || "~";
+        if (fresh) {
+          // Same path as the tab menu 「以新 Shell 開新頁籤」: a plain shell under the source tab.
+          opened = await newSurface(cwd, undefined, undefined, { shell: true, parentId: rootOf(tab).id, background });
+          started = "new-shell";
+          const idle = await awaitNewShell(opened.surface, left());
+          if (!idle) return errReply("timeout", `逾時：新 Shell 已開啟（surface ${opened.surface}），但還沒到提示字元；可用 surface read 查看`);
+          await native({ op: "insert-text", id: opened.surface, text: made.line });
+          await native({ op: "key", id: opened.surface, key: "enter" });
+        } else {
+          if (tab.focused === ctx.caller) return errReply("bad_args", "不能在自己所在的終端機啟動 agent；要新的工作階段請加 --new-session");
+          if (await pickAgent(tab.focused)) return errReply("busy", "這個頁籤已經有 agent；請改用 agent prompt，或加 --new-session 以新 Shell 開啟。沒有送出任何輸入");
+          if (!(await shellIdle(tab.focused))) return errReply("busy", "終端機的 shell 不在提示字元（有程式在前景執行，或已結束）；沒有送出任何輸入");
+          const typed = agentInShell(made.line, typeof flags.cwd === "string" ? flags.cwd : undefined);
+          if (!typed.ok) return typed.reply;
+          await native({ op: "insert-text", id: tab.focused, text: typed.line });
+          await native({ op: "key", id: tab.focused, key: "enter" });
+          opened = { surface: tab.focused, tab: tab.id };
+          started = "shell";
+        }
+      }
       let previousText: string | undefined;
-      const ready = await poll(waitLimit(flags.timeout), async () => {
+      const ready = await poll(left(), async () => {
         const seen = await pickAgent(opened.surface);
         const done = !!seen && startReady(previousText, seen.screen.text, seen.state);
         previousText = seen?.screen.text;
         return done ? seen : undefined;
       });
-      if (!ready) return errReply("timeout", `逾時：頁籤已開啟（surface ${opened.surface}），但 agent 還沒就緒；可用 surface read 查看`);
-      return okReply({ ...opened, window: win.label, agent: ready.screen.agent, state: ready.state, ready: ready.state === "idle" });
+      if (!ready) return errReply("timeout", `逾時：${started ? "命令已送出" : "頁籤已開啟"}（surface ${opened.surface}），但 agent 還沒就緒；可用 surface read 查看`);
+      return okReply({ ...opened, window: win.label, agent: ready.screen.agent, state: ready.state, ready: ready.state === "idle", ...(started ? { started } : {}) });
     }
     case "agent prompt": {
       if (args.id === ctx.caller) return errReply("bad_args", "不能對自己所在的終端機送 prompt");

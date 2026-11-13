@@ -61,7 +61,7 @@ export const OPS: OpSpec[] = [
   { name: "files reveal", write: true, variadic: "path", summary: "在 Finder 顯示檔案（會把 Finder 帶到前景）；相對路徑以呼叫者的目錄為準" },
   { name: "files quicklook", write: true, variadic: "path", summary: "用 Quick Look 預覽檔案給使用者看（會取得視窗的鍵盤焦點，使用者按空白鍵或 Esc 關閉）" },
   { name: "snippet add", write: true, flags: { name: "string", text: "string", scope: "string", keyword: "list" }, summary: "新增指令片段到 ⌘⇧P 面板：--name、--text 必填；--scope global、cwd（呼叫者目前的目錄，預設）或絕對目錄。片段不會自動執行，由使用者在面板選取" },
-  { name: "agent start", write: true, args: ["kind"], flags: { cwd: "string", focus: "boolean" }, rest: true, summary: `在新頁籤（預設背景）啟動 agent（${AGENT_KINDS.join("、")}），等它就緒後回傳 surface id；-- 後是傳給 agent 的參數；用 --timeout 限時（預設 30 秒）` },
+  { name: "agent start", write: true, args: ["kind"], flags: { cwd: "string", focus: "boolean", tab: "string", "new-session": "boolean" }, rest: true, summary: `啟動 agent（${AGENT_KINDS.join("、")}）。沒有 --tab 時開新頁籤（預設背景）。--tab 且該頁籤沒有 agent、shell 在提示字元時，在該頁籤聚焦的終端機執行。--new-session 必須搭配 --tab，以該頁籤的「以新 Shell 開新頁籤」開純 shell 再執行（不繼承啟動命令、tmux、環境變數）。等就緒後回傳 surface id；-- 後是傳給 agent 的參數；用 --timeout 限時（預設 30 秒）` },
   { name: "agent prompt", write: true, scope: "surface", args: ["id", "text"], flags: { wait: "boolean" }, summary: "對終端機裡的 agent 送出一段 prompt 並按 Enter。agent 正在等人回答（blocked）時回 agent_blocked、什麼都不送；不能對自己送。--wait 等這一輪結束（先觀察到 working 或 blocked，5 秒內沒有回 agent_prompt_stalled），搭配 --timeout" },
   { name: "agent keys", write: true, scope: "surface", args: ["id"], variadic: "key", summary: `對 agent 送出按鍵（依序）：${KEY_HINT}；先全部驗證才送。不能對自己送` },
   { name: "agent wait", write: false, scope: "surface", args: ["id"], flags: { until: "string" }, summary: "等 agent 到 idle／blocked／working（預設 idle 或 blocked）；用 --timeout 限時" },
@@ -78,12 +78,25 @@ export const errReply = (code: ErrorCode, message: string): Reply => ({ ok: fals
 // What a window tells the server about a request: it is the one that answers
 // ("owner"), one of several that each contribute a part ("part"), or not involved.
 export type Claim = "owner" | "part" | "none";
-export function claimFor({ op, args }: Parsed, here: { callerHere: boolean; ownsSurface: (id: string) => boolean }): Claim {
+export const CALLER_GONE = "呼叫者的終端機已不在（可能已關閉）";
+export function claimFor({ op, args, flags }: Parsed, here: { callerHere: boolean; ownsSurface: (id: string) => boolean; ownsTab?: (id: string) => boolean }): Claim {
+  // `--tab` is owned by the window that has the tab, even when the caller's terminal is gone.
+  if (op.name === "agent start" && typeof flags.tab === "string") return here.ownsTab?.(flags.tab) ? "owner" : "none";
   switch (op.scope ?? "caller") {
     case "all": return "part";
     case "surface": return here.ownsSurface(args[(op.args?.[0] ?? "").replace(/\?$/, "")] ?? "") ? "owner" : "none";
-    default: return here.callerHere ? "owner" : "none";
+    default:
+      if (here.callerHere) return "owner";
+      // help/ping are the same in every window, so a stale caller surface can still ask.
+      return op.name === "ping" || op.name === "help" ? "owner" : "none";
   }
+}
+// A window that is not the owner still says why, so a stale caller does not collapse into
+// "target not found". An owner in another window answers first and this reply is ignored.
+export function absentReply(parsed: Parsed): Reply | undefined {
+  if (parsed.op.name === "agent start" && typeof parsed.flags.tab === "string") return errReply("not_found", "找不到這個頁籤");
+  if ((parsed.op.scope ?? "caller") === "caller") return errReply("not_found", CALLER_GONE);
+  return undefined;
 }
 
 export type Caller = { surface?: string; tmuxSession?: string };
@@ -234,6 +247,11 @@ export function commandProblem(line: string): string | undefined {
 // pane_current_command values that mean "a shell at its prompt".
 const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "xonsh", "elvish"]);
 export const isShellName = (command: string) => SHELLS.has(command.replace(/^-/, ""));
+// A brand-new surface reports no foreground process before its shell exists. That is not a prompt.
+// Ready only once the process tree has a shell (`pids`) and nothing else is in the foreground.
+export function shellPromptReady(info: { running: readonly unknown[]; pids?: readonly unknown[]; exited?: boolean }): boolean {
+  return info.exited !== true && (info.pids?.length ?? 0) > 0 && info.running.length === 0;
+}
 
 // `alert raise`: what the user will read. Title is required; everything is bounded.
 export const ALERT_LIMITS = { title: 80, body: 2000, option: 120, options: 12 };
@@ -281,6 +299,12 @@ export function agentCommand(kind: string, rest: string[]): { ok: true; line: st
   const line = [kind, ...rest].map(shellQuote).join(" ");
   const problem = commandProblem(line);
   return problem ? { ok: false, reply: errReply("bad_args", problem) } : { ok: true, line };
+}
+// In an existing shell, an explicit --cwd is a `cd` before the agent. A new surface opens at that path instead.
+export function agentInShell(line: string, cwd: string | undefined): { ok: true; line: string } | { ok: false; reply: Reply } {
+  const full = cwd ? `cd ${shellQuote(cwd)} && ${line}` : line;
+  const problem = commandProblem(full);
+  return problem ? { ok: false, reply: errReply("bad_args", problem) } : { ok: true, line: full };
 }
 // `agent prompt`: a prompt may span lines (it is pasted, so newlines do not submit it).
 export const MAX_PROMPT_CHARS = 20_000;

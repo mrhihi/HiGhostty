@@ -126,13 +126,17 @@ test "${HIGHOSTTY_ENV:-}" = 1
 
 ```bash
 "$HIGHOSTTY_CLI" ctl agent start codex --cwd "$PWD" --timeout 60000     # 回傳 surface 與 state
+"$HIGHOSTTY_CLI" ctl agent start claude --tab <tab> --timeout 60000      # 頁籤沒有 agent、shell 閒置時，在該頁籤執行
+"$HIGHOSTTY_CLI" ctl agent start claude --tab <tab> --new-session --timeout 60000   # 以該頁籤的新 Shell 開頁籤再執行
 "$HIGHOSTTY_CLI" ctl agent prompt <surface> "檢查目前的 diff，只回報可行動的問題" --wait --timeout 300000
 "$HIGHOSTTY_CLI" ctl surface read <surface> --lines 120                  # 讀它的回應
 ```
 
 - `agent start` 回 `state:"blocked"`（例如「信任此資料夾？」）時，先 `agent wait`／`surface read` 看是什麼，**不要代使用者回答**。
+- 頁籤裡還沒有 agent、shell 在提示字元：用 `agent start <kind> --tab <頁籤 id>`（`tab list` 的頁籤 id）。不要因為 `agent prompt` 回 `not_found` 就放棄。已有 agent 時它回 `busy`，改走 `agent prompt`。shell 忙碌時也回 `busy`，不會另外開頁籤。`whoami` 或沒有 `--tab` 的 `agent start` 回「呼叫者的終端機已不在」時，那個終端機已經關了；`ctl help`、`tab list` 與 `agent start --tab` 仍可用，不要因此停住。
+- 要新的 agent 工作階段（不要沿用目前對話）：`agent start <kind> --tab <頁籤 id> --new-session`。這會用該頁籤的「以新 Shell 開新頁籤」（純 shell、掛在來源頁籤下，不繼承啟動命令、tmux、環境變數）再執行。不要在舊對話裡送啟動命令或 `/new`。回傳 `started` 是 `shell`（原終端機）或 `new-shell`。
 - `agent prompt` 在對方 `blocked` 時不會送出；`working` 時照送（多數 agent 會把訊息排隊，但不保證）；`--wait` 等這一輪結束，結束時 `state` 是 `idle` 或 `blocked`。
-- 不能對自己所在的終端機送 prompt 或按鍵。
+- 不能對自己所在的終端機送 prompt、按鍵，或在同一個終端機 `agent start --tab`。`--new-session` 開的是另一個終端機，可以。
 
 ## 不可違反的規則
 

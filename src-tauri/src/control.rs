@@ -375,6 +375,7 @@ fn collect(rx: &mpsc::Receiver<Answer>, expected: usize, limit: Duration) -> Val
     let start = std::time::Instant::now();
     let mut parts = Vec::new();
     let mut seen = 0;
+    let mut fallback = None;
     let mut grace: Option<std::time::Instant> = None;
     while seen < expected {
         let mut deadline = start + limit;
@@ -390,14 +391,20 @@ fn collect(rx: &mpsc::Receiver<Answer>, expected: usize, limit: Duration) -> Val
                 parts.push((window, reply));
                 grace.get_or_insert(std::time::Instant::now() + Duration::from_millis(PART_GRACE_MS));
             }
-            _ => {}
+            // A window that is not the owner can still explain a stale caller. An owner
+            // answer, if one arrives, is returned above and this is ignored.
+            _ => {
+                if fallback.is_none() && reply.get("ok").and_then(Value::as_bool) == Some(false) {
+                    fallback = Some(reply);
+                }
+            }
         }
     }
     if !parts.is_empty() {
         return merge_parts(parts);
     }
     if seen >= expected {
-        failure("not_found", "找不到呼叫者或指定的終端機（頁籤可能已關閉）")
+        fallback.unwrap_or_else(|| failure("not_found", "找不到呼叫者或指定的終端機（頁籤可能已關閉）"))
     } else {
         failure("timeout", "沒有視窗回應，指令逾時")
     }
